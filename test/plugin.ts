@@ -6,7 +6,8 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import type { Context } from '@deepseek-ai/cordis';
-import type { ShellExecRequest, ShellExecution } from '@deepseek-ai/dsh-shell';
+import type { ShellExecRequest, ShellExecSpec, ShellExecution } from '@deepseek-ai/dsh-shell';
+import type { Config } from '../src/index.ts';
 import { extendWin32ProcessBindings, pollProcessExit, closeHandleChecked, type NativePtr } from '@deepseek-ai/dsh-win32-process';
 import { loadRuntime, createContext, installedSource } from '../poc/runtime.ts';
 import { createTestScope } from '../poc/scope.ts';
@@ -15,6 +16,17 @@ import { readProfileVerification, verifyProfile } from './profile.ts';
 
 const installed = await loadRuntime();
 const native = await createNativeDiagnostics(installed);
+interface DescendantProbe {
+  token: ReturnType<typeof native.token>['public'];
+  tokenUnchanged: boolean;
+  files: Record<'workspace' | 'outside' | 'temp', { written: boolean; path: string }>;
+  existingOutsideFiles: Record<string, { allowed: boolean }>;
+}
+interface ExecutorInternals {
+  config: Config;
+  preparing: Set<Promise<unknown>>;
+  executeArgv(spec: ShellExecSpec, prepare: (signal: AbortSignal) => Promise<readonly string[]>): Promise<ShellExecution>;
+}
 const processApi = extendWin32ProcessBindings(({ kernel32, bind }) => ({
   openProcess: bind(kernel32, 'OpenProcess', 'void *', ['uint32', 'int', 'uint32']) as (access: number, inherit: number, pid: number) => NativePtr | null,
 }));
@@ -312,9 +324,10 @@ try {
     const fixture = 'base64=' + Buffer.from(JSON.stringify({ manifest: installed.manifest, bash, pwsh: '', workspace, outside, mode })).toString('base64');
     const child = await run(mode, [process.execPath, join(payload, 'child.ts'), fixture, '--grandchild', '--mutate-fixtures'].map(value => quote(slash(value))).join(' '), { stdoutMaxBytes: 64_000 });
     const frame = child.stdout.text.split(/\r?\n/).find(line => line.startsWith('@@DSH_POC_GRANDCHILD@@'));
-    const descendant = frame ? JSON.parse(frame.slice('@@DSH_POC_GRANDCHILD@@'.length)) : undefined;
-    check(`${mode}: native descendant keeps restricted token, Low integrity, and Job`, child.exitCode === 0 && descendant?.token.restricted && descendant.token.integrity === 'S-1-16-4096' && descendant.token.inJob && !descendant.token.userSidInRestrictingList && !descendant.token.authenticatedUsersInRestrictingList && descendant.tokenUnchanged, descendant);
-    check(`${mode}: descendant workspace/temp policy and outside mutations`, descendant.files.workspace.written === (mode === 'workspace-write') && descendant.files.temp.written === (mode === 'workspace-write') && !descendant.files.outside.written && Object.values(descendant.existingOutsideFiles).every((value: any) => !value.allowed) && ['overwrite', 'append', 'rename', 'delete'].every(operation => readFileSync(join(outside, `${mode}-${operation}.txt`), 'utf8') === 'fixture-original'));
+    const descendant = frame ? JSON.parse(frame.slice('@@DSH_POC_GRANDCHILD@@'.length)) as DescendantProbe : undefined;
+    check(`${mode}: native descendant keeps restricted token, Low integrity, and Job`, child.exitCode === 0 && descendant !== undefined && descendant.token.restricted && descendant.token.integrity === 'S-1-16-4096' && descendant.token.inJob && !descendant.token.userSidInRestrictingList && !descendant.token.authenticatedUsersInRestrictingList && descendant.tokenUnchanged, descendant);
+    assert(descendant);
+    check(`${mode}: descendant workspace/temp policy and outside mutations`, descendant.files.workspace.written === (mode === 'workspace-write') && descendant.files.temp.written === (mode === 'workspace-write') && !descendant.files.outside.written && Object.values(descendant.existingOutsideFiles).every(value => !value.allowed) && ['overwrite', 'append', 'rename', 'delete'].every(operation => readFileSync(join(outside, `${mode}-${operation}.txt`), 'utf8') === 'fixture-original'));
     const policy = { mode, workspaceRoot: workspace, sessionId: `verify-${mode}` } as NonNullable<ShellExecRequest['sandboxPolicy']> & { mode: typeof mode };
     const confined = await ctx.sandbox.confine([process.execPath, join(payload, 'child.ts'), fixture, '--grandchild', '--mutate-fixtures'], policy);
     const baseline = ctx.subprocess.spawn({ argv: confined.argv, cwd: workspace, graceMs: 300, signal: AbortSignal.timeout(20_000),
@@ -399,7 +412,8 @@ try {
   const enteredPromise = new Promise<void>(resolve => { entered = resolve; });
   const releasePromise = new Promise<void>(resolve => { release = resolve; });
   const cancelPreparation = new AbortController();
-  const delayed = (ctx.shell as any).executeArgv(ctx.shell.resolve({ command: 'true', workdir: workspace, onExpiry: 'none', signal: cancelPreparation.signal,
+  const executor = ctx.shell as unknown as ExecutorInternals;
+  const delayed = executor.executeArgv(ctx.shell.resolve({ command: 'true', workdir: workspace, onExpiry: 'none', signal: cancelPreparation.signal,
     sandboxPolicy: { mode: 'read-only', workspaceRoot: workspace } }), async () => {
     entered();
     await releasePromise; // Deliberately model native preparation ignoring cancellation briefly.
@@ -413,7 +427,7 @@ try {
     await cancelled;
   } finally { release(); }
   await new Promise(resolve => setImmediate(resolve));
-  const preparing = (ctx.shell as any).preparing as Set<Promise<unknown>>;
+  const preparing = executor.preparing;
   while (preparing.size) await Promise.allSettled([...preparing]);
   check('aborted native preparation releases its agentless view', viewCount() === viewsBefore);
   // Move an idle mode tree into a separate synthetic Git installation. The
@@ -423,20 +437,20 @@ try {
   mkdirSync(join(alternativeRoot, 'cmd'));
   writeFileSync(join(alternativeRoot, 'cmd/git.exe'), 'discovery-only fixture; native Git is in its architecture directory', { flag: 'wx' });
   writeFileSync(join(alternativeRoot, 'usr/share/dsh-alternative-root.txt'), 'alternative-root-selected\n', { flag: 'wx' });
-  const originalConfig = (ctx.shell as any).config;
+  const originalConfig = executor.config;
   // This standalone composition has no Loader. Commit the validated reference
   // with the same native primitive the Loader uses for volatile-only edits.
   const { updateVolatile } = await installed.load(installed.cliRequire, '@deepseek-ai/cosmokit');
   const candidate = provider.resolveConfig({ ...provider.config, gitBashPath: join(alternativeRoot, 'usr/bin/bash.exe') }) as Record<string, unknown>;
-  updateVolatile((ctx.shell as any).config.gitBashPath, candidate.gitBashPath);
+  updateVolatile(executor.config.gitBashPath, candidate.gitBashPath);
   const alternative = await run('read-only', 'cat /usr/share/dsh-alternative-root.txt; git --version', { timeoutMs: 120_000 });
-  check('a nonstandard gitBashPath changes the executed source without replacing the executor', (ctx.shell as any).config === originalConfig && alternative.exitCode === 0
+  check('a nonstandard gitBashPath changes the executed source without replacing the executor', executor.config === originalConfig && alternative.exitCode === 0
     && alternative.stdout.text.startsWith('alternative-root-selected\n') && alternative.stdout.text.includes('git version'), alternative);
   const disposalProcess = await ctx.shell.execute(ctx.shell.resolve({ command: 'sleep 20', workdir: workspace, onExpiry: 'none',
     sandboxPolicy: { mode: 'workspace-write', workspaceRoot: workspace, sessionId: 'verify-workspace-write' } as NonNullable<ShellExecRequest['sandboxPolicy']> }));
   const stoppingEntered = new Promise<void>(resolve => { entered = resolve; });
   const stoppingRelease = new Promise<void>(resolve => { release = resolve; });
-  const stoppingCall = (ctx.shell as any).executeArgv(ctx.shell.resolve({ command: 'true', workdir: workspace, onExpiry: 'none', signal: AbortSignal.timeout(10_000),
+  const stoppingCall = executor.executeArgv(ctx.shell.resolve({ command: 'true', workdir: workspace, onExpiry: 'none', signal: AbortSignal.timeout(10_000),
     sandboxPolicy: { mode: 'read-only', workspaceRoot: workspace } }), async () => {
     entered(); await stoppingRelease; return ['bash', '-c', 'true'];
   }) as Promise<ShellExecution>;

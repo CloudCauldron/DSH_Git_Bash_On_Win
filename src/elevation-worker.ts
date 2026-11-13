@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { workerData } from 'node:worker_threads';
 import { setupCancellationFile } from './private-runtime.ts';
 import { nativeRuntime } from './native.ts';
+import type { NativePtr } from '@deepseek-ai/dsh-win32-process';
 
 const quote = (argument: string) => '"' + argument.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/, '$1$1') + '"';
 
@@ -23,7 +24,7 @@ async function requestElevation(): Promise<void> {
   const api = processModule.loadWin32ProcessBindings();
   const request = { cbSize: info.size, fMask: 0x140, hwnd: null, lpVerb: 'runas', lpFile: process.execPath,
     lpParameters: [fileURLToPath(new URL('./link-helper.js', import.meta.url)), source, generation, String(process.pid)].map(quote).join(' '),
-    lpDirectory: generation, nShow: 0, hInstApp: null, lpIDList: null, lpClass: null, hkeyClass: null, dwHotKey: 0, hIcon: null, hProcess: null };
+    lpDirectory: generation, nShow: 0, hInstApp: null, lpIDList: null, lpClass: null, hkeyClass: null, dwHotKey: 0, hIcon: null, hProcess: null as NativePtr | null };
   console.error('dsh-git-bash: Windows Administrator permission is needed solely to hardlink read-only Git files into the private runtime. Source ACLs are unchanged; DSH and shell commands do not run elevated.');
   const ole = ffi.load('ole32.dll');
   const initialize = ole.func('__stdcall', 'CoInitializeEx', 'int32', ['void *', 'uint32']);
@@ -34,14 +35,16 @@ async function requestElevation(): Promise<void> {
     if (cancelled()) throw new Error('Hardlink setup was cancelled before elevation.');
     if (!execute(request)) throw new Error(`Hardlink setup elevation was refused or failed (Windows ${api.getLastError()}); the command did not run.`);
   } finally { uninitialize(); }
+  const processHandle = request.hProcess;
+  if (!processHandle) throw new Error('Elevated hardlink setup returned no process handle.');
   try {
-    while (api.waitForSingleObject(request.hProcess, 0) === 258) await new Promise(resolve => setTimeout(resolve, 100));
+    while (api.waitForSingleObject(processHandle, 0) === 258) await new Promise(resolve => setTimeout(resolve, 100));
     if (cancelled()) throw new Error('Hardlink setup was cancelled; the helper has exited.');
     const resultPath = join(generation, 'setup-result.json');
     const result = JSON.parse(readFileSync(resultPath, 'utf8')) as { ok: boolean; message?: string };
     unlinkSync(resultPath);
     if (!result.ok) throw new Error(`Elevated hardlink setup failed: ${result.message}`);
-  } finally { api.closeHandle(request.hProcess); }
+  } finally { api.closeHandle(processHandle); }
 }
 
 await requestElevation();

@@ -18,7 +18,8 @@ try {
   const confined = mode !== 'danger-full-access';
   const graceMs = Number(grace);
   if (!Number.isFinite(graceMs) || graceMs <= 0 || graceMs > 2_147_483_647) throw new Error('Invalid DSH process grace period.');
-  const env = { ...process.env, ...runtimeEnvironment(runtime, process.env) };
+  const env = Object.fromEntries(Object.entries({ ...process.env, ...runtimeEnvironment(runtime, process.env) })
+    .filter((entry): entry is [string, string] => entry[1] !== undefined));
   for (const name of Object.keys(env)) if (name.toLowerCase() === 'path' && name !== 'PATH') delete env[name];
   const result = await debugPrivateBash(nativeRuntime, { privateRoot: root, bash: runtime.bash,
     cwd: process.cwd(), command: Buffer.from(encoded, 'base64').toString('utf8'), pipeSid, defaultDaclSid,

@@ -1,3 +1,4 @@
+import type { ProfileVerification } from './profile-driver.ts';
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -13,7 +14,7 @@ export function readProfileVerification(path: string, outcome: { status: number 
   if (outcome.status !== 0 || !present) {
     throw new Error(`Isolated DSH profile exited ${outcome.status}; ${present ? readFileSync(path, 'utf8') : 'missing verification.json'}.\n${outcome.stderr}\nLive checks require interactive UAC approval within the 120-second subprocess deadline.`);
   }
-  return JSON.parse(readFileSync(path, 'utf8'));
+  return JSON.parse(readFileSync(path, 'utf8')) as ProfileVerification;
 }
 
 export async function verifyProfile(installed: Runtime, root: string, workspace: string,
@@ -91,11 +92,11 @@ export async function verifyProfile(installed: Runtime, root: string, workspace:
     for (const row of reloaded.checks) check(`isolated profile restart: ${row.name}`, row.passed, row.detail);
     check('isolated profile: restart executes tools with the same cache generation and zero UAC', !restarted.stderr.includes('Administrator permission is needed')
       && JSON.stringify(cacheSnapshot()) === JSON.stringify(beforeRestart)
-      && (process.argv.includes('--structure-only') || reloaded.checks.some((row: any) => row.name === 'standard executes its Bash tool' && row.passed)), { beforeRestart, afterRestart: cacheSnapshot(), stderr: restarted.stderr });
+      && (process.argv.includes('--structure-only') || reloaded.checks.some((row) => row.name === 'standard executes its Bash tool' && row.passed)), { beforeRestart, afterRestart: cacheSnapshot(), stderr: restarted.stderr });
     const cleanupRun = await runProfile(true, true);
     const cleaned = readProfileVerification(join(profile, 'verification.json'), cleanupRun);
     check('isolated profile: documented override cleanup preserves shared Shell settings', cleanupRun.status === 0
-      && cleaned.checks?.some((row: any) => row.name === 'complete-removal step deletes only the plugin-specific path override' && row.passed), { ...cleanupRun, verification: cleaned });
+      && cleaned.checks?.some((row) => row.name === 'complete-removal step deletes only the plugin-specific path override' && row.passed), { ...cleanupRun, verification: cleaned });
     const removed = spawnSync(process.execPath, [join(repository, 'scripts/plugin.ts'), pnpm, 'gitbash-test', 'remove', 'dsh-git-bash-on-win',
       '--ignore-scripts', '--store-dir', join(root, 'profile-store'), '--state-dir', join(root, 'profile-state')], { encoding: 'utf8', timeout: 120_000, maxBuffer: 4_000_000 });
     const finalConfig = spawnSync(process.execPath, [cli, '--profile', 'gitbash-test', '--dump-config'], { encoding: 'utf8', timeout: 30_000, maxBuffer: 4_000_000 });

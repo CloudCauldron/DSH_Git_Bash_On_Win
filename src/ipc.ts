@@ -3,10 +3,14 @@ import { relative, resolve, win32 } from 'node:path';
 import type { createRequire } from 'node:module';
 import { contains } from './private-runtime.ts';
 
+interface NativeModules {
+  '@deepseek-ai/dsh-win32-process': typeof import('@deepseek-ai/dsh-win32-process');
+  '@deepseek-ai/dsh-subprocess': typeof import('@deepseek-ai/dsh-subprocess');
+}
 export interface NativeRuntime {
   aclRequire: ReturnType<typeof createRequire>;
   baseRequire: ReturnType<typeof createRequire>;
-  load(require: ReturnType<typeof createRequire>, name: string): Promise<any>;
+  load<Name extends keyof NativeModules>(require: ReturnType<typeof createRequire>, name: Name): Promise<NativeModules[Name]>;
 }
 
 type Ptr = bigint | null;
@@ -35,7 +39,7 @@ export interface ProbeOptions {
   repairMappings?: boolean;
   followFamily?: boolean;
   inheritStdio?: boolean;
-  env?: Record<string, string | undefined>;
+  env?: Readonly<Record<string, string>>;
   timeoutMs?: number;
   graceMs?: number;
 }
@@ -73,7 +77,9 @@ export async function debugPrivateBash(runtime: NativeRuntime, options: ProbeOpt
   if (options.defaultDaclSid && !/^S-1-(?:4|5-5)-\d+(?:-\d+)*$/.test(options.defaultDaclSid)) throw new Error('Expected the inherited default-DACL capability.');
   const ffi = runtime.aclRequire('koffi') as Ffi;
   const processModule = await runtime.load(runtime.aclRequire, '@deepseek-ai/dsh-win32-process');
-  const api = processModule.extendWin32ProcessBindings(({ kernel32, advapi32, bind }: BindContext) => ({
+  const nativeApi = processModule.extendWin32ProcessBindings(({ kernel32, advapi32, bind: rawBind }) => {
+    const bind = rawBind as BindContext['bind'];
+    return {
     currentProcess: bind(kernel32, 'GetCurrentProcess', 'void *', []),
     waitDebug: bind(kernel32, 'WaitForDebugEvent', 'int', ['void *', 'uint32']),
     continueDebug: bind(kernel32, 'ContinueDebugEvent', 'int', ['uint32', 'uint32', 'uint32']),
@@ -95,7 +101,9 @@ export async function debugPrivateBash(runtime: NativeRuntime, options: ProbeOpt
     duplicateHandle: bind(kernel32, 'DuplicateHandle', 'int', ['void *', 'void *', 'void *', 'void *', 'uint32', 'int', 'uint32']),
     queryObject: bind(ffi.load('ntdll.dll'), 'NtQueryObject', 'int32', ['void *', 'int', 'void *', 'uint32', 'void *']),
     processInformation: bind(ffi.load('ntdll.dll'), 'NtQueryInformationProcess', 'int32', ['void *', 'int', 'void *', 'uint32', 'void *']),
-  })) as Record<string, Fn>;
+    };
+  });
+  const api = nativeApi as unknown as Record<string, Fn>;
   const call = (name: string, ...args: unknown[]) => api[name]!(...args);
   const pointer = (buffer: Buffer, offset = 0) => ffi.decode(buffer, offset, 'void *') as Ptr;
   const valid = (p: Ptr) => p !== null && p !== 0n && BigInt.asUintN(64, p) !== 0xffffffffffffffffn;
@@ -532,11 +540,11 @@ export async function debugPrivateBash(runtime: NativeRuntime, options: ProbeOpt
       checked('createPipe', read, write, null, 65_536);
       readEnds.push(pointer(read)); writeEnds.push(pointer(write));
     }
-    const originalCreate = api.createProcessW!;
-    const originalFd = api.uvGetOsfhandle!;
-    const controlled = { ...api,
-      createProcessW: (...args: unknown[]) => { args[5] = Number(args[5]) | (options.followFamily ? 1 : 3); return originalCreate(...args); },
-      uvGetOsfhandle: (fd: number) => !options.inheritStdio && fd === 1 ? writeEnds[0] : !options.inheritStdio && fd === 2 ? writeEnds[1] : originalFd(fd),
+    const originalCreate = nativeApi.createProcessW;
+    const originalFd = nativeApi.uvGetOsfhandle;
+    const controlled = { ...nativeApi,
+      createProcessW: (...args: Parameters<typeof originalCreate>) => { args[5] = Number(args[5]) | (options.followFamily ? 1 : 3); return originalCreate(...args); },
+      uvGetOsfhandle: (fd: number) => (!options.inheritStdio && fd === 1 ? writeEnds[0] : !options.inheritStdio && fd === 2 ? writeEnds[1] : originalFd(fd)) as ReturnType<typeof originalFd>,
     };
     const { scrubbedParentEnv } = await runtime.load(runtime.baseRequire, '@deepseek-ai/dsh-subprocess');
     const child = processModule.spawnCurrentTokenJobProcess(controlled, { command: path, applicationName: path,

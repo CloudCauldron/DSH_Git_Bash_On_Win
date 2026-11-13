@@ -3,9 +3,10 @@ import { pathToFileURL } from 'node:url';
 import { tmpdir } from 'node:os';
 import { tempWriteSid } from '@deepseek-ai/dsh-sandbox-windows-acl';
 import { extendWin32ProcessBindings } from '@deepseek-ai/dsh-win32-process';
+import type { NativeRuntime } from './ipc.ts';
 
 const aclRequire = createRequire(import.meta.resolve('@deepseek-ai/dsh-sandbox-windows-acl'));
-export const nativeRuntime = {
+export const nativeRuntime: NativeRuntime = {
   aclRequire,
   baseRequire: createRequire(import.meta.url),
   load: (require: NodeJS.Require, name: string) => import(pathToFileURL(require.resolve(name)).href),

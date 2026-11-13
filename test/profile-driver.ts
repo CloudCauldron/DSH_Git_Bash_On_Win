@@ -1,20 +1,38 @@
+import type { Context } from '@deepseek-ai/cordis';
+import type { Entry } from '@deepseek-ai/cordis-plugin-loader';
+import type GitBashExecutor from '../src/index.ts';
+import type { SandboxBashExecutor } from '@deepseek-ai/dsh-bash-sandbox';
 import { randomUUID } from 'node:crypto';
 import { createHash } from 'node:crypto';
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
+type DriverContext = Omit<Context, 'shell'> & {
+  shell: GitBashExecutor;
+  profileContext: { dir: string; cwd: string; patchPath: string };
+  appReady: { onReady(callback: () => void): () => void };
+  appExit(code: number): void;
+  configEditor: { edit(entry: Entry, update: (config: Record<string, unknown>) => Record<string, unknown>): Promise<void> };
+  tools: {
+    get(name: string, agent: unknown): unknown;
+    execute(request: { agent: unknown; signal: AbortSignal; calls: Array<{ type: 'tool-call'; id: string; name: string; arguments: string }> }): Promise<{ results: Array<{ result: { isError: boolean } }> }>;
+  };
+  on(event: 'approval/request', callback: (request: { agent: { id: string } }, next: () => unknown) => unknown, options: { prepend: boolean; global: boolean }): () => void;
+};
+export type ProfileVerification = Awaited<ReturnType<typeof verify>> & { error?: string };
+
 export const inject = ['appReady', 'appExit', 'shell', 'agentPresets', 'agents', 'tools', 'profileContext', 'configEditor'];
 const progress = (stage: string, detail?: unknown) => writeFileSync(join(process.env.DSH_HOME!, 'driver-progress.json'), JSON.stringify({ stage, detail }));
 progress('imported');
 
 // Loaded ONLY in the disposable test profile by the real DSH CLI.
-export function apply(ctx: any, config: { execute?: boolean } = {}): void {
+export function apply(ctx: DriverContext, config: { execute?: boolean } = {}): void {
   progress('applied', config);
   ctx.effect(() => ctx.appReady.onReady(() => {
     void verify(ctx, config.execute !== false && process.env.DSH_GITBASH_VERIFY_CLEANUP !== '1').then(report => {
       writeFileSync(join(ctx.profileContext.dir, 'verification.json'), JSON.stringify(report, null, 2));
-      ctx.appExit(report.checks.every((check: any) => check.passed) ? 0 : 1);
+      ctx.appExit(report.checks.every((check) => check.passed) ? 0 : 1);
     }, error => {
       writeFileSync(join(ctx.profileContext.dir, 'verification.json'), JSON.stringify({ error: String(error), stack: error?.stack, checks: error?.checks, runs: error?.runs }));
       ctx.appExit(1);
@@ -22,7 +40,7 @@ export function apply(ctx: any, config: { execute?: boolean } = {}): void {
   }));
 }
 
-async function verify(ctx: any, execute: boolean) {
+async function verify(ctx: DriverContext, execute: boolean) {
   progress('ready', { execute });
   const startupPatchHash = createHash('sha256').update(readFileSync(ctx.profileContext.patchPath)).digest('hex');
   const checks: Array<{ name: string; passed: boolean; detail?: unknown }> = [];
@@ -32,19 +50,23 @@ async function verify(ctx: any, execute: boolean) {
     progress(name, { passed });
     if (!passed) throw Object.assign(new Error(`${name}: ${JSON.stringify(detail)}`), { checks, runs });
   };
-  const entry = [...ctx.loader.entries()].find((row: any) => row.options.id === 'pwsh-sandbox') as any;
+  const entry = [...ctx.loader.entries()].find((row) => row.options.id === 'pwsh-sandbox');
   check('native pwsh-sandbox ID owns Git Bash executor', entry?.options.name === '@deepseek-ai/dsh-pwsh-sandbox' && entry.fiber?.runtime?.callback.name === 'GitBashExecutor', { module: entry?.options.name, provider: entry?.fiber?.runtime?.callback.name });
-  const Native = Object.getPrototypeOf(entry.fiber.runtime.callback);
-  const schema = entry.fiber.runtime.Config;
-  const fields = Object.keys(Native.Config.dict);
+  assert(entry?.fiber?.runtime, 'Git Bash provider is active');
+  const fiber = entry.fiber;
+  const Native = Object.getPrototypeOf(entry.fiber.runtime.callback) as typeof SandboxBashExecutor;
+  const schema = entry.fiber.runtime.Config as typeof GitBashExecutor.Config;
+  const nativeFields = Native.Config.dict, fieldsSchema = schema.dict;
+  assert(nativeFields && fieldsSchema?.gitBashPath, 'Native shell and Git Bash schemas are objects');
+  const fields = Object.keys(nativeFields);
   check('all native schema fields are reused without alteration', fields.length > 0
-    && fields.every(field => schema.dict[field] === Native.Config.dict[field])
-    && Object.keys(schema.dict).length === fields.length + 1 && schema.dict.gitBashPath.meta.volatile === true);
+    && fields.every(field => fieldsSchema[field] === nativeFields[field])
+    && Object.keys(fieldsSchema).length === fields.length + 1 && fieldsSchema.gitBashPath.meta.volatile === true);
   const settings = { cwd: join(ctx.profileContext.cwd, '設定 目錄'), timeoutMs: 9876, maxTimeoutMs: 180_000,
     maxOutputBytes: 2345, maxSpillBytes: 4096, graceMs: 250, gitBashPath: 'C:/Program Files/Git/usr/bin/bash.exe' };
   mkdirSync(settings.cwd, { recursive: true });
   if (process.env.DSH_GITBASH_VERIFY_RESTART !== '1') {
-    const shell = ctx.shell, fiber = entry.fiber;
+    const shell = ctx.shell;
     const patchBefore = readFileSync(ctx.profileContext.patchPath, 'utf8');
     for (const [field, value] of Object.entries(settings)) {
       await assert.rejects(ctx.configEditor.edit(entry, (current: Record<string, unknown>) => ({ ...current, [field]: typeof value === 'number' ? 'invalid-number' : 42 })));
@@ -53,10 +75,10 @@ async function verify(ctx: any, execute: boolean) {
       { patchUnchanged: readFileSync(ctx.profileContext.patchPath, 'utf8') === patchBefore, fiberUnchanged: entry.fiber === fiber, configUnchanged: ctx.shell.config === shell.config });
     for (const [field, value] of Object.entries(settings)) {
       await ctx.configEditor.edit(entry, (current: Record<string, unknown>) => ({ ...current, [field]: value }));
-      check(`${field} hot-reloads through native ConfigEditor without replacing the executor`, ctx.shell.config === shell.config && entry.fiber === fiber && ctx.shell.config[field].get() === value);
+      check(`${field} hot-reloads through native ConfigEditor without replacing the executor`, ctx.shell.config === shell.config && entry.fiber === fiber && ctx.shell.config[field as keyof typeof settings].get() === value);
     }
   }
-  check('all settings are active, including after a fresh profile boot', Object.entries(settings).every(([field, value]) => ctx.shell.config[field].get() === value));
+  check('all settings are active, including after a fresh profile boot', Object.entries(settings).every(([field, value]) => ctx.shell.config[field as keyof typeof settings].get() === value));
   const resolved = ctx.shell.resolve({ command: 'true' });
   check('native defaulting and per-call overrides are preserved', resolved.workdir === settings.cwd && resolved.timeoutMs === settings.timeoutMs
     && resolved.stdoutMaxBytes === settings.maxOutputBytes && ctx.shell.resolve({ command: 'true', timeoutMs: 500_000 }).timeoutMs === settings.maxTimeoutMs
@@ -64,7 +86,7 @@ async function verify(ctx: any, execute: boolean) {
     && ctx.shell.resolve({ command: 'true', stdoutMaxBytes: 123 }).stdoutMaxBytes === 123);
   for (const field of fields.filter(field => field !== 'cwd')) {
     for (const value of [0, -1, Infinity, NaN, ...field === 'graceMs' ? [2_147_483_648] : []]) {
-      assert.throws(() => Native.prototype.resolve.call({ ctx, config: entry.fiber.resolveConfig({ ...entry.options.config, [field]: value }) }, { command: 'true' }), new RegExp(field));
+      assert.throws(() => Native.prototype.resolve.call({ ctx, config: fiber.resolveConfig({ ...entry.options.config, [field]: value }) }, { command: 'true' }), new RegExp(field));
     }
   }
   check('unserviceable numeric settings retain native next-command rejection', true);
@@ -84,16 +106,17 @@ async function verify(ctx: any, execute: boolean) {
     check(`${preset} mounts successfully`, resolved.broken === undefined, resolved);
     const document = await ctx.agentPresets.readDocument(preset);
     check(`${preset} declares native Bash tool`, document.content.includes('@deepseek-ai/dsh-tool-bash') && !document.content.includes('@deepseek-ai/dsh-tool-pwsh'));
-    const handle = await ctx.agents.create({ sessionId: `gitbash-${randomUUID()}`, meta: { cwd: ctx.profileContext.cwd, agentPreset: preset },
-      setup: async (agentCtx: any) => { await ctx.agentPresets.mount(agentCtx, preset); } });
+    const handle = await ctx.agents.create({ sessionId: `gitbash-${randomUUID()}` as Parameters<Context['agents']['create']>[0]['sessionId'], meta: { cwd: ctx.profileContext.cwd, agentPreset: preset },
+      setup: async (agentCtx) => { await ctx.agentPresets.mount(agentCtx, preset); } });
     try {
       check(`${preset} mounts the Bash capability in its agent scope`, ctx.tools.get('bash', handle.agent) !== undefined && ctx.tools.get('pwsh', handle.agent) === undefined);
       if (preset === 'standard') {
         const canary = join(dirname(ctx.profileContext.cwd), 'outside/approval-must-not-run.txt');
         let requests = 0;
-        handle.agent.session.append('approval/policy', { policy: 'ask' });
+        const session = handle.agent.session as unknown as { append(type: string, data: unknown): void };
+        session.append('approval/policy', { policy: 'ask' });
         handle.agent.session.append('turn/start', { turn: 1 });
-        const stop = ctx.on('approval/request', (request: any, next: () => unknown) => {
+        const stop = ctx.on('approval/request', (request, next) => {
           if (request.agent.id !== handle.agent.id) return next();
           requests++;
           return 'rejected';
@@ -111,7 +134,7 @@ async function verify(ctx: any, execute: boolean) {
       if (!execute) continue;
       const marker = `${preset}-${randomUUID()}`;
       const args = { description: 'Verify isolated preset Git Bash', command: `printf '%s\\n' '${Buffer.from(marker).toString('base64')}' | base64 -d; printf '\\n'; cygpath -w /`, workdir: ctx.profileContext.cwd, timeoutMs: 60_000 };
-      const call = preset === 'ptc'
+      const call: Parameters<DriverContext['tools']['execute']>[0]['calls'][number] = preset === 'ptc'
         ? { type: 'tool-call', id: `test-${preset}`, name: 'run_code', arguments: JSON.stringify({ description: 'Verify native PTC Bash', code: `console.log(await tools.bash(${JSON.stringify(args)}))` }) }
         : { type: 'tool-call', id: `test-${preset}`, name: 'bash', arguments: JSON.stringify(args) };
       const result = await ctx.tools.execute({ agent: handle.agent, calls: [call], signal: AbortSignal.timeout(90_000) });
@@ -121,7 +144,7 @@ async function verify(ctx: any, execute: boolean) {
       check(`${preset} uses profile-scoped runtime storage`, JSON.stringify(result).includes('.git-bash-on-win'), result);
     } finally { await handle.dispose(); }
   }
-  const rows = [...ctx.loader.entries()].map((row: any) => ({ id: row.options.id, name: row.options.name, state: row.fiber?.state }));
+  const rows = [...ctx.loader.entries()].map((row) => ({ id: row.options.id, name: row.options.name, state: row.fiber?.state }));
   check('cleanup plugin coexists', rows.some(row => row.name === 'dsh-session-deletion' && row.state === ctx.fiber.state), rows.filter(row => row.name.includes('dsh-session-deletion')));
   if (process.env.DSH_GITBASH_VERIFY_CLEANUP === '1') {
     const before = { ...entry.options.config };

@@ -13,7 +13,7 @@ import { elevateLinks } from '../lib/elevation.js';
 import { RuntimeDirectory, linkRuntimeFiles, purgeRuntime, setupCancellationFile } from '../src/private-runtime.ts';
 import { createTestScope } from '../poc/scope.ts';
 
-test('setup cancellation is signalled while the worker is blocked and waits for worker exit', async () => {
+void test('setup cancellation is signalled while the worker is blocked and waits for worker exit', async () => {
   const scope = createTestScope('dsh-gitbash-elevation-');
   const previous = workerThreads.Worker;
   let worker: EventEmitter | undefined, pending: Promise<unknown> | undefined, created = 0;
@@ -49,7 +49,7 @@ test('setup cancellation is signalled while the worker is blocked and waits for 
   }
 });
 
-test('a cancelled fixed helper removes staging without creating source links', () => {
+void test('a cancelled fixed helper removes staging without creating source links', () => {
   const scope = createTestScope('dsh-gitbash-helper-cancel-');
   try {
     const source = join(scope.root, 'source'), generation = join(scope.root, randomUUID(), randomUUID());
@@ -65,7 +65,7 @@ test('a cancelled fixed helper removes staging without creating source links', (
   } finally { scope.dispose(); }
 });
 
-test('cancellation after elevated linking cannot publish a generation', async () => {
+void test('cancellation after elevated linking cannot publish a generation', async () => {
   const scope = createTestScope('dsh-gitbash-publish-cancel-');
   const link = fs.promises.link;
   let manager: RuntimeDirectory | undefined;

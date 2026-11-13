@@ -75,6 +75,7 @@ export function ipcSids(mode: string): { pipeSid: string; defaultDaclSid: string
     if (mode === 'workspace-write' && capabilities.includes(temp)) return { pipeSid: temp, defaultDaclSid: temp };
     throw new Error('The inherited DSH mode or private-temp capability is incompatible; the command did not run.');
   } finally {
+    // eslint-disable-next-line no-unsafe-finally -- A failed native handle close must prevent execution, even after a validation error.
     if (!api.closeHandle(token)) throw new Error(`CloseHandle(token): ${api.getLastError()}`);
   }
 }

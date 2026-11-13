@@ -10,10 +10,13 @@ Run in **native Windows Git Bash**, from this repository:
 
 ```bash
 pnpm install --ignore-scripts
+pnpm lint
 pnpm check
 pnpm build
 pnpm test:windows
 ```
+
+ESLint checks source, tests, and scripts with the recommended JavaScript/TypeScript rules and type-aware promise checks. It follows `.gitignore`, adds no formatting rules, and allows explicit `any` at native/dynamic API boundaries. The TypeScript 7 compiler remains available as `tsc` through the `@typescript/native` alias; the `typescript` alias supplies the TypeScript 6 compatibility API required by typescript-eslint, following [Microsoft's side-by-side guidance](https://devblogs.microsoft.com/typescript/announcing-typescript-7-0/#running-side-by-side-with-typescript-60).
 
 The Windows tests provision runtime hardlinks directly from the installed Git into a disposable temporary tree. They also create synthetic, user-owned files for replacement/refresh tests; they do not replace installed Git binaries. Profile/install checks pack the current build into the temporary scope. The isolated DSH home, profile, workspace, runtime directories, and test files are removed at completion. Reports are written under `test/results/`.
 

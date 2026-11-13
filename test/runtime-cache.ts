@@ -20,7 +20,7 @@ function fixture() {
   return { scope, source, workspace, cache };
 }
 
-test('a fresh Windows process reuses the persistent, verified generation without setup', { timeout: 15_000 }, async () => {
+void test('a fresh Windows process reuses the persistent, verified generation without setup', { timeout: 15_000 }, async () => {
   const { scope, source, workspace, cache } = fixture();
   let manager = new RuntimeDirectory(cache, source, workspace);
   try {
@@ -90,7 +90,7 @@ test('a fresh Windows process reuses the persistent, verified generation without
   }
 });
 
-test('workspace roots cannot overlap the cache or Git source in either direction', async () => {
+void test('workspace roots cannot overlap the cache or Git source in either direction', async () => {
   const { scope, source, workspace, cache } = fixture();
   const manager = new RuntimeDirectory(cache, source, workspace);
   try {
@@ -107,7 +107,7 @@ test('workspace roots cannot overlap the cache or Git source in either direction
   }
 });
 
-test('source traversal rejects junctions in otherwise skipped intermediate directories', async () => {
+void test('source traversal rejects junctions in otherwise skipped intermediate directories', async () => {
   const { scope, source, workspace, cache } = fixture();
   const manager = new RuntimeDirectory(cache, source, workspace);
   try {
@@ -127,7 +127,7 @@ test('source traversal rejects junctions in otherwise skipped intermediate direc
   }
 });
 
-test('failed generation collection does not acquire an unreachable execution lease', async () => {
+void test('failed generation collection does not acquire an unreachable execution lease', async () => {
   const { scope, source, workspace, cache } = fixture();
   const manager = new RuntimeDirectory(cache, source, workspace);
   const unexpected = join(cache, 'generations/unexpected');
@@ -146,7 +146,7 @@ test('failed generation collection does not acquire an unreachable execution lea
   }
 });
 
-test('concurrent owners share setup and retain superseded generations until the last lease ends', { timeout: 15_000 }, async () => {
+void test('concurrent owners share setup and retain superseded generations until the last lease ends', { timeout: 15_000 }, async () => {
   const { scope, source, workspace, cache } = fixture();
   const first = new RuntimeDirectory(cache, source, workspace), second = new RuntimeDirectory(cache, source, workspace);
   let child: ReturnType<typeof spawn> | undefined;

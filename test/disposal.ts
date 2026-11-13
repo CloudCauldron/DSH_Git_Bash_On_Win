@@ -9,7 +9,7 @@ import GitBashExecutor, { type Config } from '../lib/index.js';
 import { createContext, loadRuntime } from '../poc/runtime.ts';
 import { createTestScope } from '../poc/scope.ts';
 
-test('a throwing kill does not skip other executions or dispose runtime before all joins', { timeout: 5_000 }, async () => {
+void test('a throwing kill does not skip other executions or dispose runtime before all joins', { timeout: 5_000 }, async () => {
   const installed = await loadRuntime();
   const scope = createTestScope('dsh-gitbash-disposal-');
   const deferred = () => {

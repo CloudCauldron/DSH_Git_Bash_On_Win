@@ -170,7 +170,10 @@ export async function createNativeDiagnostics(runtime: Runtime) {
     if (!api.descriptor(sddl, 1, output, null)) throw new Error(`ConvertStringSecurityDescriptor: ${api.getLastError()}`);
     const sd = ptr(output);
     try { return fn(sd); }
-    finally { if (api.localFree(sd) !== null) throw new Error('LocalFree security descriptor failed.'); }
+    finally {
+      // eslint-disable-next-line no-unsafe-finally -- Cleanup failure must fail the probe, even if its callback also failed.
+      if (api.localFree(sd) !== null) throw new Error('LocalFree security descriptor failed.');
+    }
   }
 
   function privateSddl(t: Token, extraSid?: string, low = false) {

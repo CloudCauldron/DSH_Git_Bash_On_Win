@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import GitBashExecutor from '../lib/index.js';
 
 for (const kind of ['cancel', 'deadline'] as const) {
-  test(`${kind} after prepared argv releases the lease and view without spawning`, async context => {
+  void test(`${kind} after prepared argv releases the lease and view without spawning`, async context => {
     const cancellation = new AbortController();
     const counts = { acquired: 0, viewReleased: 0, leaseReleased: 0, spawned: 0 };
     const executor = Object.create(GitBashExecutor.prototype);

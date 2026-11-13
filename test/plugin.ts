@@ -73,7 +73,7 @@ try {
   for (const name of peers) {
     let manifest: string | undefined;
     for (const require of [installed.baseRequire, installed.cliRequire, installed.aclRequire, webRequire]) {
-      try { manifest = require.resolve(`${name}/package.json`); break; } catch {}
+      try { manifest = require.resolve(`${name}/package.json`); break; } catch { /* Try the next installed DSH resolver. */ }
     }
     if (!manifest) throw new Error(`Cannot resolve the installed DSH peer ${name}`);
     symlinkSync(dirname(realpathSync(manifest)), join(pluginDir, 'node_modules', name), 'junction');

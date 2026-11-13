@@ -559,7 +559,7 @@ export async function debugPrivateBash(runtime: NativeRuntime, options: ProbeOpt
   finally {
     if (!exited && valid(job)) {
       call('terminateJobObject', job, 1);
-      if (pending) { call('continueDebug', pending.pid, pending.tid, 0x00010002); pending = undefined; }
+      if (pending) call('continueDebug', pending.pid, pending.tid, 0x00010002);
       const until = performance.now() + 3_000;
       while (!exited && performance.now() < until) { try { eventOnce(100, true); } catch { break; } }
     }

@@ -1,0 +1,9 @@
+
+tmp/
+node_modules/
+poc/results/
+lib/
+artifacts/
+test/results/
+.runtime/
+.git-bash-on-win/

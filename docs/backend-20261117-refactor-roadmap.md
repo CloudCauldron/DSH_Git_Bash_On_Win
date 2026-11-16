@@ -6,7 +6,7 @@ Revised: 2026-11-17
 
 Baseline: 6c410c5a2496c30c9883fe471b38d9920c5c2675
 
-Status: Phase 0 approved contract baseline recorded; local archive preparation complete; Phases 1–6 implementation and maintained runtime verification pending.
+Status: Phase 0 approved contract baseline and Phase 1 bootstrap complete; Phases 2–6 implementation and maintained runtime verification pending.
 
 The versioned specification is [docs/backend-20261117-refactor-roadmap.md](../docs/backend-20261117-refactor-roadmap.md), promoted from the local planning roadmap on 2026-11-17. The [Phase 0 review checklist](../docs/backend-20261117-contract-baseline.md) records the implementation gates and verification handoff.
 
@@ -512,6 +512,14 @@ Record the approved ownership, publication, shutdown, strict purge, crash/late-s
 ### Phase 1 — Bootstrap and test entry points
 
 Verify restored build/docs/dependencies/test scripts, DSH module/config identity, public dependencies (including atomic-write) and transitive archive/temporary-input exclusion. Isolate profile, workspace, caches and source copies where needed; workspace must not contain source/cache paths. Mutate only plugin-scoped fixture artifacts.
+
+Phase 1 completed on 2026-11-17:
+
+- Restored maintained TypeScript, ESLint, bundle, dependency/lockfile and README inputs. Production builds clean `lib/` and compile only `src/`; tooling/tests participate in typecheck and lint.
+- Reviewed and migrated the narrow adapter/preset/tool seams, retained the native executor schema and extracted installed-CLI discovery into `scripts/installed-dsh.ts`. The plugin-manager wrapper uses the selected CLI's public operations and requires successful cache purge before removal.
+- Added `test/bootstrap.test.ts` and small ordinary-file fixtures. Six tests passed with zero skips under Windows-native Git Bash, Windows x64 Node 26.12.1, pnpm 12.18.0 and installed DSH 0.2.2-rc.2. Coverage includes volatile schema identity, real Loader replacement/restoration without persisted configuration changes, public pinned dependencies/atomic writing, CLI resolution without a profile, transitive compiler graphs, lint exclusions, clean output/public exports and package inclusion.
+- `pnpm install --ignore-scripts --frozen-lockfile`, `pnpm check`, `pnpm lint` and `pnpm test:windows` passed. Package inclusion was inspected through `pnpm --ignore-scripts pack --dry-run --json`; no plugin installation or release tarball was produced.
+- Execution, rebuilding and cleanup deliberately reject until their implementation phases. `prepack` rejects release packaging. Runtime/cache/native-sharing/UAC/debugger and complete-uninstall correctness remain unverified; the Phase 1 wiring tests are not substitutes for later maintained runtime tests. Runtime/setup/debugger modules will be introduced with their implementations rather than empty scaffolds.
 
 ### Phase 2 — Source operations, ownership and native holds
 

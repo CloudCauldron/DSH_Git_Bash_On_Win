@@ -1,0 +1,15 @@
+# Gate native rows while the adapter mounts replacement providers in their
+# entry contexts. Preserve names for native name-qualified settings patches.
+- id: pwsh-sandbox
+  inject: { gitBashAdapter: null }
+- id: tool-pwsh
+  inject: { gitBashAdapter: null }
+- id: preset-standard
+  inject: { gitBashAdapter: null }
+- id: preset-ptc
+  inject: { gitBashAdapter: null }
+- id: preset-cordis
+  inject: { gitBashAdapter: null }
+- insert:
+    - id: git-bash-adapter
+      name: dsh-git-bash-on-win/adapter

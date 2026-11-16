@@ -5,9 +5,10 @@ import tseslint from 'typescript-eslint';
 
 export default defineConfig(
   includeIgnoreFile(resolve(import.meta.dirname, '.gitignore')),
+  { ignores: ['.deprecated/**', 'tmp/**', 'poc/**', 'lib/**', 'artifacts/**'] },
   { files: ['eslint.config.mjs'], extends: [js.configs.recommended] },
   {
-    files: ['{src,test,poc,scripts}/**/*.ts'],
+    files: ['{src,test,scripts}/**/*.ts'],
     extends: [js.configs.recommended, tseslint.configs.recommended],
     languageOptions: {
       parserOptions: { projectService: true, tsconfigRootDir: import.meta.dirname },
@@ -19,10 +20,5 @@ export default defineConfig(
       '@typescript-eslint/no-floating-promises': 'error',
       '@typescript-eslint/no-misused-promises': 'error',
     },
-  },
-  {
-    files: ['test/**/*.ts'],
-    // Test doubles capture their instances for lifecycle assertions.
-    rules: { '@typescript-eslint/no-this-alias': 'off' },
   },
 );

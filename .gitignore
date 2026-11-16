@@ -1,9 +1,9 @@
-
 tmp/
 node_modules/
 poc/results/
 lib/
 artifacts/
 test/results/
+.deprecated
 .runtime/
 .git-bash-on-win/

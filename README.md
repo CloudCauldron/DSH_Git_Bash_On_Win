@@ -3,7 +3,8 @@
 Backend refactor for native Windows x64, Node 26+ and DSH **0.2.2-rc.2**.
 **Phase 1 restores development inputs only. Runtime preparation, execution and
 strict cache purge are not implemented yet. Do not install or publish this tree.**
-The executor and cleanup entry fail explicitly; `prepack` blocks release packaging.
+Execution, cleanup and package-manager entries fail explicitly; `prepack` blocks
+release packaging.
 
 The approved [roadmap](docs/backend-20261117-refactor-roadmap.md),
 [contract baseline](docs/backend-20261117-contract-baseline.md) and
@@ -37,9 +38,11 @@ Those suites will be added with their modules in Phases 2–6.
 `scripts/installed-dsh.ts` discovers the installed CLI without loading a profile.
 If discovery is ambiguous, set `DSH_PACKAGE_JSON` for the current process to the
 absolute installed `@deepseek-ai/dsh/package.json`. The selected CLI must match
-the pinned release. `scripts/plugin.ts` wraps its official plugin-manager
-operation with an absolute pnpm executable; it changes no global PATH.
-Removal cannot proceed while the shared strict purge remains unimplemented.
+the pinned release. Only an absent CLI skips the installed-CLI test; ambiguous,
+invalid or broken installations fail validation. `scripts/plugin.ts` currently
+rejects every package operation before loading a profile or starting pnpm. Its
+official DSH delegation will be enabled with maintained installation and strict
+purge; no pnpm argument parser or provisional cleanup API is needed in Phase 1.
 
 Production package inputs are limited to `lib/`, `cordis.patch.yml`, `README.md`
 and the manifest. For an inclusion audit only, `pnpm --ignore-scripts pack

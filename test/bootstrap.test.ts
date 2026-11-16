@@ -18,8 +18,7 @@ import GitBashExecutor, { type Config } from '../src/index.ts';
 import * as Adapter from '../src/adapter.ts';
 import GitBashPreset from '../src/preset.ts';
 import * as BashTool from '../src/tool.ts';
-import { purgeRuntimeCaches } from '../src/cleanup.ts';
-import { installedDsh, SUPPORTED_DSH } from '../scripts/installed-dsh.ts';
+import { findInstalledDshManifest, installedDsh, SUPPORTED_DSH } from '../scripts/installed-dsh.ts';
 import { temporaryDirectory } from './fixtures.ts';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -121,20 +120,21 @@ await test('public pinned dependencies resolve and atomic-write is usable', asyn
 });
 
 await test('installed CLI resolution needs no personal profile', { skip: !nativeWindows && 'Requires native Windows x64.' }, async t => {
-  let runtime: ReturnType<typeof installedDsh>;
-  try { runtime = installedDsh(); }
-  catch (error) {
-    // Explicitly selected invalid installations are failures, not missing prerequisites.
-    if (process.env.DSH_PACKAGE_JSON) throw error;
-    t.skip(`Installed CLI prerequisite unavailable: ${String(error)}`);
+  const manifest = findInstalledDshManifest();
+  if (manifest === undefined) {
+    t.skip('No installed DSH found; set DSH_PACKAGE_JSON to run this check.');
     return;
   }
+  const runtime = installedDsh(manifest);
   assert.equal(runtime.version, SUPPORTED_DSH);
   const app = await runtime.load(runtime.cliRequire, '@deepseek-ai/dsh-app-boot') as { resolveProfileDir: unknown };
   const manager = await runtime.load(runtime.cliRequire, '@deepseek-ai/dsh-plugin-manager/operations') as { runPluginCommand: unknown };
   assert.equal(typeof app.resolveProfileDir, 'function');
   assert.equal(typeof manager.runPluginCommand, 'function');
   assert.ok(runtime.baseRequire.resolve('@deepseek-ai/dsh-subprocess-local'));
+});
+
+await test('CLI identity validation rejects invalid selections without an installed DSH', { skip: !nativeWindows && 'Requires native Windows x64.' }, async t => {
   const invalid = join(await temporaryDirectory(t), 'package.json');
   await writeFile(invalid, JSON.stringify({ name: '@deepseek-ai/dsh', version: '0.0.0' }));
   assert.throws(() => installedDsh(invalid), /Expected @deepseek-ai\/dsh/);
@@ -192,11 +192,21 @@ await test('bootstrap execution, purge and release packaging fail explicitly', a
   const directory = await temporaryDirectory(t);
   const sentinel = join(directory, 'owned.txt');
   await writeFile(sentinel, 'retain until guarded purge exists');
-  await assert.rejects(purgeRuntimeCaches(directory, directory), /uninstallation are incomplete/);
-  assert.equal(readFileSync(sentinel, 'utf8'), 'retain until guarded purge exists');
   const cleanup = spawnSync(process.execPath, [join(root, 'lib/cleanup.js'), directory], { encoding: 'utf8', timeout: 30_000 });
+  assert.equal(cleanup.error, undefined);
   assert.equal(cleanup.status, 1);
   assert.match(cleanup.stderr, /uninstallation are incomplete/);
+  for (const operation of [['add', root], ['remove', 'dsh-git-bash-on-win'], ['--silent', 'remove', 'dsh-git-bash-on-win']]) {
+    const plugin = spawnSync(process.execPath, [join(root, 'scripts/plugin.ts'), process.execPath, 'bootstrap', ...operation], {
+      encoding: 'utf8', timeout: 30_000,
+      env: { ...process.env, DSH_HOME: directory, DSH_PACKAGE_JSON: join(directory, 'missing-dsh.json') },
+    });
+    assert.equal(plugin.error, undefined);
+    assert.equal(plugin.status, 1);
+    assert.match(plugin.stderr, /Plugin package operations are unavailable during the Phase 1 bootstrap/);
+  }
+  assert.deepEqual(filesUnder(directory), ['owned.txt']);
+  assert.equal(readFileSync(sentinel, 'utf8'), 'retain until guarded purge exists');
   const pnpm = process.env.npm_execpath ?? (process.platform === 'win32' ? 'pnpm.exe' : 'pnpm');
   const args = /\.[cm]?js$/.test(pnpm) ? [pnpm] : [];
   const executable = args.length ? process.execPath : pnpm;

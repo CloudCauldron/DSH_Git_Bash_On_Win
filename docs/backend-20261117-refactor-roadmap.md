@@ -554,6 +554,8 @@ Phase 3 completed on 2026-11-17:
 
 `provisioning.test.ts` covers §6's setup/recovery contracts:
 
+The first Phase 3 audit found two test false positives: a namespaced-path rejection occurred before the intended probe-cleanup blocker opened, and a populated old base masked revoked-lease admission in the late-helper test. Both fixtures now isolate the intended failures. In-memory negative controls omitting probe cleanup or disabling lease enforcement pass the original tests and fail the corrected tests at their expected rejection assertions. The native smoke test now runs the emitted broker and helper through actual COM/ShellExecuteEx/wait/close with only `runas` replaced by `open` in a test-only ESM preload. It retains source-integrity and strict-purge checks; actual elevated lifetime and modal consent remain separate manual gates. Production code is unchanged by this audit round.
+
 - Probe before inventory/base population; early link denial chooses UAC without a controller scan/reset, success removes the probe before inventory, and probe cleanup/structural/non-link failures never request UAC.
 - Exercise the shared linker through both callers: existing-target refusal, structural/reparse/read-only admission, deduplicated parent creation before bounded file batches, and independent helper inventory after plan admission. Cancelled inventory stops scheduling and drains before plan close.
 - A later permission failure drains/rejects without publication, UAC or base recreation; guarded GC later removes its candidate. Test final anchor identity/ kind admission and warm comparison with saved base stamps (§§6.3, 7.2).

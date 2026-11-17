@@ -14,7 +14,7 @@ import type { SubprocessHandle, SubprocessOutcome } from '@deepseek-ai/dsh-subpr
 import { localSpawn, nativeOnly, runtimeFixture } from './fixtures.ts';
 import { prepareRuntime, purgeRuntimeCache } from '../src/runtime/runtime-cache.ts';
 import {
-  admitDirectory, children, createSetupLease, isBusy, NativeHold, openExclusiveMetadata, openOrdinaryFile, pathExists, pinDirectory,
+  admitDirectory, children, createSetupLease, isBusy, isMissing, NativeHold, openExclusiveMetadata, openOrdinaryFile, pathExists, pinDirectory,
   requireActiveLease, unlinkEntry,
 } from '../src/runtime/ntfs-filesystem.ts';
 import { decodeElevationPlan } from '../src/setup/provision-runtime.ts';
@@ -120,12 +120,15 @@ await test('probe non-permission, structural, read-only and cleanup failures nev
     const restore = replaceLinks(t, (source, target) => {
       if (kind === 'io') throw Object.assign(new Error('fixture link IO failure'), { code: 'EIO' });
       link(source, target);
-      if (kind === 'probe-cleanup') blocker = openExclusiveMetadata(admitDirectory(dirname(String(target))), '.probe');
+      if (kind === 'probe-cleanup' && basename(String(target)) === '.probe') {
+        blocker = openExclusiveMetadata(admitDirectory(dirname(String(target).replace(/^\\\\\?\\/, ''))), '.probe');
+      }
     });
     try {
       if (kind === 'source-directory') { fs.unlinkSync(bash); fs.mkdirSync(bash); }
       if (kind === 'read-only') fs.chmodSync(bash, 0o444);
-      await assert.rejects(fixture.prepare(), error => !String(error).includes('never start a subprocess'));
+      await assert.rejects(fixture.prepare(), kind === 'probe-cleanup' ? isBusy : error => !String(error).includes('never start a subprocess'));
+      if (kind === 'probe-cleanup') assert.ok(blocker, 'the actual probe handle must block ordinary unlink');
       assert.equal(pathExists(join(fixture.cache, 'current.json')), false);
     } finally {
       blocker?.close(); restore();
@@ -260,7 +263,11 @@ await test('blocked plan cleanup preserves payload, but a new attempt never reau
       reader!.close(); reader = undefined;
       assert.notEqual(spec.argv[2], planPath);
       return brokerHandle((async () => {
-        await assert.rejects(runLinkHelper(planPath));
+        const oldBase = admitDirectory(join(dirname(planPath), 'base'));
+        unlinkEntry(oldBase, 'sentinel');
+        assert.deepEqual(children(oldBase), [], 'late admission must fail on the revoked lease, not a populated base');
+        await assert.rejects(runLinkHelper(planPath), error => isMissing(error) && String(error).includes('.setup-owner'));
+        assert.deepEqual(children(oldBase), [], 'the revoked helper must not mutate its empty base');
         await runLinkHelper(spec.argv[2]!);
         return success;
       })());
@@ -396,14 +403,38 @@ await test('F4 broker requires a process handle, helper zero, successful wait an
   });
 });
 
-await test('native DSH target success joins the helper range before cache publication', nativeOnly, async t => {
+await test('native broker launch and wait join through DSH before cache publication without consent', nativeOnly, async t => {
   const spawn = await localSpawn(t); if (!spawn) return;
   const fixture = await runtimeFixture(t), restore = denyProbe(t);
   const bash = join(fixture.source, 'usr/bin/bash.exe');
   const content = readFileSync(bash), links = fs.statSync(bash).nlink;
   const acl = execFileSync('icacls.exe', [bash], { encoding: 'utf8' });
+  const preload = join(fixture.directory, 'ordinary-shell-execute.mjs');
+  // Change only the consent verb. The request ABI, process handle, wait/close,
+  // fixed script argv and DSH outcome/range observation all remain native.
+  // Resolve the ESM export used by the broker; Koffi's CJS facade is separate.
+  writeFileSync(preload, `
+    import assert from 'node:assert/strict';
+    import koffi from ${JSON.stringify(import.meta.resolve('koffi'))};
+    const load = koffi.load;
+    koffi.load = (...args) => {
+      const library = load(...args);
+      if (args[0] !== 'shell32.dll') return library;
+      return { ...library, func(...declaration) {
+        assert.equal(declaration[1], 'ShellExecuteExW');
+        const execute = library.func(...declaration);
+        return request => {
+          assert.equal(request.lpVerb, 'runas');
+          request.lpVerb = 'open';
+          return execute(request);
+        };
+      } };
+    };
+  `);
+  const { prepareRuntime: prepareBuilt } = await import(pathToFileURL(join(root, 'lib/runtime/runtime-cache.js')).href) as typeof import('../src/runtime/runtime-cache.ts');
+  let broker: SubprocessHandle | undefined;
   try {
-    const pin = await prepareRuntime({ ...fixture.request, spawn: spec => spawn({ ...spec, argv: [process.execPath, helperEntry, spec.argv[2]!] }) }, signal());
+    const pin = await prepareBuilt({ ...fixture.request, spawn: spec => broker = spawn({ ...spec, argv: [spec.argv[0]!, '--import', pathToFileURL(preload).href, ...spec.argv.slice(1)] }) }, AbortSignal.timeout(10_000));
     await pin.release();
     const record = await fixture.current();
     assert.deepEqual(children(admitDirectory(join(fixture.cache, 'generations', record.generationId))), ['base']);
@@ -411,7 +442,8 @@ await test('native DSH target success joins the helper range before cache public
     assert.equal(fs.statSync(bash).nlink, links);
     assert.deepEqual(readFileSync(bash), content);
     assert.equal(execFileSync('icacls.exe', [bash], { encoding: 'utf8' }), acl);
-  } finally { restore(); }
+  } catch (error) { t.diagnostic(broker?.collected.stderr?.readFrom(0).text ?? ''); throw error; }
+  finally { restore(); }
 });
 
 // Never registered by the default suite. Only this explicit manual lane opens

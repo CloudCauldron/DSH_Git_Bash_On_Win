@@ -42,7 +42,11 @@ The Phase 3 suite verifies probe-only escalation, independent helper admission a
 inventory, plan/lease sharing, cancellation/draining, failed native wait/exit/close
 outcomes, and publication gates. It also runs the fixed helper through a real
 isolated DSH subprocess provider and terminates a broker fixture blocked in a
-native call. Typecheck, lint and all **84** default Windows tests pass, with zero
+native call. The broker smoke test changes only its ShellExecuteEx verb to `open`
+through a test-only ESM preload, exercising the real COM/request ABI, argv,
+process wait/close and emitted entry points without consent. The ordinary helper
+may inherit the broker's Job; this does not test independent elevated lifetime.
+Typecheck, lint and all **84** default Windows tests pass, with zero
 skips. These checks do not establish real consent-dialog or DSH Bash execution
 correctness. Close-failure injection reports failure after closing the test handle;
 it does not reproduce an unrecoverable kernel handle fault.

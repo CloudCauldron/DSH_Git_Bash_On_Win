@@ -65,7 +65,8 @@ function admitRoot(path: string, create: boolean): Directory | undefined {
     if (!create) { admitDirectory(dirname(path)); return undefined; }
     const parent = admitDirectory(dirname(path));
     const root = createDirectory(parent, basename(path));
-    writeNewMetadata(root, markerName, { schemaVersion: 1, owner: 'dsh-git-bash-on-win', rootPath: root.path, volumeSerial: root.volumeSerial, fileId: root.fileId });
+    try { writeNewMetadata(root, markerName, { schemaVersion: 1, owner: 'dsh-git-bash-on-win', rootPath: root.path, volumeSerial: root.volumeSerial, fileId: root.fileId }); }
+    catch (error) { bestEffort(() => removeEmptyDirectory(root)); throw error; }
     return root;
   }
   const root = admitDirectory(path);
@@ -88,7 +89,7 @@ function currentRecord(root: Directory): CurrentRuntime | undefined {
   }
   try {
     const record = (currentSchema as unknown as (value: unknown) => CurrentRuntime)(raw);
-    if (!samePath(absolutePath(record.sourceRoot), record.sourceRoot)) return undefined;
+    if (absolutePath(record.sourceRoot) !== record.sourceRoot) return undefined;
     return record;
   } catch { return undefined; }
 }
@@ -131,13 +132,15 @@ async function tryWarm(root: Directory, source: GitInstallation, signal: AbortSi
 export async function prepareRuntime(request: RuntimePreparation, signal: AbortSignal): Promise<GenerationPin> {
   signal.throwIfAborted();
   const source = discoverGitInstallation(request.gitBashPath);
+  const sourceDirectory = admitDirectory(source.root);
   const requestedPath = absolutePath(request.cacheDirectory);
   // Resolve an existing parent before creating anything, including short-name aliases.
-  const cachePath = join(admitDirectory(dirname(requestedPath)).path, basename(requestedPath));
+  const parent = admitDirectory(dirname(requestedPath)), cachePath = join(parent.path, basename(requestedPath));
   if (overlaps(cachePath, source.root)) throw new Error('Git source and cache paths must not overlap.');
+  if (parent.volumeSerial !== sourceDirectory.volumeSerial) throw new Error('Git and cache must share an NTFS volume.');
   const root = admitRoot(cachePath, true)!;
   if (overlaps(root.path, source.root)) throw new Error('Git source and cache paths must not overlap.');
-  if (root.volumeSerial !== admitDirectory(source.root).volumeSerial) throw new Error('Git and cache must share an NTFS volume.');
+  if (root.volumeSerial !== sourceDirectory.volumeSerial) throw new Error('Git and cache must share an NTFS volume.');
   if (!request.rebuild) {
     const warm = await tryWarm(root, source, signal);
     if (warm) return warm;
@@ -175,7 +178,7 @@ async function buildFresh(root: Directory, generations: Directory, source: GitIn
     const sourceDirectory = admitDirectory(source.root);
     const sourceBin = admitChildDirectory(admitChildDirectory(sourceDirectory, 'usr'), 'bin');
     // Phase 3 supplies the one UAC operation at this permission boundary.
-    try { await createHardlink(sourceBin, 'bash.exe', generation, '.probe'); }
+    try { createHardlink(sourceBin, 'bash.exe', generation, '.probe'); }
     catch (error) {
       if ((error as { linkPermissionDenied?: boolean }).linkPermissionDenied) throw new Error('Git hardlink permission requires elevation; optional UAC provisioning is not implemented until Phase 3.', { cause: error });
       throw error;
@@ -186,7 +189,7 @@ async function buildFresh(root: Directory, generations: Directory, source: GitIn
     const files = await inventoryGitFiles(source.root, () => signal.throwIfAborted());
     await linkFreshTree({ sourceRoot: source.root, baseRoot: base.path, files }, () => signal.throwIfAborted());
     createJunction(base, 'bin', admitChildDirectory(admitChildDirectory(base, 'usr'), 'bin'));
-    const anchors = await captureAnchors(source.root, base.path, source.layout);
+    const anchors = captureAnchors(source.root, base.path, source.layout);
     admitBase(generation, source.layout);
     signal.throwIfAborted();
     hold = pinDirectory(generation);
@@ -246,7 +249,7 @@ export async function purgeRuntimeCache(cacheDirectory: string): Promise<void> {
         unlinkEntry(generations, name);
       }
       removeEmptyDirectory(generations);
-    } else removeTree(root, 'generations');
+    }
     for (const name of children(root)) if (name !== markerName && name !== '.writer-lock') removeTree(root, name);
     unlinkEntry(root, markerName);
   } finally {
@@ -271,7 +274,6 @@ class RuntimePin implements GenerationPin {
   private references = 1;
   private retired = false;
   private ownerRelease?: Promise<void>;
-  private finalization?: Promise<void>;
   private namespace?: Directory;
   private readonly instance = randomUUID();
   private readonly views = new Map<string, Promise<string>>();
@@ -337,7 +339,7 @@ class RuntimePin implements GenerationPin {
   private dropReference(): Promise<void> {
     this.references--;
     if (this.references !== 0 || !this.retired) return Promise.resolve();
-    return this.finalization ??= (async () => {
+    return (async () => {
       try {
         if (this.namespace) bestEffort(() => removeTree(admitChildDirectory(this.generation, 'views'), this.instance));
       } finally { this.views.clear(); this.hold.close(); }

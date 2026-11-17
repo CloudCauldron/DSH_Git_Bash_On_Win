@@ -1,8 +1,8 @@
-import { lstatSync, mkdirSync, readdirSync, realpathSync, rmdirSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
-import { link, realpath } from 'node:fs/promises';
-import { dirname, isAbsolute, join, relative, resolve, sep, toNamespacedPath } from 'node:path';
+import { linkSync, lstatSync, mkdirSync, readdirSync, realpathSync, rmdirSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { realpath } from 'node:fs/promises';
+import { dirname, isAbsolute, join, parse, relative, resolve, sep, toNamespacedPath } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { closeHandleChecked, extendWin32ProcessBindings, type NativePtr } from '@deepseek-ai/dsh-win32-process';
+import { closeHandleChecked, extendWin32ProcessBindings, isNullPtr, throwLastError, Win32Error, type NativePtr } from '@deepseek-ai/dsh-win32-process';
 
 export interface FileIdentity { readonly volumeSerial: string; readonly fileId: string }
 export interface Directory extends FileIdentity { readonly path: string }
@@ -45,11 +45,6 @@ export function requireWindows(): void {
   if (process.platform !== 'win32' || process.arch !== 'x64') throw new Error('Native Windows x64 is required for the Git Bash runtime.');
 }
 
-function nativeError(operation: string, path: string): Error {
-  const win32Code = api().getLastError();
-  return Object.assign(new Error(`${operation}: ${path} (Windows ${win32Code})`), { win32Code });
-}
-
 export function isMissing(error: unknown): boolean {
   return [2, 3].includes((error as { win32Code?: number })?.win32Code ?? 0)
     || (error as NodeJS.ErrnoException)?.code === 'ENOENT';
@@ -60,11 +55,11 @@ export function isBusy(error: unknown): boolean {
     || ['EBUSY', 'ENOTEMPTY'].includes((error as NodeJS.ErrnoException)?.code ?? '');
 }
 
-class NativeCloseError extends Error {}
 export class InvalidMetadataError extends Error {}
 
 function hasCloseFailure(error: unknown): boolean {
-  return error instanceof NativeCloseError || (error instanceof AggregateError && error.errors.some(hasCloseFailure));
+  return (error instanceof Win32Error && error.api === 'CloseHandle')
+    || (error instanceof AggregateError && error.errors.some(hasCloseFailure));
 }
 
 /** Resource failures must never disappear inside best-effort artifact cleanup. */
@@ -76,34 +71,44 @@ export function bestEffort(action: () => void): void {
 
 export class NativeHold {
   private closed = false;
+  private observation?: FileInformation;
   readonly path: string;
   private readonly handle: NativePtr;
   constructor(path: string, handle: NativePtr) { this.path = path; this.handle = handle; }
 
   information(): FileInformation {
+    // One handle observation serves kind, identity and stamp admission. Lease
+    // liveness checks open fresh handles; they never reuse an earlier sample.
+    if (this.observation) return this.observation;
     const data = Buffer.alloc(52); // BY_HANDLE_FILE_INFORMATION, x64 and x86 layout.
-    if (!api().information(this.handle, data)) throw nativeError('GetFileInformationByHandle', this.path);
-    const tag = Buffer.alloc(8); // FILE_ATTRIBUTE_TAG_INFO.
-    if (!api().informationEx(this.handle, 9, tag, tag.length)) throw nativeError('FileAttributeTagInfo', this.path);
-    return {
+    if (!api().information(this.handle, data)) throwLastError(api(), 'GetFileInformationByHandle', this.path);
+    const attributes = data.readUInt32LE(0);
+    let reparseTag = 0;
+    if (attributes & ATTR_REPARSE) {
+      const tag = Buffer.alloc(8); // FILE_ATTRIBUTE_TAG_INFO, needed only for reparses.
+      if (!api().informationEx(this.handle, 9, tag, tag.length)) throwLastError(api(), 'FileAttributeTagInfo', this.path);
+      reparseTag = tag.readUInt32LE(4);
+    }
+    return this.observation = {
       volumeSerial: String(data.readUInt32LE(28)),
       fileId: String((BigInt(data.readUInt32LE(44)) << 32n) | BigInt(data.readUInt32LE(48))),
       size: String((BigInt(data.readUInt32LE(32)) << 32n) | BigInt(data.readUInt32LE(36))),
       lastWriteTime: String(data.readBigUInt64LE(20)),
-      attributes: data.readUInt32LE(0), reparseTag: tag.readUInt32LE(4),
+      attributes, reparseTag,
     };
   }
 
   canonicalPath(): string {
     const data = Buffer.alloc(32768 * 2);
     const length = api().finalPath(this.handle, data, data.length / 2, 0);
-    if (!length || length >= data.length / 2) throw nativeError('GetFinalPathNameByHandleW', this.path);
+    if (!length) throwLastError(api(), 'GetFinalPathNameByHandleW', this.path);
+    if (length >= data.length / 2) throw new Error(`Canonical path exceeds the supported bound: ${this.path}`);
     return ordinaryPath(data.subarray(0, length * 2).toString('utf16le'));
   }
 
   requireNtfs(): void {
     const data = Buffer.alloc(64);
-    if (!api().volume(this.handle, null, 0, null, null, null, data, 32)) throw nativeError('GetVolumeInformationByHandleW', this.path);
+    if (!api().volume(this.handle, null, 0, null, null, null, data, 32)) throwLastError(api(), 'GetVolumeInformationByHandleW', this.path);
     if (data.toString('utf16le').split('\0')[0] !== 'NTFS') throw new Error(`NTFS is required: ${this.path}`);
   }
 
@@ -111,24 +116,25 @@ export class NativeHold {
     const info = this.information();
     requireKind(info, 'file', this.path);
     if (BigInt(info.size) > BigInt(maxBytes)) throw new InvalidMetadataError(`Metadata exceeds its path-aware bound: ${this.path}`);
-    const data = Buffer.alloc(maxBytes + 1), count = Buffer.alloc(4);
-    if (!api().readBytes(this.handle, data, data.length, count, null)) throw nativeError('ReadFile', this.path);
+    const size = Number(info.size), data = Buffer.alloc(size + 1), count = Buffer.alloc(4);
+    // The SDK's raw count-pointer allocator has no public matching free. A
+    // Buffer out-parameter keeps this bounded read entirely GC-owned.
+    if (!api().readBytes(this.handle, data, data.length, count, null)) throwLastError(api(), 'ReadFile', this.path);
     const length = count.readUInt32LE(0);
-    if (length > maxBytes) throw new InvalidMetadataError(`Metadata grew beyond its bound: ${this.path}`);
+    if (length > size) throw new InvalidMetadataError(`Metadata grew during its read: ${this.path}`);
     return JSON.parse(data.subarray(0, length).toString('utf8')) as unknown;
   }
 
   close(): void {
     if (this.closed) return;
-    try { closeHandleChecked(api(), this.handle, this.path); }
-    catch (cause) { throw new NativeCloseError(`Failed to close native filesystem handle: ${this.path}`, { cause }); }
+    closeHandleChecked(api(), this.handle, this.path);
     this.closed = true;
   }
 }
 
 function open(path: string, access = 0, sharing = SHARE_ALL, disposition = OPEN_EXISTING, flags = 0): NativeHold {
   const handle = api().open(toNamespacedPath(path), access, sharing, null, disposition, NO_FOLLOW | DIRECTORY | flags, null);
-  if (handle === null || handle === 0n || BigInt.asUintN(64, handle) === 0xffffffffffffffffn) throw nativeError('CreateFileW', path);
+  if (isNullPtr(handle) || BigInt.asUintN(64, handle) === 0xffffffffffffffffn) throwLastError(api(), 'CreateFileW', path);
   return new NativeHold(path, handle);
 }
 
@@ -144,7 +150,8 @@ function ordinaryPath(path: string): string {
 
 export function absolutePath(path: string): string {
   requireWindows();
-  if (!isAbsolute(path) || path.includes('\0') || path.length > 32767 || /[. ](?:[\\/]|$)/.test(path)
+  if (!isAbsolute(path) || parse(path).root.length <= 1 || path.startsWith('\\\\?\\')
+    || path.includes('\0') || path.length > 32767 || /[. ](?:[\\/]|$)/.test(path)
     || path.slice(2).includes(':')) throw new Error(`Expected an ordinary absolute Windows path: ${path}`);
   return resolve(path);
 }
@@ -183,8 +190,7 @@ export function admitDirectory(path: string): Directory {
 }
 
 export function revalidateDirectory(directory: Directory): void {
-  const actual = admitDirectory(directory.path);
-  if (!sameIdentity(actual, directory)) throw new Error(`Directory identity changed: ${directory.path}`);
+  directoryHold(directory, 0, SHARE_ALL).close();
 }
 
 export function childPath(parent: Directory, name: string): string {
@@ -194,17 +200,22 @@ export function childPath(parent: Directory, name: string): string {
 
 /** An already admitted parent is reused during a bounded inventory/link pass. */
 export function admitChildDirectory(parent: Directory, name: string): Directory {
-  const path = childPath(parent, name), hold = open(path);
-  try {
-    const info = hold.information();
-    requireKind(info, 'directory', path);
-    if (info.volumeSerial !== parent.volumeSerial) throw new Error(`Volume boundary changed: ${path}`);
-    return { path, volumeSerial: info.volumeSerial, fileId: info.fileId };
-  } finally { hold.close(); }
+  const path = childPath(parent, name);
+  return observedDirectory(path, inspect(path), parent.volumeSerial);
+}
+
+function observedDirectory(path: string, info: FileInformation, volumeSerial: string): Directory {
+  requireKind(info, 'directory', path);
+  if (info.volumeSerial !== volumeSerial) throw new Error(`Volume boundary changed: ${path}`);
+  return { path, volumeSerial: info.volumeSerial, fileId: info.fileId };
 }
 
 export function createDirectory(parent: Directory, name: string): Directory {
   revalidateDirectory(parent);
+  return createChildDirectory(parent, name);
+}
+
+function createChildDirectory(parent: Directory, name: string): Directory {
   mkdirSync(childPath(parent, name), { mode: 0o700 });
   return admitChildDirectory(parent, name);
 }
@@ -213,7 +224,7 @@ export function ensureDirectory(parent: Directory, name: string): Directory {
   revalidateDirectory(parent);
   try { return admitChildDirectory(parent, name); }
   catch (error) { if (!isMissing(error)) throw error; }
-  return createDirectory(parent, name);
+  return createChildDirectory(parent, name);
 }
 
 export function openOrdinaryFile(parent: Directory, name: string, writable = false): NativeHold {
@@ -239,12 +250,14 @@ export function writeNewMetadata(parent: Directory, name: string, value: unknown
 }
 
 function directoryHold(directory: Directory, access: number, sharing: number): NativeHold {
-  revalidateDirectory(directory);
   const hold = open(directory.path, access, sharing);
   try {
     const info = hold.information();
     requireKind(info, 'directory', directory.path);
     if (!sameIdentity(info, directory)) throw new Error(`Directory identity changed: ${directory.path}`);
+    // Admission already established the ancestor chain and NTFS volume. Reuse
+    // it only while this opened object still has that identity AND physical path.
+    if (!samePath(hold.canonicalPath(), directory.path)) throw new Error(`Directory path redirected: ${directory.path}`);
     return hold;
   } catch (error) { hold.close(); throw error; }
 }
@@ -289,21 +302,20 @@ export async function acquireWriterLock(directory: Directory, signal: AbortSigna
 }
 
 /** Only the actual link syscall can authorize the later UAC choice. */
-export async function createHardlink(sourceParent: Directory, sourceName: string, targetParent: Directory, targetName: string): Promise<void> {
+export function createHardlink(sourceParent: Directory, sourceName: string, targetParent: Directory, targetName: string): void {
   revalidateDirectory(sourceParent);
   revalidateDirectory(targetParent);
   if (sourceParent.volumeSerial !== targetParent.volumeSerial) throw new Error('Hardlink source and destination must share an NTFS volume.');
   const source = openOrdinaryFile(sourceParent, sourceName, true);
   try {
-    try { await link(source.path, childPath(targetParent, targetName)); }
+    // Keep admission and the syscall in one synchronous operation. Queuing an
+    // async link would let a renamed/junction-replaced parent redirect the write
+    // while it waits in libuv. The caller yields between bounded batches.
+    try { linkSync(source.path, childPath(targetParent, targetName)); }
     catch (error) {
       if (['EACCES', 'EPERM'].includes((error as NodeJS.ErrnoException).code ?? '')) Object.assign(error as object, { linkPermissionDenied: true });
       throw error;
     }
-    const target = openOrdinaryFile(targetParent, targetName, true);
-    try {
-      if (!sameIdentity(source.information(), target.information())) throw new Error(`Hardlink source changed: ${source.path}`);
-    } finally { target.close(); }
   } finally { source.close(); }
 }
 
@@ -324,7 +336,11 @@ export function createJunction(parent: Directory, name: string, target: Director
 
 export function admitJunction(parent: Directory, name: string, target: Directory): void {
   const path = childPath(parent, name), info = inspect(path);
-  if (!(info.attributes & ATTR_REPARSE) || info.reparseTag !== MOUNT_POINT || !samePath(realpathSync(path), target.path)) {
+  if (!(info.attributes & ATTR_REPARSE) || info.reparseTag !== MOUNT_POINT) throw new Error(`Unexpected runtime junction: ${path}`);
+  let actual: string;
+  try { actual = realpathSync(path); }
+  catch (cause) { throw new Error(`Unexpected runtime junction: ${path}`, { cause }); }
+  if (!samePath(actual, target.path)) {
     throw new Error(`Unexpected runtime junction: ${path}`);
   }
 }
@@ -341,7 +357,7 @@ export function ordinaryChildDirectory(parent: Directory, name: string): Directo
   revalidateDirectory(parent);
   const path = childPath(parent, name), info = inspect(path);
   if (info.attributes & ATTR_REPARSE || !(info.attributes & ATTR_DIRECTORY)) return undefined;
-  return admitChildDirectory(parent, name);
+  return observedDirectory(path, info, parent.volumeSerial);
 }
 
 /** Unlink controls before traversing payload. Never decode their contents. */
@@ -350,6 +366,10 @@ export function unlinkEntry(parent: Directory, name: string): void {
   const path = childPath(parent, name);
   let info: FileInformation;
   try { info = inspect(path); } catch (error) { if (isMissing(error)) return; throw error; }
+  unlinkObserved(path, info);
+}
+
+function unlinkObserved(path: string, info: FileInformation): void {
   if (info.attributes & ATTR_REPARSE) {
     if (![MOUNT_POINT, SYMLINK].includes(info.reparseTag)) throw new Error(`Unsupported reparse tag at ${path}`);
     if (info.attributes & ATTR_DIRECTORY) rmdirSync(path); else unlinkSync(path);
@@ -364,8 +384,8 @@ export function removeTree(parent: Directory, name: string): void {
   const path = childPath(parent, name);
   let info: FileInformation;
   try { info = inspect(path); } catch (error) { if (isMissing(error)) return; throw error; }
-  if (!(info.attributes & ATTR_DIRECTORY) || info.attributes & ATTR_REPARSE) { unlinkEntry(parent, name); return; }
-  const directory = admitChildDirectory(parent, name);
+  if (!(info.attributes & ATTR_DIRECTORY) || info.attributes & ATTR_REPARSE) { unlinkObserved(path, info); return; }
+  const directory = observedDirectory(path, info, parent.volumeSerial);
   removeDirectoryTree(directory);
 }
 

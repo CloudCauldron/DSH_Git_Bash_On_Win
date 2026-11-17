@@ -1,15 +1,16 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { readFileSync, readdirSync } from 'node:fs';
+import fs, { readFileSync, readdirSync } from 'node:fs';
 import { cp, link, mkdir, readFile, rename, stat, symlink, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { syncBuiltinESMExports } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import { nativeOnly, runtimeFixture } from './fixtures.ts';
 import { prepareRuntime, purgeRuntimeCache } from '../src/runtime/runtime-cache.ts';
 import { anchorPaths, discoverGitInstallation, inventoryGitFiles, linkFreshTree } from '../src/runtime/git-installation.ts';
 import {
-  acquireWriterLock, admitDirectory, createDirectory, createJunction, NativeHold,
+  absolutePath, acquireWriterLock, admitDirectory, createDirectory, createJunction, NativeHold,
   pathExists, removeTree, unlinkEntry,
 } from '../src/runtime/ntfs-filesystem.ts';
 
@@ -72,6 +73,91 @@ await test('source inventory retains distinct hardlink names and the fixed selec
   const cancelled = new AbortController(); cancelled.abort();
   await assert.rejects(inventoryGitFiles(fixture.source, () => cancelled.signal.throwIfAborted()), { name: 'AbortError' });
   removeTree(parent, 'links');
+});
+
+await test('discovery skips incomplete defaults and rejects a misplaced Bash selection', nativeOnly, async t => {
+  const fixture = await runtimeFixture(t);
+  const stale = join(fixture.directory, 'stale'), valid = join(fixture.directory, 'valid');
+  await mkdir(join(stale, 'Git/bin'), { recursive: true });
+  await writeFile(join(stale, 'Git/bin/bash.exe'), 'incomplete installation');
+  await mkdir(valid);
+  await mkdir(join(fixture.source, 'bin'));
+  await link(join(fixture.source, 'usr/bin/bash.exe'), join(fixture.source, 'bin/bash.exe'));
+  await symlink(fixture.source, join(valid, 'Git'), 'junction');
+  const keys = ['ProgramW6432', 'ProgramFiles', 'ProgramFiles(x86)', 'LOCALAPPDATA'];
+  const saved = keys.map(key => process.env[key]);
+  try {
+    for (const key of keys) delete process.env[key];
+    process.env.ProgramW6432 = stale; process.env.ProgramFiles = valid;
+    assert.equal(discoverGitInstallation().root, fixture.source);
+  } finally {
+    keys.forEach((key, i) => { if (saved[i] === undefined) delete process.env[key]; else process.env[key] = saved[i]; });
+  }
+  await writeFile(join(fixture.source, 'etc/bash.exe'), 'not a supported entry');
+  assert.throws(() => discoverGitInstallation(join(fixture.source, 'etc/bash.exe')), /Supported Git/);
+});
+
+await test('ordinary paths require a volume root and current metadata keeps canonical syntax', nativeOnly, async t => {
+  for (const path of ['\\relative-to-drive', '/relative-to-drive', 'C:relative']) assert.throws(() => absolutePath(path), /absolute Windows path/);
+  const fixture = await runtimeFixture(t), first = await fixture.prepare();
+  await first.release();
+  const current = await fixture.current();
+  await writeFile(join(fixture.cache, 'current.json'), JSON.stringify({ ...current, sourceRoot: current.sourceRoot.replaceAll('\\', '/') }));
+  const rebuilt = await fixture.prepare();
+  assert.notEqual((await fixture.current()).generationId, current.generationId);
+  await rebuilt.release();
+});
+
+await test('root creation unwinds an empty directory when its ownership-marker write fails', nativeOnly, async t => {
+  const fixture = await runtimeFixture(t), original = fs.writeFileSync;
+  const mock = t.mock.method(fs, 'writeFileSync', (...args: Parameters<typeof fs.writeFileSync>) => {
+    if (args[0] === join(fixture.cache, '.owner.json')) throw new Error('fixture ownership write failure');
+    return original(...args);
+  });
+  syncBuiltinESMExports();
+  try {
+    await assert.rejects(fixture.prepare(), /fixture ownership write failure/);
+    assert.equal(pathExists(fixture.cache), false);
+  } finally { mock.mock.restore(); syncBuiltinESMExports(); }
+  const pin = await fixture.prepare(); await pin.release();
+});
+
+await test('volume mismatch is rejected before cache-root creation', nativeOnly, async t => {
+  const fixture = await runtimeFixture(t), original = NativeHold.prototype.information;
+  const mock = t.mock.method(NativeHold.prototype, 'information', function (this: NativeHold) {
+    const info = original.call(this);
+    return this.path === fixture.directory ? { ...info, volumeSerial: String(BigInt(info.volumeSerial) + 1n) } : info;
+  });
+  try {
+    await assert.rejects(fixture.prepare(), /same an? NTFS volume|share an NTFS volume/);
+    assert.equal(pathExists(fixture.cache), false);
+  } finally { mock.mock.restore(); }
+});
+
+await test('an admitted link is never left queued behind an unrelated libuv operation', nativeOnly, async t => {
+  const fixture = await runtimeFixture(t), target = join(fixture.directory, 'target'), outside = join(fixture.directory, 'outside');
+  await mkdir(target); await mkdir(outside);
+  const program = `
+    import { pbkdf2 } from 'node:crypto';
+    import { promisify } from 'node:util';
+    import { renameSync, symlinkSync, existsSync } from 'node:fs';
+    import { join } from 'node:path';
+    const [module, source, target, outside] = process.argv.slice(1);
+    const { admitDirectory, createHardlink } = await import(module);
+    const origin = admitDirectory(source), destination = admitDirectory(target);
+    const busy = promisify(pbkdf2)('fixture', 'fixture', 1_000_000, 32, 'sha256');
+    const linking = Promise.resolve(createHardlink(origin, 'bash.exe', destination, 'payload'));
+    renameSync(target, target + '-saved');
+    symlinkSync(outside, target, 'junction');
+    await Promise.all([busy, linking]);
+    console.log(JSON.stringify({ outside: existsSync(join(outside, 'payload')), admitted: existsSync(join(target + '-saved', 'payload')) }));
+  `;
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e', program,
+    new URL('../src/runtime/ntfs-filesystem.ts', import.meta.url).href, join(fixture.source, 'usr/bin'), target, outside],
+  { encoding: 'utf8', timeout: 10_000, env: { ...process.env, UV_THREADPOOL_SIZE: '1' } });
+  assert.equal(child.error, undefined);
+  assert.equal(child.status, 0, child.stderr);
+  assert.deepEqual(JSON.parse(child.stdout), { outside: false, admitted: true });
 });
 
 await test('structural and read-only source failures never create an elevated attempt', nativeOnly, async t => {
@@ -187,6 +273,16 @@ await test('safe malformed current rebuilds; extra fields are ignored; unsafe co
   await assert.rejects(fixture.prepare(), /ordinary file/);
 });
 
+await test('a redirected dangling internal junction is an error, not a cold cache miss', nativeOnly, async t => {
+  const fixture = await runtimeFixture(t), pin = await fixture.prepare();
+  await pin.release();
+  const record = await fixture.current(), base = join(fixture.cache, 'generations', record.generationId, 'base');
+  unlinkEntry(admitDirectory(base), 'bin');
+  await symlink(join(fixture.directory, 'missing'), join(base, 'bin'), 'junction');
+  await assert.rejects(fixture.prepare(), /Unexpected runtime junction/);
+  assert.equal((await fixture.current()).generationId, record.generationId);
+});
+
 await test('purge owns the entire interior but removes junctions without visiting targets', nativeOnly, async t => {
   const fixture = await runtimeFixture(t), pin = await fixture.prepare();
   await pin.release();
@@ -235,7 +331,8 @@ await test('cancellation during a bounded linking batch drains before cleanup an
   const original = NativeHold.prototype.information;
   const mock = t.mock.method(NativeHold.prototype, 'information', function (this: NativeHold) {
     const result = original.call(this);
-    if (this.path.includes('\\base\\usr\\bin\\bash.exe')) controller.abort();
+    if (this.path === join(fixture.source, 'usr/lib/perl/module.pm') && pathExists(join(fixture.cache, 'generations'))
+      && readdirSync(join(fixture.cache, 'generations')).some(id => pathExists(join(fixture.cache, 'generations', id, 'base/usr/bin/bash.exe')))) controller.abort();
     return result;
   });
   await assert.rejects(fixture.prepare(false, controller.signal), { name: 'AbortError' });

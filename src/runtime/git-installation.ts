@@ -30,14 +30,21 @@ export function discoverGitInstallation(setting?: string): GitInstallation {
   for (const candidate of candidates) {
     if (!isAbsolute(candidate) || basename(candidate).toLowerCase() !== 'bash.exe' || !pathExists(candidate)) continue;
     const executable = realpathSync(candidate), parent = dirname(executable);
-    const root = admitDirectory(resolve(parent, /[\\/]usr[\\/]bin$/i.test(parent) ? '../..' : '..'));
-    if (!ordinaryFileExists(directoryAt(root, 'usr/bin'), 'msys-2.0.dll')) continue;
+    if (basename(executable).toLowerCase() !== 'bash.exe' || !/[\\/](?:usr[\\/])?bin$/i.test(parent)) continue;
+    const internalBin = /[\\/]usr[\\/]bin$/i.test(parent);
+    const root = admitDirectory(resolve(parent, internalBin ? '../..' : '..'));
+    if (!internalBin && !hasSourceFile(root, 'bin/bash.exe')) continue;
+    if (!hasSourceFile(root, 'usr/bin/bash.exe') || !hasSourceFile(root, 'usr/bin/msys-2.0.dll')) continue;
     for (const layout of ['ucrt64', 'mingw64'] as const) {
-      try { if (ordinaryFileExists(directoryAt(root, `${layout}/bin`), 'git.exe')) return { root: root.path, layout }; }
-      catch (error) { if (!isMissing(error)) throw error; }
+      if (hasSourceFile(root, `${layout}/bin/git.exe`)) return { root: root.path, layout };
     }
   }
   throw new Error('Supported Git for Windows was not found. Set gitBashPath to its absolute bin/bash.exe or usr/bin/bash.exe path.');
+}
+
+function hasSourceFile(root: Directory, path: string): boolean {
+  try { return ordinaryFileExists(directoryAt(root, posix.dirname(path)), posix.basename(path)); }
+  catch (error) { if (!isMissing(error)) throw error; return false; }
 }
 
 /** Directory observations are shared within each source pass, never persisted. */
@@ -132,10 +139,14 @@ export async function linkFreshTree(tree: FreshLinkTree, checkActive: () => void
     if (++created % 32 === 0) await yieldToEventLoop();
   }
   for (let offset = 0; offset < tree.files.length; offset += 32) {
-    await batch(tree.files.slice(offset, offset + 32), checkActive, async file => {
+    checkActive();
+    for (const file of tree.files.slice(offset, offset + 32)) {
       const parent = posix.dirname(file), name = posix.basename(file);
-      await createHardlink(directoryAt(source, parent, sources), name, targets.get(parent)!, name);
-    });
+      createHardlink(directoryAt(source, parent, sources), name, targets.get(parent)!, name);
+    }
+    // Each synchronous syscall has settled before yielding. Cancellation can
+    // stop the next bounded batch without leaving queued path-based writes.
+    await yieldToEventLoop();
   }
   checkActive();
 }
@@ -153,7 +164,7 @@ export async function readAnchors(root: string, layout: GitLayout): Promise<Anch
 }
 
 /** Capture base stamps with both handles open; only identities are compared here. */
-export async function captureAnchors(sourceRoot: string, baseRoot: string, layout: GitLayout): Promise<AnchorStamps> {
+export function captureAnchors(sourceRoot: string, baseRoot: string, layout: GitLayout): AnchorStamps {
   const source = admitDirectory(sourceRoot), base = admitDirectory(baseRoot);
   const sources = new Map<string, Directory>(), bases = new Map<string, Directory>();
   const anchors = {} as Record<AnchorName, FileStamp>;

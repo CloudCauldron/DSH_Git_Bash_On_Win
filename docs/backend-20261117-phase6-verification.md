@@ -29,10 +29,10 @@ tree freshness check or per-command scan.
 
 ## Packaging and installed-profile coverage
 
-The initial `pnpm pack --pack-destination artifacts` completed with its normal prepack checks.
-That `artifacts/dsh-git-bash-on-win-0.1.0-experimental.1.tgz` contained
-exactly the 31 expected production/package files (44,581 bytes). SHA-256:
-`c17c1077d530e6850674dd59f416100197ff1cb4071e69954d1437a22e70d549`.
+After audit round 2, `pnpm pack --pack-destination artifacts` completed with its
+normal prepack checks. `artifacts/dsh-git-bash-on-win-0.1.0-experimental.1.tgz`
+contains exactly the 31 expected production/package files (44,747 bytes). SHA-256:
+`8e5e07b79c712edc8ef454331f9d02834194553bd760c69678aed36abad9aadb`.
 The generated tarball and detailed logs under `test/results/` remain Git-ignored.
 
 `prepack` now runs typecheck, lint and a clean production build. `test:release`
@@ -112,6 +112,22 @@ attempt during this audit exercised that failing-assertion cleanup path.
 `pnpm test:release` passed again: typecheck, lint, clean build and all 139 tests,
 zero failures or skips (68.74 seconds). No recent native/bootstrap fixture
 directories remained after the audit runs.
+
+## Adversarial audit round 2
+
+A fresh context-independent reviewer examined the full Phase 6 change, current
+corrections, roadmap contracts and pinned DSH implementations. No further actionable
+defect was found. The dependency closure is justified by actual public imports:
+the ACL API loads `dsh-skill → dsh-scope`, the Win32 API loads `dsh-error`, and
+related services require Cordis. The installed-host identity test checks that
+these standalone dependencies do not split the native Shell/schema identities.
+
+The in-context pass reused the existing timer helper, removed redundant error
+assertions and an unnecessary repeated purge, and scoped the manual probe mock
+immediately around the protected operation. Typecheck, lint and clean packaging
+passed. This round introduced no runtime module, middleware or state model, and
+did not rerun or claim additional UAC interactions. Audit confidence is bounded by
+the supported environment and the explicit manual observations below.
 
 ## Manual verification and limits
 

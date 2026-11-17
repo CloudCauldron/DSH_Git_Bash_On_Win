@@ -519,7 +519,7 @@ if (process.env.DSH_GIT_BASH_UAC_TEST) {
     const choice = process.env.DSH_GIT_BASH_UAC_TEST;
     assert.ok(choice === 'approve' || choice === 'deny' || choice === 'late', 'Use DSH_GIT_BASH_UAC_TEST=approve, deny or late.');
     const spawn = await localSpawn(t); if (!spawn) return;
-    const fixture = await runtimeFixture(t), restore = denyProbe(t);
+    const fixture = await runtimeFixture(t);
     const { prepareRuntime: prepareBuilt } = await import(pathToFileURL(join(root, 'lib/runtime/runtime-cache.js')).href) as typeof import('../src/runtime/runtime-cache.ts');
     const bash = join(fixture.source, 'usr/bin/bash.exe');
     const before = { bytes: readFileSync(bash), links: fs.statSync(bash).nlink,
@@ -528,6 +528,7 @@ if (process.env.DSH_GIT_BASH_UAC_TEST) {
     console.error(choice === 'late'
       ? 'Leave consent pending for 10 seconds. Approve only after LOCAL SHUTDOWN COMPLETED appears below; finish any prompt within the following 20 seconds.'
       : `Respond ${choice === 'approve' ? 'Yes' : 'No'} to the Windows consent prompt.`);
+    const restore = denyProbe(t);
     try {
       const started = performance.now();
       // Keep ownership even if an unexpected consent response fulfils a promise
@@ -544,7 +545,7 @@ if (process.env.DSH_GIT_BASH_UAC_TEST) {
         assert.ok(performance.now() - started < 15_000, 'local shutdown must settle within five seconds of cancellation');
         assert.equal(pathExists(join(fixture.cache, 'current.json')), false);
         console.error('LOCAL SHUTDOWN COMPLETED. If consent remains visible, approve now. Strict purge runs in 20 seconds.');
-        await new Promise(resolve => setTimeout(resolve, 20_000));
+        await delay(20_000);
         assert.equal(pathExists(join(fixture.cache, 'current.json')), false, 'late consent must never publish a revoked attempt');
       }
     } finally { restore(); await pin?.release(); }

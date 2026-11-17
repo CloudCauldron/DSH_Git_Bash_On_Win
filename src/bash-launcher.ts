@@ -14,7 +14,7 @@ try {
   const command = Buffer.from(encoded, 'base64').toString('utf8');
   if (Buffer.from(command, 'utf8').toString('base64') !== encoded || command.includes('\0')) throw new Error('Invalid encoded Bash command.');
   const graceMs = Number(grace);
-  if (!Number.isInteger(graceMs) || graceMs <= 0 || graceMs > 2147483647) throw new Error('Invalid DSH process grace period.');
+  if (!Number.isFinite(graceMs) || graceMs <= 0 || graceMs > 2147483647) throw new Error('Invalid DSH process grace period.');
   const compatibility = inheritedCompatibility(mode);
   const runtimeEnvironment = buildRuntimeEnvironment(installationRoot, sourceRoot, layout, process.env);
   const replaced = new Set(Object.keys(runtimeEnvironment).map(key => key.toLowerCase()));

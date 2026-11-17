@@ -866,7 +866,7 @@ await test('native DSH Bash execution across all modes', nativeOnly, async t => 
     const native32 = await run('danger-full-access', `MSYS2_ARG_CONV_EXCL='*' '${process.env.SystemRoot!.replaceAll('\\', '/')}/SysWOW64/cmd.exe' /d /c echo native32`);
     assert.equal(native32.exitCode, 0, native32.stderr.text); assert.match(native32.stdout.text, /native32/);
   });
-  await t.test('launcher validates invocation and inherited policy', async () => {
+  await t.test('launcher validates invocation, grace period and inherited policy', async () => {
     const launcher = fileURLToPath(new URL('../lib/bash-launcher.js', import.meta.url));
     const invalid = spawnSync(process.execPath, [launcher], { encoding: 'utf8', timeout: 10000 });
     assert.equal(invalid.status, 127); assert.match(invalid.stderr, /Invalid private/);
@@ -879,6 +879,19 @@ await test('native DSH Bash execution across all modes', nativeOnly, async t => 
       args[6] = 'danger-full-access';
       const wrongMode = await captured(args, 'read-only');
       assert.equal(wrongMode.exitCode, 127); assert.match(wrongMode.stderr, /restricted inherited token/);
+      args[6] = 'read-only';
+      args[7] = Buffer.from('printf fractional-grace').toString('base64');
+      args[8] = '300.5';
+      const fractional = await captured(args, 'read-only');
+      assert.equal(fractional.exitCode, 0, fractional.stderr);
+      assert.equal(fractional.stdout, 'fractional-grace');
+      for (const grace of ['NaN', 'Infinity', '0', '-1', '2147483647.5']) {
+        args[8] = grace;
+        const invalid = await captured(args, 'read-only');
+        assert.equal(invalid.exitCode, 127, grace + ': ' + invalid.stderr);
+        assert.match(invalid.stderr, /Invalid DSH process grace period/, grace);
+        assert.equal(invalid.stdout, '', grace);
+      }
     } finally { await use.release(); }
   });
   await t.test('actual loaded MSYS identity and loader path are independently required', async () => {

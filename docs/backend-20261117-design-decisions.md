@@ -1,12 +1,12 @@
 # Backend design decisions
 
-Decisions recorded on 15–16 November 2026; Phase 0 contract baseline recorded on 17 November. Phases 1–4 now implement maintained inputs, cache preparation, guarded optional elevation/F4, executor readiness/rebuilding, native pins/views and recovery. Launcher/debugger integration and release verification, including real modal UAC, remain pending. Phase 4's implementation and verification limits are recorded in the [roadmap](backend-20261117-refactor-roadmap.md#phase-4--executor-and-boundary-ownership).
+Decisions recorded on 15–17 November 2026. Phases 0–6 are implemented; native execution, packaging and user-assisted UAC results are recorded in the [verification record](backend-20261117-phase6-verification.md). The latest decision removes the package-local fallback cache and supports one fixed cache per DSH profile.
 
 The backend will make Git Bash work inside DSH on native Windows x64 while retaining DSH's execution policy, tools and settings. We chose a small compatibility layer, one shared runtime base, lazy preparation and explicit ownership of files and processes. Ordinary Git Bash, other applications, WSL and non-Windows DSH keep their existing behavior.
 
 This record explains the choices behind the [implementation roadmap](backend-20261117-refactor-roadmap.md). It also records the alternatives we dropped, so an older proposal or prototype does not quietly become a requirement again.
 
-The latest 16 November review removes configuration epochs and the executor's Loader event subscription, replaces unfinished initialization with shared rebuild readiness, and simplifies anchor capture to identity checks plus a saved base stamp. The earlier removal of custom plan retirement, Bash-first deletion and mid-tree elevation fallback remains in place, as does the small UAC broker for local shutdown. The decisions below replace earlier rules in place. These planning reviews changed no runtime code; this follow-up ran no native probe or UAC session.
+The 16 November review removed configuration epochs and the executor's Loader event subscription, replaced unfinished initialization with shared rebuild readiness, and simplified anchor capture to identity checks plus a saved base stamp. Custom plan retirement, Bash-first deletion and mid-tree elevation retry remain discarded. The small UAC broker continues to provide bounded local shutdown. The decisions below include the subsequent implementation and review changes.
 
 ## Starting point from the audit
 
@@ -159,11 +159,57 @@ Runtime files remain NTFS hardlinks to the installed Git files. This avoids main
 
 The cost is the same-volume requirement and, for protected Git installations, UAC permission to create links. Only the fixed link helper receives that elevation.
 
-The persistent cache lives in the DSH profile to keep native paths short and survive restarts. Compositions without profile metadata use the package's private fallback cache. Rebuilding a disposable tree for every command or restart would repeatedly pay the linking and elevation cost.
+The persistent cache lives at `<profileContext.dir>/.git-bash-on-win`. This keeps it outside the installed package and preserves it across restarts and package replacement. Rebuilding a disposable tree for every command or restart would repeatedly pay the linking and elevation cost.
 
 Source and cache paths stay separate in both containment directions, checked before creating runtime artifacts. Each command compares its canonical workspace with the pin's recorded canonical source path and admitted cache root before DSH confinement can propagate workspace grants. Workspace canonicalization must also resolve aliases into those trees. The old source path need not still exist to run that cached generation. Preparation itself neither grants workspace access nor needs a session root. Environment changes apply only to the child execution.
 
 Creating and removing hardlinks changes NTFS bookkeeping, including change times, the archive bit and journal records. We accept those filesystem effects. We do not rewrite attributes or timestamps to conceal them.
+
+### One fixed cache per DSH profile
+
+The plugin supports DSH profile-backed execution. Normal DSH startup already
+provides `profileContext`, so the executor requires it and derives the cache path
+once during construction. A missing context raises a clear error before the Shell
+provider is registered. This adds no startup filesystem work: the first command
+or explicit rebuild still starts preparation.
+
+We removed `<installed package>/.runtime`. It existed only to support custom
+compositions without profile metadata; it was never a retry location for an
+unwritable or invalid profile cache. That optional support required another purge
+target, package-directory discovery and guards around package replacement. The
+Phase 6 audits found cleanup bypasses caused by that coupling. Supporting only
+profile-backed execution removes the reason for those paths and their tests.
+Custom hosts must provide a DSH profile context to use the executor.
+
+The cache name is fixed relative to the profile directory. DSH continues to own
+profile selection and location; the plugin adds no cache-path setting. We rejected
+a hard-coded machine-wide absolute path because users can have several profiles
+or place their DSH home elsewhere. We also rejected a shared global cache: sharing
+some links would make one profile's cleanup depend on other profiles. Separate
+profile caches accept that small storage cost in exchange for independent ownership.
+Workspace-derived and temporary locations would tie runtime lifetime to a command
+or workspace, so they are not substitutes for a missing profile.
+
+The lower-level `cacheDirectory` argument stays. The executor supplies its fixed
+path, and tests supply isolated fixture paths. Passing a directory keeps cache
+and filesystem code independent of Cordis. The elevation plan still needs an
+explicit cache root and its identity. The cleanup CLI likewise takes an absolute
+target so it can run after DSH closes; this does not configure the executor's
+future storage location. No location registry or profile-discovery service is needed.
+
+Package installation and replacement now leave the profile cache alone. Removal
+purges that profile cache before delegating to DSH's official package operation.
+Offline rebuilding uses the same purge while retaining the package and settings.
+The same-volume NTFS requirement, source/workspace separation, generation pins,
+writer locks and non-following deletion still apply to this single location.
+
+This project is in pre-development and has no older installations. We therefore
+removed the old path, its ignore rule, package-tree lookup and special cleanup
+tests outright. We rejected migration, legacy-cache scanning and compatibility
+cleanup because there is no deployed data to preserve. The real packed-profile
+test covers cleanup, installation reuse and blocked removal; the duplicate
+two-cache cleanup fixture was removed. A focused test checks that profile-less
+construction fails before a Shell service is registered.
 
 ### Keep one base per generation
 
@@ -257,7 +303,7 @@ We replaced the 16-path set because it made OpenSSL ABI filenames and auxiliary 
 
 This choice gives up full cache-layout verification at restart. A deleted non-anchor Perl module, an extra cached file or a source-only replacement may remain undetected while the anchors match. Confined sessions cannot normally alter the base, but full-access commands and outside programs can. Six anchors detect fewer non-core changes than sixteen. We accept that smaller sample for stable layout requirements and faster startup; it is not proof that every Git update or file change will be detected.
 
-The intended user-facing recovery is a button in the future UI that requests an online rebuild. The packaged `lib/cleanup.js` entry is the interim CLI route and an offline fallback: close all DSH instances using the caches, run that entry with the profile cache path, then restart and make a Bash call. It purges the profile and package fallback caches while leaving the package and settings intact. Restart alone is not advertised as repairing every missing cache file.
+The intended user-facing recovery is a button in the future UI that requests an online rebuild. The packaged `lib/cleanup.js` entry is the interim CLI route and an offline recovery option: close all DSH instances using the profile, run that entry with its cache path, then restart and make a Bash call. It purges that profile cache while leaving the package and settings intact. Restart alone is not advertised as repairing every missing cache file.
 
 A failed debugger module/path admission stops execution. Replacing a source pathname does not. Neither starts a scan on each command retry. A new provider or selection permits initialization to reassess the source/base anchor set; an explicit rebuild forces a new generation. An ordinary command failure is not automatically diagnosed as cache corruption.
 
@@ -495,13 +541,13 @@ The updated AGENTS.md makes normal disposal strict about active resources and be
 
 If secure-desktop consent or an independently elevated helper remains unconfirmed after bounded local shutdown, leave its revoked unpublished candidate for guarded recovery. A surviving helper may still hold its own plan handle; that is distinct from leaking a handle in the disposed DSH instance. Later GC skips a busy candidate, and purge reports failure while its guards or removals remain blocked. A pending late helper cannot mutate after its setup lease is revoked. No successful publication is inferred from shutdown cancellation.
 
-Complete uninstall remains strict: remove the optional plugin-only gitBashPath override while preserving shared Shell settings, close the relevant DSH instances, purge both profile and package fallback caches, then remove the package. Purge verifies root ownership, excludes preparation with the writer lock, preclaims every generation against live pins, unlinks helper plans and removes every interior entry without following reparse targets. Unknown names inside that admitted root are not personal storage to preserve.
+Complete uninstall remains strict: remove the optional plugin-only gitBashPath override while preserving shared Shell settings, close DSH instances using the profile, purge its cache, then remove the package. Purge verifies root ownership, excludes preparation with the writer lock, preclaims every generation against live pins, unlinks helper plans and removes every interior entry without following reparse targets. Unknown names inside that admitted root are not personal storage to preserve.
 
 After all generation claims and plan unlinks succeed, unpublish current before payload removal. Keep the root ownership marker while data cleanup is incomplete. Once contents are gone, remove that marker last among ordinary files, close the held delete-on-close writer lock and remove the root itself. Any blocked removal, failed native close or remaining directory makes purge fail explicitly. Do not replace this with a catch-all recursive delete or broaden markerless-root admission.
 
 Source contents, attributes and ACLs remain unchanged, and removing all cache hardlinks restores their link counts. Approved NTFS bookkeeping effects remain the documented exception. Normal disposal intentionally retains the cache; it does not claim uninstall-level restoration. Without root owner files, an idle executor holding no pin/preparation is not detected by purge and could recreate the cache later. Closing all relevant DSH instances remains the uninstall procedure; no process census is added.
 
-DSH's native package removal has no cache-purge hook and preserves configuration. Keep the repository wrapper and packaged cleanup entry so removal includes both caches and plugin-only settings. Temporary private residue is allowed at normal shutdown; incomplete purge is never complete uninstallation.
+DSH's native package removal has no cache-purge hook and preserves configuration. Keep the repository wrapper and packaged cleanup entry for the profile-cache purge; the user removes the plugin-only setting through DSH or its profile patch while preserving shared Shell settings. Temporary private residue is allowed at normal shutdown; incomplete purge is never complete uninstallation.
 
 ## How the plan changed
 
@@ -513,6 +559,7 @@ This table tracks the starting points and proposals that led to the final design
 | Legacy tests | Preserve test logic and port PoC support, then rely on prose/probes alone | Archive the old harness and create focused maintained tests for the new contracts using isolated fixtures |
 | Module layout | Broad platform/service splits, then 13 files with Git work folded into cache | Use 14 files: a shared Git-files module serves cache and helper; keep debugger hooks with their owning loop |
 | Runtime layout | Three physical trees, then a shared base with mode and session junctions | Use one base with direct scoped views; the mode junctions had no remaining role |
+| Cache location | Profile cache plus package-local storage for profile-less compositions | Require a DSH profile and use its fixed `.git-bash-on-win` directory; remove package-cache lifecycle and migration paths |
 | Startup | Background inspection and provisioning after checking a fallback workspace | Prepare on the first command or an explicit rebuild; activation starts no work |
 | Coordination API | A separate coordinator and generic refresh hook, then no manual hook until a caller existed | Keep the private slot and implement a narrow rebuild hook for the now-planned UI button; defer UI wiring |
 | Cache API | Separate open/prepare/lease calls and command-time layout probes | Return a self-contained pin/use with admitted paths/layout; construct environment strings without rediscovery |

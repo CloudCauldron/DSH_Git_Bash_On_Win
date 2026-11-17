@@ -5,5 +5,4 @@ lib/
 artifacts/
 test/results/
 .deprecated
-.runtime/
 .git-bash-on-win/

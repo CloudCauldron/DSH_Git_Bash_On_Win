@@ -29,10 +29,10 @@ tree freshness check or per-command scan.
 
 ## Packaging and installed-profile coverage
 
-After audit round 2, `pnpm pack --pack-destination artifacts` completed with its
+After the profile-only change, `pnpm pack --pack-destination artifacts` completed with its
 normal prepack checks. `artifacts/dsh-git-bash-on-win-0.1.0-experimental.1.tgz`
-contains exactly the 31 expected production/package files (44,747 bytes). SHA-256:
-`8e5e07b79c712edc8ef454331f9d02834194553bd760c69678aed36abad9aadb`.
+contains exactly the 31 expected production/package files (44,691 bytes). SHA-256:
+`969305dc65530ac228a1bb9317c78dc69978b44fad34f34076e8b6b8d02d357f`.
 The generated tarball and detailed logs under `test/results/` remain Git-ignored.
 
 `prepack` now runs typecheck, lint and a clean production build. `test:release`
@@ -63,18 +63,19 @@ Coverage includes:
   profile resolution service, including the newly installed standalone dependencies.
 - Packaged helper/launcher argument rejection after successful dependency loading,
   and successful execution of the packaged offline cleanup entry.
-- Live pins in either profile or package fallback cache block package removal;
+- Live pins in the profile cache block package removal;
   the dependency remains installed and the pinned selection remains intact.
-- Unowned fallback directories block removal. No markerless directory is adopted
+- Unowned profile-cache directories block removal. No markerless directory is adopted
   or recursively deleted by the plugin.
-- Offline rebuild cleanup removes both caches while preserving the package and
-  `gitBashPath`. Complete removal purges both caches before official removal.
+- Offline rebuild cleanup removes the profile cache while preserving the package
+  and `gitBashPath`. Complete removal purges that cache before official removal.
+- Package installation preserves the profile cache and its selected generation.
+  Executor construction requires a DSH profile before registering the Shell service.
 - The documented manual removal of only `gitBashPath` preserves shared Shell
   values. Official package removal preserves that patch; the subsequent native
   config dump restores the original bundle composition and timeout setting.
 - Source contents/ACLs remain unchanged and source hardlink counts are restored.
-  The fixture recognizes already-absent caches after pnpm removes their parent;
-  any remaining cache still requires strict purge before fixture-tree removal.
+  Fixtures strictly purge their caches before removing their ordinary test files.
 
 ## Ownership and recovery review
 
@@ -93,17 +94,16 @@ remains with DSH/the user, following the README's complete-uninstall sequence.
 | Source and host isolation | Canonical workspace/source/cache separation precedes confinement. Fixtures use owned copies; standalone imports use pinned public APIs. Source hardlink bookkeeping remains observable and is not concealed. |
 | Freshness | Six saved anchor stamps are a bounded sample. Live pins do no freshness walk; non-anchor damage may survive restart. Explicit rebuilding restores layout from the current source but cannot repair damaged shared bytes. |
 
-## Adversarial audit round 1
+## Adversarial audit round 1 — former cache design
 
 A context-independent reviewer and the implementing agent inspected Phase 6 and
 the pinned public DSH code. Native isolated experiments reproduced two package
 cleanup bypasses: upgrading could let pnpm remove an existing `.runtime` without
 guarded purge, and a missing installed manifest could be mistaken for package
-absence during removal. The wrapper now locates the fixed package entry directly
-with existing NTFS primitives and purges the fallback before either operation.
-Profile-cache purge remains removal-only. Regressions exercise pinned and unowned
-fallbacks, retry after release, and missing-manifest refusal. No new state or
-coordination layer was added.
+absence during removal. At that stage, the wrapper was changed to locate the fixed
+package entry directly and purge its cache before either operation. The later
+[profile-only decision](backend-20261117-design-decisions.md#one-fixed-cache-per-dsh-profile)
+removed this package-cache lifecycle and its tests altogether.
 
 Both reviewers also found that a manual deny/late assertion could lose an
 unexpectedly fulfilled pin. The manual test now retains and finally releases it,
@@ -129,6 +129,22 @@ passed. This round introduced no runtime module, middleware or state model, and
 did not rerun or claim additional UAC interactions. Audit confidence is bounded by
 the supported environment and the explicit manual observations below.
 
+## Profile-only implementation
+
+The [profile-only decision](backend-20261117-design-decisions.md#one-fixed-cache-per-dsh-profile)
+is implemented in the executor, cleanup CLI and package wrapper. Active source,
+tooling, tests, generated code and ignore rules contain no package-cache path.
+The former cleanup fixture was removed; the real packed-profile test now verifies
+cache retention on installation and strict purge before removal. A new test checks
+that missing profile context fails before Shell registration. Fixture teardown
+again requires strict purge of every tracked cache, with no exception for removed
+package directories.
+
+`pnpm test:release` passed typecheck, lint, a clean build and **139 tests with zero
+failures or skips** (69.63 seconds). Packaging and its 31-file allowlist also passed.
+The cache-location change did not alter the broker/helper protocol; the earlier
+manual observations below remain the recorded UAC evidence.
+
 ## Manual verification and limits
 
 With the user's help, real UAC approval passed (2.56 seconds); the user confirmed
@@ -149,7 +165,7 @@ Stopping the broker does not promise prompt dismissal or independent-helper
 termination. The revoked lease and guarded cleanup remain the authorization boundary.
 
 Normal disposal may retain cache-local view residue while closing owned resources.
-Complete uninstall requires successful purge of all relevant profile/fallback
+Complete uninstall requires successful purge of all relevant profile
 caches and removal of the plugin-only setting before official package removal.
 Close every relevant DSH instance first: an idle instance without a pin can recreate
 a cache. Hardlink bookkeeping effects remain permitted and observable; no

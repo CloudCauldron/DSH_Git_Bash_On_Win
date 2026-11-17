@@ -37,6 +37,7 @@ export default class GitBashExecutor extends SandboxBashExecutor {
   }) as unknown as typeof SandboxBashExecutor.Config;
 
   declare readonly config: Config;
+  private readonly cacheDirectory: string;
   private readonly setupSpawn: Subprocess['spawn'];
   private slot?: PreparationSlot;
   private rebuildOp?: PreparationSlot;
@@ -48,7 +49,11 @@ export default class GitBashExecutor extends SandboxBashExecutor {
 
   constructor(ctx: Context, config: Config) {
     if (process.platform !== 'win32' || process.arch !== 'x64') throw new Error('This plugin runs only on native Windows x64.');
+    const profile = ctx.get('profileContext') as { dir: string } | undefined;
+    if (!profile) throw new Error('Git Bash requires a DSH profile context.');
+    const cacheDirectory = join(profile.dir, '.git-bash-on-win');
     super(ctx, config);
+    this.cacheDirectory = cacheDirectory;
     this.setupSpawn = ctx.subprocess.spawn.bind(ctx.subprocess);
     ctx.effect(() => () => this.disposeRuntime());
   }
@@ -87,8 +92,6 @@ export default class GitBashExecutor extends SandboxBashExecutor {
   }
 
   private createSlot(selection: string | undefined, rebuild: boolean): PreparationSlot {
-    const profile = this.ctx.get('profileContext') as { dir: string } | undefined;
-    const cacheDirectory = profile ? join(profile.dir, '.git-bash-on-win') : fileURLToPath(new URL('../.runtime', import.meta.url));
     const controller = new AbortController();
     const retired = [...this.cleanup];
     // Install the object in slot/rebuildOp before preparation can yield or finish.
@@ -100,7 +103,7 @@ export default class GitBashExecutor extends SandboxBashExecutor {
         this.observeSelection();
         controller.signal.throwIfAborted();
         this.stopping.signal.throwIfAborted();
-        const pin = await prepareRuntime({ cacheDirectory, gitBashPath: selection, rebuild, spawn: this.setupSpawn }, controller.signal).catch(error => {
+        const pin = await prepareRuntime({ cacheDirectory: this.cacheDirectory, gitBashPath: selection, rebuild, spawn: this.setupSpawn }, controller.signal).catch(error => {
           if (hasRuntimeCleanupFailure(error)) this.cleanupErrors.push(error);
           throw error;
         });

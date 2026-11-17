@@ -1,10 +1,9 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs, { readFileSync, readdirSync } from 'node:fs';
-import { cp, link, mkdir, readFile, rename, stat, symlink, unlink, writeFile } from 'node:fs/promises';
+import { link, mkdir, readFile, rename, stat, symlink, unlink, writeFile } from 'node:fs/promises';
 import { join, toNamespacedPath } from 'node:path';
 import { syncBuiltinESMExports } from 'node:module';
-import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import { nativeOnly, runtimeFixture } from './fixtures.ts';
 import { prepareRuntime, purgeRuntimeCache } from '../src/runtime/runtime-cache.ts';
@@ -400,24 +399,4 @@ await test('cancellation during a bounded linking batch drains before cleanup an
   assert.ok(Object.values(anchorPaths('ucrt64')).every(path => pathExists(join(fixture.source, path))));
   // Cancellation does not retain a failed-readiness slot at the factory boundary.
   const pin = await fixture.prepare(); await pin.release();
-});
-
-await test('packaged cleanup strictly purges isolated profile and fallback caches', nativeOnly, async t => {
-  const fixture = await runtimeFixture(t), profile = await fixture.prepare();
-  await profile.release();
-  const packageRoot = join(fixture.directory, 'package');
-  await mkdir(packageRoot);
-  const repository = fileURLToPath(new URL('../', import.meta.url));
-  await cp(join(repository, 'lib'), join(packageRoot, 'lib'), { recursive: true });
-  await writeFile(join(packageRoot, 'package.json'), '{"type":"module"}');
-  await symlink(join(repository, 'node_modules'), join(packageRoot, 'node_modules'), 'junction');
-  const fallbackPath = join(packageRoot, '.runtime');
-  const fallback = await fixture.prepare(false, new AbortController().signal, fallbackPath);
-  await fallback.release();
-  const cleanup = spawnSync(process.execPath, [join(packageRoot, 'lib/cleanup.js'), fixture.cache], { encoding: 'utf8', timeout: 30_000 });
-  assert.equal(cleanup.error, undefined);
-  assert.equal(cleanup.status, 0, cleanup.stderr);
-  assert.equal(pathExists(fixture.cache), false);
-  assert.equal(pathExists(fallbackPath), false);
-  assert.equal((await stat(join(fixture.source, 'usr/bin/bash.exe'))).nlink, 2);
 });

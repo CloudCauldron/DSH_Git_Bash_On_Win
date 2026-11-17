@@ -114,7 +114,7 @@ Strict offline purge under the writer lock must:
 
 Any blocked removal, failed native close or remaining directory means incomplete purge. Ownership covers the entire admitted interior, including unexpected names, but never external targets. Unsupported reparse handling/access errors stop strict purge.
 
-Complete uninstall removes only plugin-specific `gitBashPath` configuration while preserving shared Shell settings, closes all relevant DSH instances, successfully purges profile and fallback `.runtime` caches, then invokes official package removal. Source link counts must be restored. The offline rebuild fallback uses those purges but retains package/settings. With no owner registry, an idle instance could recreate the cache; offline closure is still required.
+Complete uninstall removes only plugin-specific `gitBashPath` configuration while preserving shared Shell settings, closes DSH instances using the profile, successfully purges its `.git-bash-on-win` cache, then invokes official package removal. Source link counts must be restored. Offline rebuilding uses that purge but retains package/settings. With no owner registry, an idle instance could recreate the cache; offline closure is still required. Cache location follows the later [profile-only decision](backend-20261117-design-decisions.md#one-fixed-cache-per-dsh-profile).
 
 ## 7. Source isolation and accepted limits
 
@@ -134,11 +134,11 @@ Six anchors are a bounded freshness sample, not full tree equality or an atomic 
 | 2 | `runtime-cache.test.ts` and `pin-lifetime.test.ts`: F1, full-interior non-following purge, cold/warm stamps, real native exclusion, interrupted collection and finalizer closure despite residue | Pending |
 | 3 | `provisioning.test.ts`: sole probe decision, shared linker, cancellation/draining, strict F4 wait/exit/close outcomes, plan unlink exclusion, revoked late helpers and bounded local broker shutdown | Pending |
 | 4 | Executor and view contracts above, including selection/rebuild guards, shared failed readiness, reference ownership, cancellation, eviction and child validation | Pending |
-| 5–6 | `bash-execution.test.ts`: real DSH read-only/workspace-write/full-access execution, namespace/policy/Job/token/module behavior, overlapping uses/disposal; package and both-cache uninstall validation | Pending |
+| 5–6 | `bash-execution.test.ts`: real DSH read-only/workspace-write/full-access execution, namespace/policy/Job/token/module behavior, overlapping uses/disposal; package and profile-cache uninstall validation | Pending |
 
 Use small reusable `test/fixtures.ts` helpers, `fs.mkdtemp`, `node --test` and Windows native Git Bash. Isolate profile/workspace/cache/source copies; workspace cannot contain source/cache. Mutate only owned fixture artifacts. Default tests open no consent prompt; supported Windows x64/pinned DSH/Git release verification must run the native lane. Missing prerequisites are explicit skips, not passes. Actual modal-UAC cancellation/late-helper behavior requires its explicitly invoked manual lane.
 
-Each fixture ultimately joins processes and strictly purges artifacts; cleanup failure fails verification even where normal disposal permits residue. Check source contents/ACLs and restored link counts, package inputs, profile/fallback purge and plugin-only setting removal. Historical probes and wiring assertions do not prove future native execution.
+Each fixture ultimately joins processes and strictly purges artifacts; cleanup failure fails verification even where normal disposal permits residue. Check source contents/ACLs and restored link counts, package inputs, profile-cache purge and plugin-only setting removal. Historical probes and wiring assertions do not prove future native execution.
 
 Phase 0 review completed:
 

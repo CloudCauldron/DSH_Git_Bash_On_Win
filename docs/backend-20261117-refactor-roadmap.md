@@ -69,7 +69,7 @@ The active source/tooling tree below will be created during implementation. Its 
 ```text
 src/
   index.ts
-    GitBashExecutor: native schema, lazy singleflight slot, current-selection
+    GitBashExecutor: required profile, fixed cache path, native schema, lazy singleflight slot, current-selection
     guard, explicit rebuild entry, command ownership and disposal.
   adapter.ts
     Existing narrow Cordis/Loader replacement/restoration.
@@ -169,7 +169,7 @@ Reuse DSH's `SandboxMode`, `SandboxExecutionPolicy`, `ShellExecution`, `Subproce
 
 ```typescript
   interface RuntimePreparation {
-    readonly cacheDirectory: string;
+    readonly cacheDirectory: string; // internal input; the executor supplies the fixed profile path
     readonly spawn: Subprocess['spawn']; // bound to the local DSH provider
     readonly gitBashPath?: string;
     readonly rebuild?: boolean; // default false; true requires a fresh generation
@@ -198,6 +198,21 @@ Reuse DSH's `SandboxMode`, `SandboxExecutionPolicy`, `ShellExecution`, `Subproce
 
   purgeRuntimeCache(cacheDirectory: string): Promise<void>;
 ```
+
+The only runtime cache is `<profileContext.dir>/.git-bash-on-win`. The executor
+requires DSH's profile context and captures this path once during construction,
+before registering its Shell service. Construction creates no cache and requests
+no elevation; preparation still begins with a command or explicit rebuild.
+Missing profile context is a clear construction error. There is no plugin setting
+for the cache path, package-local cache, temporary substitute or global cache.
+DSH continues to choose the profile directory, so separate profiles keep separate
+caches. See the [cache-location decision](backend-20261117-design-decisions.md#one-fixed-cache-per-dsh-profile)
+for the trade-offs and rejected alternatives.
+
+`cacheDirectory` remains an internal function argument so filesystem code does not
+depend on a Cordis context and tests can use isolated directories. The offline
+cleanup command takes the selected profile cache as its target; that argument
+does not configure where future executions store their runtime.
 
 The factory retains the private cache owner inside its returned pin. It resolves Git and admits source/cache separation without a workspace or confinement/ACL calls, then follows §7.1 or fresh setup (§6). Explicit `rebuild: true` bypasses current-generation reuse through that same pipeline. The executor captures bound `spawn` once for setup supervision only; it is neither metadata nor selection identity and does not introduce a subprocess service or pass a Context object.
 
@@ -384,7 +399,7 @@ With the writer lock and claim held, unlink the candidate's plan **before payloa
 3. Unpublish `current.json`, then remove payload through the same unlinker. Keep each claim until its directory is removed and close it before parent removal.
 4. Remove remaining owned contents, retaining root ownership metadata and the held writer lock until data cleanup succeeds. Remove the marker last among ordinary files, close the delete-on-close writer lock, then `rmdir` the root.
 
-The writer lock excludes new preparation during preflight; pin/claim exclusion and §7.1's selector recheck protect warm readers, including after interrupted GC or purge. Every blocked removal, failed close or remaining directory makes purge explicitly incomplete. Both profile/fallback caches must be removed and source link counts restored for uninstall (§9). No provider owner registry or process census is added: idle executors holding neither pin nor preparation could recreate the cache, so all relevant DSH instances must be closed for offline purge.
+The writer lock excludes new preparation during preflight; pin/claim exclusion and §7.1's selector recheck protect warm readers, including after interrupted GC or purge. Every blocked removal, failed close or remaining directory makes purge explicitly incomplete. The selected profile's cache must be removed and source link counts restored for uninstall (§9). No provider owner registry or process census is added: idle executors holding neither pin nor preparation could recreate the cache, so all relevant DSH instances must be closed for offline purge.
 
 ## 7. LAZY INITIALIZATION AND WARM VERIFICATION
 
@@ -496,10 +511,15 @@ Local process/handle failures are errors; ephemeral cache-local cleanup is best 
 The interim rebuild CLI and continuing offline fallback are:
 
 1. Close all DSH instances using the profile/package.
-2. Invoke installed `lib/cleanup.js` with the absolute profile cache path; it also purges the package fallback cache through §6.5.
+2. Invoke installed `lib/cleanup.js` with the absolute profile cache path. It purges that cache through §6.5.
 3. Retain the installed plugin and `gitBashPath` setting, restart DSH and let the next Bash command prepare cold.
 
-For **complete uninstall**, remove any plugin-only `gitBashPath` override while preserving shared Shell settings, close all relevant DSH instances, successfully purge both profile and fallback `.runtime` caches (§6.5), then invoke official package removal. Restore plugin-created source link counts and preserve source contents/ACLs under the workspace/AGENTS constraints. Interrupted/blocked purge must fail explicitly and must never be reported as complete uninstallation.
+For **complete uninstall**, remove any plugin-only `gitBashPath` override while preserving shared Shell settings, close all DSH instances using the profile, successfully purge its `.git-bash-on-win` cache (§6.5), then invoke official package removal. Restore plugin-created source link counts and preserve source contents/ACLs under the workspace/AGENTS constraints. Interrupted/blocked purge must fail explicitly and must never be reported as complete uninstallation.
+
+Package installation and replacement retain the profile cache. The repository
+wrapper purges it only for removal; package lookup is not part of cache ownership.
+This is a pre-development change with no older installations, so no migration,
+legacy-cache scan or compatibility cleanup path is retained.
 
 ## 10. MAINTAINED TESTS AND IMPLEMENTATION REVIEW
 
@@ -526,8 +546,8 @@ Phase 1 completed on 2026-11-17:
 Phase 2 completed on 2026-11-17:
 
 - Added the three runtime modules in §2. Win32 flags, identity/kind/reparse admission, checked handle closure, writer/setup leases, pin/collector holds and non-following removal are centralized in `ntfs-filesystem.ts`. Git discovery, bounded inventory, fresh-tree linking and six-anchor capture remain separate from cache ownership and lifetime.
-- Implemented F1 ownership, the lock-free read/pin/selector-recheck path, local probe/link/capture/atomic publication, guarded unused-generation collection, pin references/direct views and strict whole-interior purge. The cleanup entry purges both profile and fallback caches. Existing source contents/ACLs are untouched by production operations; hardlink bookkeeping retains the approved exception.
-- Maintained Windows verification covers native sharing in both acquisition orders, ownerless warm admission while a writer is held, all-generation purge preflight, stale readers after interrupted arbitrary-order GC, interrupted purge, retained uses, cancellation, source separation, malformed controls, non-following cleanup and residue recovery. CLI verification uses an isolated package/profile/fallback fixture. No personal profile or archived helper is loaded.
+- Implemented F1 ownership, the lock-free read/pin/selector-recheck path, local probe/link/capture/atomic publication, guarded unused-generation collection, pin references/direct views and strict whole-interior purge. The cleanup entry purges the selected profile cache. Existing source contents/ACLs are untouched by production operations; hardlink bookkeeping retains the approved exception.
+- Maintained Windows verification covers native sharing in both acquisition orders, ownerless warm admission while a writer is held, all-generation purge preflight, stale readers after interrupted arbitrary-order GC, interrupted purge, retained uses, cancellation, source separation, malformed controls, non-following cleanup and residue recovery. CLI verification uses an isolated package/profile fixture. No personal profile or archived helper is loaded.
 - `pnpm check`, `pnpm lint` and `pnpm test:windows` pass: 35 tests, zero skips, including the seven bootstrap checks. The fixture metadata/anchor warm path measured approximately 11–13 ms on Windows x64 Node 26.12.1 with the pinned DSH dependencies; this is not a full-installation benchmark or a 5 ms guarantee.
 - At Phase 2 completion, optional elevation remained gated for Phase 3. The implementation below replaces that gate with guarded provisioning; default tests still request no UAC. Executor/rebuild orchestration, child admission/debugger behavior and real DSH execution remain Phases 4–6; release installation and packaging stay gated.
 
@@ -594,7 +614,7 @@ Verify admitted layout propagation and the validation boundaries: lease has no r
 Implemented and verified on 2026-11-17: `pnpm test:release` passes typecheck, lint,
 clean build and **139 maintained tests with zero skips** on native Windows x64,
 pinned DSH and supported Git. The repository wrapper now delegates to the official
-package operation after guarded removal of both caches. A real packed installation
+package operation after guarded removal of the profile cache. A real packed installation
 test exposed and fixed missing standalone runtime dependencies under DSH's
 `autoInstallPeers: false`; it also verifies blocked removal, offline cleanup,
 settings preservation and source restoration. The [Phase 6 record](backend-20261117-phase6-verification.md)
@@ -604,7 +624,7 @@ contains the ownership review, measurements and remaining manual-UAC limits.
 
 The native lane requires Windows x64, pinned DSH and supported Git. Missing prerequisites are explicit skips with reasons; a supported release run must execute it. Use an owned writable source copy where needed to avoid automatic consent or installed-Git ACL changes. Actual UAC cancellation/late-helper scenarios remain an explicitly invoked manual integration lane; automated F4 faults do not prove modal-UAC behavior.
 
-Every fixture ultimately joins processes and strictly purges artifacts. Cleanup failure fails verification even when a normal-disposal assertion permits residue. Separately verify source contents/ACLs and restored link counts, package inputs, profile/fallback purge and plugin-only setting removal. Review handle ownership, confinement, crash boundaries and §7.3's freshness limits alongside tests.
+Every fixture ultimately joins processes and strictly purges artifacts. Cleanup failure fails verification even when a normal-disposal assertion permits residue. Separately verify source contents/ACLs and restored link counts, package inputs, profile-cache purge and plugin-only setting removal. Require profile context before executor activation; verify that package installation retains its cache and a busy or unowned profile cache blocks removal. Review handle ownership, confinement, crash boundaries and §7.3's freshness limits alongside tests.
 
 Existing probes are supporting primitive evidence, not this maintained suite. Their scope/limits and superseded experiments are documented in the [decision record](../docs/backend-20261117-design-decisions.md#planning-references).
 

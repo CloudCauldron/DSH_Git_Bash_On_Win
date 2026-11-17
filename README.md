@@ -105,7 +105,7 @@ absolute installed `@deepseek-ai/dsh/package.json`. The selected CLI must match
 the pinned release. Only an absent CLI skips the installed-CLI test; ambiguous,
 invalid or broken installations fail validation. Packed-install tests use the
 official DSH package operation in an isolated profile with private pnpm storage.
-They exercise real tarball installation, standalone script resolution, both-cache
+They exercise real tarball installation, standalone script resolution, profile-cache
 purge, blocked removal, bundle restoration and preservation of shared Shell
 settings after removing the plugin-only override. No personal profile is opened.
 
@@ -133,12 +133,9 @@ bundle reconciliation, using an absolute pnpm executable. It accepts only `add`
 with an absolute tarball path or `remove dsh-git-bash-on-win`; lifecycle scripts
 are disabled and arbitrary pnpm flags are not forwarded. Where native executable
 lookup works, `dsh plugin --profile web add <tarball> --ignore-scripts` uses the same
-official package operation. Close all DSH instances using the package before
-installation or replacement: pnpm can remove the old package directory. The wrapper
-strictly purges its fallback cache first, including when its manifest is missing;
-an active pin or unowned cache blocks installation. With the native CLI, run the
-installed cleanup entry first before replacing an existing package. Profile caches
-are retained by wrapper installation, and are purged by wrapper removal.
+official package operation. Package installation and replacement retain the profile
+cache. The wrapper purges it before package removal; a live pin or unowned cache
+blocks removal. Runtime files live outside the package directory.
 Restart DSH unelevated after installation or bundle enable/disable changes.
 
 For a nonstandard Git installation, set `gitBashPath` on the existing
@@ -155,8 +152,10 @@ and `usr/bin/bash.exe` are accepted. A manual profile override can look like:
 DSH replaces a patched `config` wholesale. Preserve existing timeout, output,
 working-directory and grace settings when editing YAML. The cache and Git source
 must share an NTFS volume; neither may overlap the actual workspace in either
-containment direction. The profile cache is `<profile directory>/.git-bash-on-win`;
-contexts without profile metadata use `<installed package>/.runtime`.
+containment direction. The only cache location is
+`<profileContext.dir>/.git-bash-on-win`, fixed for each DSH profile. The plugin has
+no cache-location setting. A DSH profile context is required when constructing the
+executor; cache preparation remains lazy until a command or explicit rebuild.
 
 ## Integration and isolation contract
 
@@ -221,7 +220,7 @@ Close all relevant DSH instances before running the **installed package's** entr
 node '<installed package>/lib/cleanup.js' '<absolute profile directory>/.git-bash-on-win'
 ```
 
-This purges both the supplied profile cache and the package `.runtime` fallback.
+This purges the supplied profile cache.
 Only a root with this implementation's valid ownership marker is admitted; an old,
 markerless or unrecognized directory is refused without deletion. Recovery uses
 ordinary plan unlink and native generation claims; a busy pin or plan prevents
@@ -246,7 +245,7 @@ selected generation until eligible collection or offline purge.
 
 Complete uninstallation requires removing only the plugin-specific `gitBashPath`
 override while preserving shared Shell settings, closing all relevant DSH
-instances, successfully purging both caches, then using official package removal.
+instances, successfully purging the profile cache, then using official package removal.
 After removing that field through the native editor or editing its profile patch
 (delete a manually added override row only if it becomes empty), the repository
 wrapper performs purge before official removal:

@@ -22,6 +22,19 @@ export function anchorPaths(layout: GitLayout): Readonly<Record<AnchorName, stri
   };
 }
 
+/** Pure construction from a pin's recorded selection; the source may be gone. */
+export function buildRuntimeEnvironment(installationRoot: string, sourceRoot: string, layout: GitLayout, ambient: NodeJS.ProcessEnv): Record<string, string> {
+  const existing = Object.entries(ambient).find(([key]) => key.toLowerCase() === 'path')?.[1] ?? '';
+  const excluded = ['bin', 'usr/bin', 'cmd', `${layout}/bin`].map(path => resolve(sourceRoot, path).toLowerCase());
+  const tail = existing.split(';').filter(path => path && !excluded.includes(resolve(path.replace(/^"(.*)"$/, '$1')).toLowerCase()));
+  return {
+    PATH: [join(installationRoot, layout, 'bin'), join(installationRoot, 'usr/bin'), ...tail].join(';'),
+    GIT_EXEC_PATH: join(installationRoot, layout, 'libexec/git-core').replaceAll('\\', '/'),
+    GIT_TEMPLATE_DIR: join(installationRoot, layout, 'share/git-core/templates').replaceAll('\\', '/'),
+    MSYS2_PATH_TYPE: 'inherit',
+  };
+}
+
 export function discoverGitInstallation(setting?: string): GitInstallation {
   const candidates = setting !== undefined ? [setting] : [
     ...['ProgramW6432', 'ProgramFiles', 'ProgramFiles(x86)'].flatMap(key => process.env[key] ? [join(process.env[key]!, 'Git/bin/bash.exe')] : []),

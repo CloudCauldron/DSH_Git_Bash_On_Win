@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
-import { readdirSync, unlinkSync } from 'node:fs';
+import fs, { readdirSync, unlinkSync } from 'node:fs';
+import fsp from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
 import { mkdir, readFile, rename, symlink, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { test } from 'node:test';
 import type { SandboxExecutionPolicy } from '@deepseek-ai/dsh-sandbox';
 import { nativeOnly, runtimeFixture } from './fixtures.ts';
@@ -114,6 +116,128 @@ await test('failed shared view creation unwinds waiters, evicts the promise and 
   const use = await pin.lease(scope(fixture.workspace, 'session'), signal());
   await pin.release(); await use.release();
   await purgeRuntimeCache(fixture.cache);
+});
+
+await test('failed junction admission cleans only its created target and the shared view can retry', nativeOnly, async t => {
+  const f = await runtimeFixture(t), pin = await f.prepare(), original = fs.realpathSync;
+  let attempted = '';
+  const mock = t.mock.method(fs, 'realpathSync', ((...args: Parameters<typeof fs.realpathSync>) => {
+    if (String(args[0]).includes('\\views\\')) { attempted = String(args[0]); throw new Error('fixture view admission failed'); }
+    return original(...args);
+  }) as typeof fs.realpathSync);
+  syncBuiltinESMExports();
+  try {
+    const outcomes = await Promise.allSettled([
+      pin.lease(scope(f.workspace, 'session'), signal()), pin.lease(scope(f.workspace, 'session'), signal()),
+    ]);
+    assert.ok(attempted);
+    assert.ok(outcomes.every(result => result.status === 'rejected' && /Unexpected runtime junction/.test(String(result.reason))));
+    assert.equal(fs.existsSync(attempted), false);
+    assert.deepEqual(readdirSync(dirname(attempted)), []);
+  } finally { mock.mock.restore(); syncBuiltinESMExports(); }
+  const retried = await pin.lease(scope(f.workspace, 'session'), signal());
+  await retried.release(); await pin.release();
+});
+
+await test('a shared creation promise evicts even when its partial-target cleanup fails', nativeOnly, async t => {
+  const f = await runtimeFixture(t), pin = await f.prepare(), originalRealpath = fs.realpathSync;
+  const originalCanonical = NativeHold.prototype.canonicalPath;
+  let attempted = '', cleanupFailed = false;
+  const target = t.mock.method(fs, 'realpathSync', ((...args: Parameters<typeof fs.realpathSync>) => {
+    if (String(args[0]).includes('\\views\\')) { attempted = String(args[0]); throw new Error('fixture view admission failed'); }
+    return originalRealpath(...args);
+  }) as typeof fs.realpathSync);
+  const cleanup = t.mock.method(NativeHold.prototype, 'canonicalPath', function (this: NativeHold) {
+    if (attempted && this.path.includes('\\views\\')) { cleanupFailed = true; throw new Error('fixture cleanup observation failed'); }
+    return originalCanonical.call(this);
+  }); syncBuiltinESMExports();
+  try {
+    await assert.rejects(pin.lease(scope(f.workspace, 'session'), signal()), AggregateError);
+    assert.ok(cleanupFailed);
+    assert.equal(fs.existsSync(attempted), true);
+  } finally { target.mock.restore(); cleanup.mock.restore(); syncBuiltinESMExports(); }
+  const retried = await pin.lease(scope(f.workspace, 'session'), signal());
+  assert.notEqual(basename(retried.installationRoot), basename(attempted));
+  await retried.release(); await pin.release();
+  assert.equal(fs.existsSync(attempted), false);
+});
+
+await test('canonical workspace aliases share one session view while separate pins own distinct namespaces', nativeOnly, async t => {
+  const f = await runtimeFixture(t), first = await f.prepare(), second = await f.prepare();
+  const alias = join(f.directory, 'workspace-alias');
+  await symlink(f.workspace, alias, 'junction');
+  const uses = await Promise.all([
+    first.lease(scope(f.workspace, 'session'), signal()), first.lease(scope(alias, 'session'), signal()),
+    second.lease(scope(f.workspace, 'session'), signal()),
+  ]);
+  try {
+    assert.equal(uses[0]!.baseRoot, uses[2]!.baseRoot);
+    assert.equal(uses[0]!.installationRoot, uses[1]!.installationRoot);
+    assert.notEqual(uses[0]!.installationRoot, uses[2]!.installationRoot);
+  } finally { await Promise.all(uses.map(use => use.release())); await first.release(); await second.release(); }
+});
+
+await test('unexpected EEXIST at a view name is neither adopted nor deleted by its creation attempt', nativeOnly, async t => {
+  const f = await runtimeFixture(t), pin = await f.prepare(), original = fs.symlinkSync;
+  let collision = '';
+  const mock = t.mock.method(fs, 'symlinkSync', (target: fs.PathLike, path: fs.PathLike, type?: fs.symlink.Type | null) => {
+    if (String(path).includes('\\views\\')) {
+      collision = String(path);
+      fs.mkdirSync(path); fs.writeFileSync(join(collision, 'sentinel'), 'retain until pin cleanup');
+    }
+    original(target, path, type);
+  }); syncBuiltinESMExports();
+  try {
+    await assert.rejects(pin.lease(scope(f.workspace, 'session'), signal()), { code: 'EEXIST' });
+    assert.equal(fs.readFileSync(join(collision, 'sentinel'), 'utf8'), 'retain until pin cleanup');
+  } finally { mock.mock.restore(); syncBuiltinESMExports(); }
+  const retried = await pin.lease(scope(f.workspace, 'session'), signal());
+  assert.notEqual(basename(retried.installationRoot), basename(collision));
+  await retried.release(); await pin.release();
+  assert.equal(fs.existsSync(collision), false);
+});
+
+await test('cancelled admission retains its one reference until the awaited operation finishes', nativeOnly, async t => {
+  const f = await runtimeFixture(t), pin = await f.prepare(), cancelled = new AbortController();
+  const original = fsp.realpath;
+  let resume!: () => void, entered!: () => void;
+  const gate = new Promise<void>(resolve => { resume = resolve; });
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const mock = t.mock.method(fsp, 'realpath', (async (...args: Parameters<typeof fsp.realpath>) => {
+    if (String(args[0]) === f.workspace) { entered(); await gate; }
+    return original(...args);
+  }) as typeof fsp.realpath); syncBuiltinESMExports();
+  const generation = join(f.cache, 'generations', (await f.current()).generationId);
+  try {
+    const acquiring = pin.lease(scope(f.workspace), cancelled.signal);
+    const rejected = assert.rejects(acquiring, { name: 'AbortError' });
+    await started; cancelled.abort(); await pin.release();
+    assert.throws(() => claimDirectory(admitDirectory(generation)), isBusy);
+    resume(); await rejected;
+    const claim = claimDirectory(admitDirectory(generation)); claim.close();
+  } finally { resume(); mock.mock.restore(); syncBuiltinESMExports(); }
+});
+
+await test('a reused session view performs no metadata, anchor, tree or junction-target revalidation', nativeOnly, async t => {
+  const f = await runtimeFixture(t), pin = await f.prepare();
+  const first = await pin.lease(scope(f.workspace, 'session'), signal());
+  const fail = () => { throw new Error('a lease repeated pin/child validation'); };
+  const read = t.mock.method(NativeHold.prototype, 'readJson', fail);
+  const anchors = t.mock.method(NativeHold.prototype, 'information', function (this: NativeHold) {
+    // All native observations would be redundant for this reused session view.
+    return fail();
+  });
+  const tree = t.mock.method(fsp, 'readdir', fail), target = t.mock.method(fs, 'realpathSync', fail);
+  syncBuiltinESMExports();
+  let second;
+  try {
+    second = await pin.lease(scope(f.workspace, 'session'), signal());
+    assert.equal(second.installationRoot, first.installationRoot);
+    assert.equal(second.layout, first.layout);
+  } finally {
+    read.mock.restore(); anchors.mock.restore(); tree.mock.restore(); target.mock.restore(); syncBuiltinESMExports();
+    await second?.release(); await first.release(); await pin.release();
+  }
 });
 
 await test('a live pin leases without source probes after the source pathname disappears', nativeOnly, async t => {

@@ -20,9 +20,9 @@ export const nativeWindows = process.platform === 'win32' && process.arch === 'x
 export const nativeOnly = { skip: !nativeWindows && 'Requires native Windows x64 and NTFS.' };
 
 /** All native payloads are owned copies; teardown never uses recursive rm. */
-export async function runtimeFixture(t: TestContext, layout: GitLayout = 'ucrt64') {
+export async function runtimeFixture(t: TestContext, layout: GitLayout = 'ucrt64', cacheName = 'cache') {
   const directory = await mkdtemp(join(tmpdir(), 'dsh-git-bash-native-'));
-  const source = join(directory, 'source'), cache = join(directory, 'cache'), workspace = join(directory, 'workspace');
+  const source = join(directory, 'source'), cache = join(directory, cacheName), workspace = join(directory, 'workspace');
   const pins = new Set<GenerationPin>();
   const caches = new Set([cache]);
   t.after(async () => {

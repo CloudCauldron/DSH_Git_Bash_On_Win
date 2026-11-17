@@ -1,8 +1,8 @@
 # DSH Git Bash on Windows
 
 Backend refactor for native Windows x64, Node 26+ and DSH **0.2.2-rc.2**.
-**Phases 1–3 provide maintained inputs, cache preparation, optional guarded UAC,
-native pin lifetime and strict cache purge. Executor and debugger integration remain pending.
+**Phases 1–4 provide maintained inputs, cache preparation, optional guarded UAC,
+executor readiness/rebuilding, direct scoped views and strict cache purge. Launcher/debugger integration remains pending.
 Do not install or publish this tree.** Execution and package-manager entries remain
 gated; `prepack` blocks release packaging.
 
@@ -46,7 +46,13 @@ native call. The broker smoke test changes only its ShellExecuteEx verb to `open
 through a test-only ESM preload, exercising the real COM/request ABI, argv,
 process wait/close and emitted entry points without consent. The ordinary helper
 may inherit the broker's Job; this does not test independent elevated lifetime.
-Typecheck, lint and all **90** default Windows tests pass, with zero
+The Phase 4 suite exercises the native executor's deferred confinement and deadline
+mechanics, real Loader volatile updates, and actual NTFS cache/pin/view lifetime.
+Command subprocess outcomes and UAC denial are controlled fixtures; it does not
+launch Bash or grant workspace ACLs. It covers shared readiness, displaced waiters,
+rebuild success/failure, stale completion, disposal, and cleanup failures. View
+tests cover failed creation/cleanup, retry, unexpected EEXIST and validation ownership.
+Typecheck, lint and all **115** default Windows tests pass, with zero
 skips. These checks do not establish real consent-dialog or DSH Bash execution
 correctness. Close-failure injection reports failure after closing the test handle;
 it does not reproduce an unrecoverable kernel handle fault.
@@ -94,11 +100,23 @@ never modified. Managed artifacts stay in private DSH cache directories.
 
 ## Recovery and complete uninstallation
 
-The cache layer now provides guarded offline purge. Normal pin retirement retains
+The cache layer provides guarded offline purge. Normal pin retirement retains
 the validated cache, refuses new uses, and protects existing uses with the same
 native directory handle until their last release. View cleanup is best effort;
-native handle close failures remain errors. Process shutdown will be integrated
-with the executor in later phases.
+native handle close failures remain errors. Executor disposal blocks new work,
+signals commands before draining setup, and releases owned pins/uses. The public
+execution gate remains closed until the Phase 5 launcher joins its private family
+before exit; real Job/debugger shutdown remains part of that phase's verification.
+
+`GitBashExecutor.rebuildRuntime()` is implemented as a backend operation, with no UI
+binding or workspace argument. It always prepares a fresh generation. A ready pin
+continues serving commands until successful guarded adoption; failed rebuilding
+preserves it. Without readiness, rebuilding cancels/drains unfinished preparation
+and becomes the shared readiness for new and displaced callers. Overlapping rebuild
+calls fail as busy. An unchanged failed selection is retained until explicit rebuild
+or selection/provider replacement. Caller cancellation stops only that caller's
+wait; disposal or observed selection changes cancel owned setup. An unresolved
+local resource-cleanup failure blocks replacement setup and is reported at disposal.
 
 Close all relevant DSH instances before running:
 
@@ -114,8 +132,8 @@ completion. Deletion uses checked `DeleteFileW`/`RemoveDirectoryW` calls without
 attribute repair; read-only files cause an explicit obstruction. Enumerated names
 are addressed exactly, including unusual trailing characters. After an obstruction
 clears, rerun purge. For offline rebuilding,
-retain the package and settings. Automatic cold preparation on the next Bash call
-will become available with the executor integration.
+retain the package and settings. The executor's lazy preparation will be reachable
+on the next Bash call once Phase 5 opens the public execution gate.
 
 Complete uninstallation requires removing only the plugin-specific `gitBashPath`
 override while preserving shared Shell settings, closing all relevant DSH

@@ -6,7 +6,7 @@ Revised: 2026-11-17
 
 Baseline: 6c410c5a2496c30c9883fe471b38d9920c5c2675
 
-Status: Phase 0 contract baseline and Phases 1–3 implementation complete. Maintained native verification covers cache preparation, guarded provisioning/F4, ownership, pins and recovery. Phases 4–6 (executor/debugger integration and release verification, including real modal UAC) remain pending.
+Status: Phase 0 contract baseline and Phases 1–4 implementation complete. Maintained native verification covers cache preparation, guarded provisioning/F4, executor readiness/rebuilding, direct scoped views, ownership, pins and recovery. Phases 5–6 (launcher/debugger integration and release verification, including real modal UAC) remain pending. Public command execution and release packaging remain gated.
 
 The versioned specification is [docs/backend-20261117-refactor-roadmap.md](../docs/backend-20261117-refactor-roadmap.md), promoted from the local planning roadmap on 2026-11-17. The [Phase 0 review checklist](../docs/backend-20261117-contract-baseline.md) records the implementation gates and verification handoff.
 
@@ -159,7 +159,7 @@ runtime-cache owns cache state and lifetime. git-installation owns source layout
 | 5 — Launcher/debugger | Type/refactor §4.4 while preserving verified native behavior and DSH ownership. |
 | 6 — Integration/package | Run §10, document recovery, freshness limits, explicit rebuilding and ownership/IO obstructions, then package. Implement guarded recovery rather than a permanent-freeze policy. |
 
-Archive relocation and Phases 1–3 are complete. Continue reviewing new modules against these contracts and preserved behavior independently of obsolete test internals. The cache factory now selects guarded UAC only at the admitted probe-permission boundary; executor wiring remains Phase 4.
+Archive relocation and Phases 1–4 are complete. Continue reviewing new modules against these contracts and preserved behavior independently of obsolete test internals. The executor now owns shared readiness and guarded rebuilding; launcher/debugger behavior remains Phase 5.
 
 ## 4. MINIMAL INTERNAL APIs
 
@@ -568,6 +568,16 @@ The second audit corrected two production boundaries without new state or APIs. 
 Default tests open no consent prompt; actual UAC belongs to the manual lane below.
 
 ### Phase 4 — Executor and boundary ownership
+
+Phase 4 completed on 2026-11-17:
+
+- `index.ts` captures the bound setup spawn once and owns one readiness slot plus an optional rebuild operation. Activation performs no preparation. Callers independently cancel their waits; unchanged failures remain retained. Observed selection changes detach old objects, including A → B → A interleavings, without Loader subscriptions or configuration epochs.
+- Rebuilding preserves an established ready pin until guarded success. Without one, it installs shared rebuild readiness synchronously, drains superseded preparation before replacement work, and gives new/displaced waiters the same result. Busy calls reject. Stale pins are released without undoing a published current record; existing uses retain their old native hold.
+- The inherited DSH `executeArgv` seam acquires a use before deferred confinement, checks selection/cancellation again before launch, preserves the native wrapper argv, and supplies base/view/source/layout/mode. Full-access also uses a view. Disposal signals commands before awaiting setup and drains all local work; native cleanup failures remain reported and block replacement setup.
+- Direct views reuse the Phase 2 cache implementation and centralized NTFS operations unchanged. Added native tests cover partial junction cleanup, eviction even when cleanup fails, EEXIST refusal, workspace aliases, independent pin namespaces, cancelled admission and the absence of repeated pin/child checks on a reused session view.
+- `buildRuntimeEnvironment` in `git-installation.ts` constructs scoped PATH/Git paths from admitted layout and recorded source strings, without filesystem observations. The Phase 5 launcher will consume it.
+
+Typecheck, lint and **115** maintained Windows tests pass with zero skips. Executor tests use real Cordis/Loader/DSH executor mechanics and native cache fixtures, but controlled command subprocess outcomes and UAC denial. They neither execute Bash nor perform workspace ACL grants. The public `execute` gate stays closed until Phase 5 supplies the launcher/family implementation. Redirected-view rejection at child launch, loaded-module/loader-path/Job/token checks, real process-family shutdown and all-mode execution remain Phase 5/6 verification; Phase 4 does not claim those results. No UI binding, extra coordinator, subprocess service or archive dependency was added.
 
 Use §1's ownership map as the review checklist. Cover §4.2 rebuild success and UAC cancellation preserving a ready pin. With no ready pin, rebuilding must supersede/settle unfinished work, become shared readiness before any await and give new/displaced waiters the same result without competing ordinary setup. Check failed readiness retention, stale-pin release, selection/object-identity/ cancellation/stopping guards, disposal and the busy guard. Existing uses retain old pins, while the adopted slot owns its new pin once.
 

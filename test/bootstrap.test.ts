@@ -184,13 +184,9 @@ await test('maintained compiler graphs, lint and emitted public exports exclude 
 });
 
 await test('execution and release packaging remain gated; purge refuses an unowned directory', async t => {
-  // The extension point rejects before either the deferred confinement callback
-  // or DSH subprocess launch can run, including full-access callers.
-  class ExecutorProbe extends GitBashExecutor {
-    static attempt() { return this.prototype.executeArgv(); }
-  }
-  await assert.rejects(ExecutorProbe.attempt(), /executor and launcher integration/);
-  await assert.rejects(GitBashExecutor.prototype.rebuildRuntime(), /not implemented/);
+  // The public entry remains gated until the Phase 5 launcher owns/join its
+  // family. Phase 4 tests the inherited execution seam with isolated providers.
+  await assert.rejects(GitBashExecutor.prototype.execute({} as never), /launcher\/debugger integration/);
   const directory = await temporaryDirectory(t);
   const sentinel = join(directory, 'owned.txt');
   await writeFile(sentinel, 'unowned directory must be retained');

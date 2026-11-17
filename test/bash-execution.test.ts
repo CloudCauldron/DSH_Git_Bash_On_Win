@@ -619,6 +619,7 @@ await test('native DSH Bash execution across all modes', nativeOnly, async t => 
     import { join } from 'node:path';
     import { buildRuntimeEnvironment } from ${JSON.stringify(new URL('../lib/runtime/git-installation.js', import.meta.url).href)};
     const request = JSON.parse(process.argv[2]);
+    let reportFailure;
     try {
       if (request.section) {
         inheritedCompatibility(request.mode);
@@ -640,6 +641,72 @@ await test('native DSH Bash execution across all modes', nativeOnly, async t => 
           return status;
         };
       }
+      if (request.cleanupSequence) {
+        const api = debugApi(), original = { ...api };
+        const failure = new Error('fixture initial Job admission failed');
+        const closeFailure = new Error('fixture cleanup image close failed');
+        const trace = { admissions: 0, images: [], continued: [], rootCreated: false, rootExited: false, rootImageClosed: false, emptyChecks: 0 };
+        const events = [], images = new Map();
+        let rootPid, rootTid, rootImage, kind, injected;
+        api.inJob = (process, job, member) => {
+          if (job === null) return original.inJob(process, job, member);
+          trace.admissions++; throw failure;
+        };
+        api.waitDebug = (data, milliseconds) => {
+          if (events.length) {
+            const [eventKind, pid, tid, file = 0n] = events.shift();
+            data.fill(0); data.writeUInt32LE(eventKind); data.writeUInt32LE(pid, 4); data.writeUInt32LE(tid, 8);
+            if (eventKind === 3 || eventKind === 6) data.writeBigUInt64LE(file, 16);
+            if (eventKind === 3) { data.writeBigUInt64LE(0x100000001n, 24); data.writeBigUInt64LE(0x100000002n, 32); }
+            if (eventKind === 2) data.writeBigUInt64LE(0x100000003n, 16);
+            injected = [eventKind, pid, tid];
+            return 1;
+          }
+          const result = original.waitDebug(data, milliseconds);
+          if (result) {
+            kind = data.readUInt32LE();
+            if (kind === 3 && rootPid === undefined) {
+              rootPid = data.readUInt32LE(4); rootTid = data.readUInt32LE(8); rootImage = data.readBigUInt64LE(16);
+              // Real duplicate image handles; synthetic process/thread handles are borrowed sentinels.
+              const files = [6, 3].map(eventKind => {
+                const output = Buffer.alloc(8), self = api.currentProcess();
+                if (!api.duplicateHandle(self, rootImage, self, output, 0, 0, 2)) throw new Error('fixture image duplication failed');
+                const handle = output.readBigUInt64LE(); images.set(handle, eventKind); return handle;
+              });
+              events.push([6, rootPid, rootTid, files[0]], [3, rootPid + 1, rootTid + 1, files[1]],
+                [2, rootPid + 1, rootTid + 2], [4, rootPid + 1, rootTid + 2], [5, rootPid + 1, rootTid + 1]);
+            }
+          }
+          return result;
+        };
+        api.continueDebug = (pid, tid, disposition) => {
+          if (injected) {
+            if (pid !== injected[1] || tid !== injected[2] || disposition !== 0x00010002) throw new Error('fixture cleanup continuation mismatch');
+            trace.continued.push(injected[0]); injected = undefined; return 1;
+          }
+          const result = original.continueDebug(pid, tid, disposition);
+          if (result && pid === rootPid && kind === 3) trace.rootCreated = true;
+          if (result && pid === rootPid && kind === 5) trace.rootExited = true;
+          return result;
+        };
+        api.closeHandle = handle => {
+          if ([0x100000001n, 0x100000002n, 0x100000003n].includes(handle)) throw new Error('fixture borrowed handle was closed');
+          const result = original.closeHandle(handle);
+          if (result && handle === rootImage) trace.rootImageClosed = true;
+          if (result && images.has(handle)) {
+            const eventKind = images.get(handle); images.delete(handle); trace.images.push(eventKind);
+            if (eventKind === 6) throw closeFailure; // Actual test handle is closed before reporting the fault.
+          }
+          return result;
+        };
+        api.queryInformationJobObject = (...args) => {
+          const result = original.queryInformationJobObject(...args);
+          if (result && args[1] === 1 && trace.rootExited && args[2].readUInt32LE(40) === 0) trace.emptyChecks++;
+          return result;
+        };
+        reportFailure = error => console.log('@@DRAIN@@' + JSON.stringify({ ...trace,
+          errors: error.errors.map(value => value === failure ? 'admission' : value === closeFailure ? 'image-close' : String(value)) }));
+      }
       if (request.fault) {
         // Race the real launch after its local DLL identity was retained. This
         // changes fixture paths only; all debug events and hooks remain real.
@@ -657,7 +724,7 @@ await test('native DSH Bash execution across all modes', nativeOnly, async t => 
       console.log('@@FAMILY@@' + JSON.stringify(result));
       process.exitCode = result.exitCode;
       }
-    } catch (error) { console.error(error.message); process.exitCode = 127; }
+    } catch (error) { reportFailure?.(error); console.error(error.message); process.exitCode = 127; }
   `);
   const startCaptured = async (argv: string[], mode: SandboxExecutionPolicy['mode'], session = 'observed') => {
     const signal = AbortSignal.timeout(15000);
@@ -724,6 +791,21 @@ await test('native DSH Bash execution across all modes', nativeOnly, async t => 
     });
   }
   assert.equal(namespaces.size, 6, 'all modes and scoped views need distinct namespaces');
+  await t.test('failed initial admission drains unregistered cleanup events', async () => {
+    const use = await pin.lease({ mode: 'danger-full-access', workspaceRoot: f.workspace }, new AbortController().signal);
+    try {
+      const result = await captured([process.execPath, observer, JSON.stringify({ ...use, mode: 'danger-full-access',
+        cleanupSequence: true, command: 'echo forbidden' })], 'danger-full-access');
+      assert.equal(result.exitCode, 127, result.stderr);
+      assert.doesNotMatch(result.stdout, /forbidden/);
+      const match = /@@DRAIN@@([^\r\n]+)/.exec(result.stdout);
+      assert.ok(match, result.stdout + result.stderr);
+      const { emptyChecks, ...observed } = JSON.parse(match[1]!);
+      assert.deepEqual(observed, { admissions: 1, images: [6, 3], continued: [6, 3, 2, 4, 5],
+        rootCreated: true, rootExited: true, rootImageClosed: true, errors: ['admission', 'image-close'] });
+      assert.ok(emptyChecks >= 2, 'root settlement and final cleanup must both confirm the actual Job is empty');
+    } finally { await use.release(); }
+  });
   await t.test('actual MSYS mapping grants separate workspace sessions while preserving peer reads', async () => {
     const use = await pin.lease({ mode: 'workspace-write', workspaceRoot: f.workspace,
       sessionId: 'ipc-owner' as SandboxExecutionPolicy['sessionId'] }, new AbortController().signal);

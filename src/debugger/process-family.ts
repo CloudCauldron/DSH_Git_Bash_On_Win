@@ -219,63 +219,61 @@ export async function runPrivateBash(options: PrivateBashLaunch): Promise<Privat
     const { pid: eventPid, tid } = event;
     pending = { pid: eventPid, tid };
     let disposition = 0x00010002;
-    if (event.kind === 'process') {
-      try {
-        if (states.has(eventPid)) throw new Error('Duplicate live process identity.');
-        requireJobMember(event.process, job);
-        states.set(eventPid, { pid: eventPid, process: event.process, threads: new Map([[tid, event.thread]]),
-          armed: new Set(), modules: [], firstBreakpoint: true,
-          hooks: [{ module: 'kernelbase.dll', symbol: 'CreateNamedPipeW' }, { module: 'ntdll.dll', symbol: 'NtSetInformationToken' },
-            { module: 'ntdll.dll', symbol: 'NtCreateSection' }, { module: 'kernelbase.dll', symbol: 'GetFinalPathNameByHandleW' }] });
-      } finally { close(event.file); }
-    }
-    const selected = states.get(eventPid);
-    if (!selected) {
-      if (event.kind === 'module') close(event.file);
-      throw new Error('Debug event is outside the observed private family.');
-    }
-    state = selected; processHandle = state.process;
-    switch (event.kind) {
-      case 'process': break;
-      case 'thread':
-        state.threads.set(tid, event.thread);
-        if (!cleanup && state.msys) arm(tid);
-        break;
-      case 'exit-thread': state.threads.delete(tid); state.armed.delete(tid); break;
-      case 'module':
-        try { if (!cleanup) admitModule(event); } finally { close(event.file); }
-        break;
-      case 'unload':
-        if (state.msys?.base === event.base) {
-          // Unload can be part of ordinary process teardown. Withdraw repair
-          // eligibility immediately; a later load must pass admission afresh.
-          state.msys = undefined; state.loaderPathVerified = false; state.installationPathAdjusted = false;
-        }
-        state.modules = state.modules.filter(module => module.base !== event.base);
-        for (const hook of state.hooks) {
-          if (hook.address !== undefined && !state.modules.some(module => hook.address! >= module.base && hook.address! < module.end)) hook.address = undefined;
-        }
-        if (!cleanup) {
+    if (cleanup) {
+      if (event.kind === 'process' || event.kind === 'module') attempt(() => close(event.file));
+    } else {
+      if (event.kind === 'process') {
+        try {
+          if (states.has(eventPid)) throw new Error('Duplicate live process identity.');
+          requireJobMember(event.process, job);
+          states.set(eventPid, { pid: eventPid, process: event.process, threads: new Map([[tid, event.thread]]),
+            armed: new Set(), modules: [], firstBreakpoint: true,
+            hooks: [{ module: 'kernelbase.dll', symbol: 'CreateNamedPipeW' }, { module: 'ntdll.dll', symbol: 'NtSetInformationToken' },
+              { module: 'ntdll.dll', symbol: 'NtCreateSection' }, { module: 'kernelbase.dll', symbol: 'GetFinalPathNameByHandleW' }] });
+        } finally { close(event.file); }
+      }
+      const selected = states.get(eventPid);
+      if (!selected) {
+        if (event.kind === 'module') close(event.file);
+        throw new Error('Debug event is outside the observed private family.');
+      }
+      state = selected; processHandle = state.process;
+      switch (event.kind) {
+        case 'process': break;
+        case 'thread':
+          state.threads.set(tid, event.thread);
+          if (state.msys) arm(tid);
+          break;
+        case 'exit-thread': state.threads.delete(tid); state.armed.delete(tid); break;
+        case 'module':
+          try { admitModule(event); } finally { close(event.file); }
+          break;
+        case 'unload':
+          if (state.msys?.base === event.base) {
+            // Unload can be part of ordinary process teardown. Withdraw repair
+            // eligibility immediately; a later load must pass admission afresh.
+            state.msys = undefined; state.loaderPathVerified = false; state.installationPathAdjusted = false;
+          }
+          state.modules = state.modules.filter(module => module.base !== event.base);
+          for (const hook of state.hooks) {
+            if (hook.address !== undefined && !state.modules.some(module => hook.address! >= module.base && hook.address! < module.end)) hook.address = undefined;
+          }
           if (state.msys) for (const id of state.threads.keys()) arm(id);
           else for (const id of state.armed) { ctx.arm(state.threads.get(id)!, [], true); state.armed.delete(id); }
-        }
-        break;
-      case 'exception': {
-        const slot = state.hooks.findIndex(hook => hook.address === event.address);
-        if (!cleanup && event.code === 0x80000004 && slot >= 0) onHit(tid, slot);
-        else if (event.code === 0x80000003 && state.firstBreakpoint) {
-          if (!cleanup) {
+          break;
+        case 'exception': {
+          const slot = state.hooks.findIndex(hook => hook.address === event.address);
+          if (event.code === 0x80000004 && slot >= 0) onHit(tid, slot);
+          else if (event.code === 0x80000003 && state.firstBreakpoint) {
             verifyLoaderPath(true);
             if (state.msys && state.hooks.some((hook, i) => (grantSid || i === 0 || i === 3) && hook.address === undefined)) throw new Error('Required MSYS startup hooks are unavailable.');
-          }
-          state.firstBreakpoint = false;
-        } else disposition = 0x80010001;
-        break;
+            state.firstBreakpoint = false;
+          } else disposition = 0x80010001;
+          break;
+        }
       }
-      case 'exit':
-        if (eventPid === pid) { exitCode = event.exitCode; rootExitedAt = performance.now(); }
-        break;
     }
+    if (event.kind === 'exit' && eventPid === pid) { exitCode = event.exitCode; rootExitedAt = performance.now(); }
     checked(api.continueDebug(eventPid, tid, disposition), 'ContinueDebugEvent');
     pending = undefined;
     // Windows closes debug-event process/thread handles after continuation.

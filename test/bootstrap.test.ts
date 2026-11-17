@@ -183,10 +183,8 @@ await test('maintained compiler graphs, lint and emitted public exports exclude 
   assert.equal(Object.getPrototypeOf(built.default), SandboxBashExecutor);
 });
 
-await test('execution and release packaging remain gated; purge refuses an unowned directory', async t => {
-  // The public entry remains gated until the Phase 5 launcher owns/join its
-  // family. Phase 4 tests the inherited execution seam with isolated providers.
-  await assert.rejects(GitBashExecutor.prototype.execute({} as never), /launcher\/debugger integration/);
+await test('execution uses native DSH policy; release packaging stays gated and purge refuses an unowned directory', async t => {
+  assert.equal(GitBashExecutor.prototype.execute, SandboxBashExecutor.prototype.execute);
   const directory = await temporaryDirectory(t);
   const sentinel = join(directory, 'owned.txt');
   await writeFile(sentinel, 'unowned directory must be retained');

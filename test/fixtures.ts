@@ -1,13 +1,17 @@
-import { mkdtemp, rm, mkdir, writeFile, link, readFile } from 'node:fs/promises';
+import { copyFile, mkdtemp, rm, mkdir, writeFile, link, readFile, stat } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import assert from 'node:assert/strict';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import type { TestContext } from 'node:test';
 import type { Context } from '@deepseek-ai/cordis';
+import type { SandboxProvider } from '@deepseek-ai/dsh-sandbox';
 import type Subprocess from '@deepseek-ai/dsh-subprocess';
 import { findInstalledDshManifest, installedDsh } from '../scripts/installed-dsh.ts';
 import { admitDirectory, removeTree } from '../src/runtime/ntfs-filesystem.ts';
 import { prepareRuntime, purgeRuntimeCache, type GenerationPin, type RuntimePreparation } from '../src/runtime/runtime-cache.ts';
-import { anchorPaths, type AnchorStamps, type GitLayout } from '../src/runtime/git-installation.ts';
+import { anchorPaths, discoverGitInstallation, inventoryGitFiles, type AnchorStamps, type GitLayout } from '../src/runtime/git-installation.ts';
 
 /** Ordinary bootstrap files only. Native cache fixtures must use guarded purge. */
 export async function temporaryDirectory(t: TestContext): Promise<string> {
@@ -70,4 +74,69 @@ export async function localSpawn(t: TestContext): Promise<Subprocess['spawn'] | 
   t.after(() => ctx.fiber.dispose());
   await ctx.plugin(LocalSubprocessRuntime);
   return ctx.subprocess.spawn.bind(ctx.subprocess);
+}
+
+/** Real providers, owned Git bytes, and no personal Loader/profile state. */
+export async function executionFixture(t: TestContext) {
+  const manifest = findInstalledDshManifest();
+  if (!manifest) { t.skip('No installed pinned DSH; set DSH_PACKAGE_JSON.'); return; }
+  const runtime = installedDsh(manifest);
+  let installed;
+  try { installed = discoverGitInstallation(process.env.DSH_TEST_GIT_BASH); }
+  catch (error) {
+    if (!process.env.DSH_TEST_GIT_BASH && error instanceof Error && error.message.startsWith('Supported Git for Windows was not found')) {
+      t.skip('No supported Git for Windows; set DSH_TEST_GIT_BASH.'); return;
+    }
+    throw error;
+  }
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-git-bash-execution-'));
+  const source = join(directory, 'source'), workspace = join(directory, 'workspace 含空格'), cache = join(directory, '.git-bash-on-win');
+  const { Context: InstalledContext } = await runtime.load(runtime.baseRequire, '@deepseek-ai/cordis') as typeof import('@deepseek-ai/cordis');
+  const { LocalSubprocessRuntime } = await runtime.load(runtime.baseRequire, '@deepseek-ai/dsh-subprocess-local') as { LocalSubprocessRuntime: new (ctx: Context) => Subprocess };
+  const { LocalSandboxProvider } = await runtime.load(runtime.baseRequire, '@deepseek-ai/dsh-sandbox-local') as { LocalSandboxProvider: new (ctx: Context, config: object) => SandboxProvider };
+  const ctx = new InstalledContext();
+  const pins = new Set<GenerationPin>();
+  let verifySource = async () => {};
+  t.after(async () => {
+    await ctx.fiber.dispose();
+    for (const pin of pins) await pin.release();
+    await purgeRuntimeCache(cache);
+    try { await verifySource(); }
+    finally { removeTree(admitDirectory(dirname(directory)), basename(directory)); }
+  });
+  await mkdir(source); await mkdir(workspace);
+  const files = await inventoryGitFiles(installed.root, () => {});
+  const parents = [...new Set(files.map(file => dirname(join(source, file))))].sort((a, b) => a.length - b.length);
+  for (const parent of parents) await mkdir(parent, { recursive: true });
+  for (let offset = 0; offset < files.length; offset += 32) {
+    const batch = await Promise.allSettled(files.slice(offset, offset + 32).map(file => copyFile(join(installed.root, file), join(source, file))));
+    for (const result of batch) if (result.status === 'rejected') throw result.reason;
+  }
+  const snapshot = async () => {
+    const contents: Array<{ hash: string; links: number }> = [];
+    for (let offset = 0; offset < files.length; offset += 16) {
+      contents.push(...await Promise.all(files.slice(offset, offset + 16).map(async file => ({
+        hash: createHash('sha256').update(await readFile(join(source, file))).digest('hex'),
+        links: (await stat(join(source, file))).nlink,
+      }))));
+    }
+    return { contents, acl: execFileSync('icacls.exe', [source, '/T'], { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 }) };
+  };
+  const before = await snapshot();
+  verifySource = async () => {
+    assert.deepEqual(await snapshot(), before, 'strict purge must restore every copied source link count and preserve contents/ACLs');
+  };
+  await ctx.plugin(LocalSubprocessRuntime);
+  await ctx.plugin(LocalSandboxProvider, {});
+  const spawn = ctx.subprocess.spawn.bind(ctx.subprocess);
+  ctx.subprocess.spawn = spec => {
+    if (spec.argv.some(arg => basename(arg) === 'elevation-broker.js')) throw new Error('Automated execution fixtures must never request UAC.');
+    return spawn(spec);
+  };
+  ctx.provide('profileContext', { dir: directory });
+  ctx.provide('sandboxPolicy', { defaultMode: 'read-only', resolve: () => ({ mode: 'read-only', workspaceRoot: workspace }) });
+  const request: RuntimePreparation = { cacheDirectory: cache, gitBashPath: join(source, 'usr/bin/bash.exe'), spawn: ctx.subprocess.spawn.bind(ctx.subprocess) };
+  return { ctx, directory, source, workspace, cache, installed, request,
+    async prepare() { const pin = await prepareRuntime(request, new AbortController().signal); pins.add(pin); return pin; },
+  };
 }

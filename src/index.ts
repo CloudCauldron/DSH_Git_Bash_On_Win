@@ -51,13 +51,6 @@ export default class GitBashExecutor extends SandboxBashExecutor {
     ctx.effect(() => () => this.disposeRuntime());
   }
 
-  // Phase 5 removes this gate only after the launcher joins its private family
-  // before exit. Phase 4 exercises the inherited execution seam in isolation.
-  override async execute(_spec: ShellExecSpec): Promise<ShellExecution> {
-    void _spec;
-    throw new Error('Git Bash execution is unavailable until launcher/debugger integration is complete.');
-  }
-
   private track<T>(operation: Promise<T>, owned = this.work): Promise<T> {
     owned.add(operation);
     void operation.then(() => owned.delete(operation), () => owned.delete(operation));

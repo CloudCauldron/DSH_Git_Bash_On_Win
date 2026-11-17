@@ -165,12 +165,22 @@ export function absolutePath(path: string): string {
 
 export function samePath(a: string, b: string): boolean { return resolve(a).toLowerCase() === resolve(b).toLowerCase(); }
 export function sameIdentity(a: FileIdentity, b: FileIdentity): boolean { return a.volumeSerial === b.volumeSerial && a.fileId === b.fileId; }
+/** Borrowed debug-event file handles stay owned by the event dispatcher. */
+export function fileIdentity(handle: NativePtr): FileIdentity {
+  const data = Buffer.alloc(52);
+  if (!api().information(handle, data)) throwLastError(api(), 'GetFileInformationByHandle', 'loaded module');
+  return { volumeSerial: String(data.readUInt32LE(28)), fileId: String((BigInt(data.readUInt32LE(44)) << 32n) | BigInt(data.readUInt32LE(48))) };
+}
+
+export function canonicalExistingPath(path: string): string { return ordinaryPath(realpathSync(path)); }
+
+export function containsPath(parent: string, child: string): boolean {
+  const path = relative(parent, child);
+  return path === '' || (path !== '..' && !path.startsWith(`..${sep}`) && !isAbsolute(path));
+}
+
 export function overlaps(a: string, b: string): boolean {
-  const contains = (parent: string, child: string) => {
-    const path = relative(parent, child);
-    return path === '' || (path !== '..' && !path.startsWith(`..${sep}`) && !isAbsolute(path));
-  };
-  return contains(a, b) || contains(b, a);
+  return containsPath(a, b) || containsPath(b, a);
 }
 
 function inspect(path: string): FileInformation {

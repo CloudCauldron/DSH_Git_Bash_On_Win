@@ -1,10 +1,10 @@
 # DSH Git Bash on Windows
 
 Backend refactor for native Windows x64, Node 26+ and DSH **0.2.2-rc.2**.
-**Phases 1–4 provide maintained inputs, cache preparation, optional guarded UAC,
-executor readiness/rebuilding, direct scoped views and strict cache purge. Launcher/debugger integration remains pending.
-Do not install or publish this tree.** Execution and package-manager entries remain
-gated; `prepack` blocks release packaging.
+**Phases 1–5 provide maintained inputs, cache preparation, optional guarded UAC,
+executor readiness/rebuilding, scoped views, native Bash execution and strict cache
+purge. Phase 6 release integration remains pending. Do not install or publish this
+tree.** Package-manager entries remain gated; `prepack` blocks release packaging.
 
 The approved [roadmap](docs/backend-20261117-refactor-roadmap.md),
 [contract baseline](docs/backend-20261117-contract-baseline.md) and
@@ -52,10 +52,21 @@ Command subprocess outcomes and UAC denial are controlled fixtures; it does not
 launch Bash or grant workspace ACLs. It covers shared readiness, displaced waiters,
 rebuild success/failure, stale completion, disposal, and cleanup failures. View
 tests cover failed creation/cleanup, retry, unexpected EEXIST and validation ownership.
-Typecheck, lint and all **126** default Windows tests pass, with zero
-skips. These checks do not establish real consent-dialog or DSH Bash execution
-correctness. Close-failure injection reports failure after closing the test handle;
-it does not reproduce an unrecoverable kernel handle fault.
+The Phase 5 native lane runs the emitted executor, launcher and debugger through
+installed DSH sandbox/subprocess providers in a temporary context. It copies the
+selected Git files into owned fixture storage before linking, so it never asks for
+consent or changes installed Git ACLs. It exercises Bash/Git, pipelines, nested
+shells, native descendants, mode-specific writes, namespace separation/reuse,
+child admission failures, overlapping execution, cancellation and disposal.
+Every fixture joins its processes and strictly purges the cache; source
+contents/ACLs and all copied source link counts are checked afterward. Missing
+Windows x64, supported Git or pinned DSH prerequisites are explicit skips; a
+release run must execute this lane. `DSH_TEST_GIT_BASH` can select its source Git.
+Native fault tests retain the real hook engine and change only owned fixture
+paths between launch admission and process creation. Close-failure injection in
+the earlier suites reports failure after closing the test handle; it does not
+reproduce an unrecoverable kernel handle fault. Modal consent remains a separate
+manual lane.
 
 For explicit manual consent checks, build first, then run either command in
 Windows-native Git Bash and answer the Windows prompt as specified:
@@ -98,15 +109,26 @@ Ordinary Git Bash, other hosts, WSL and non-Windows DSH must remain unaffected.
 Installed Git/DSH contents and ACLs, registry settings and global environment are
 never modified. Managed artifacts stay in private DSH cache directories.
 
+The launcher validates the inherited DSH mode/token, and the debugger admits the
+base/executable/view once before spawning through DSH's public private-Job helper.
+Loaded MSYS modules must have the admitted file identity, an actual loader path
+inside that base, and private Job membership. The startup-root hook uses the
+scoped view in every mode, including full-access; pipe/default-DACL/mapping grants
+apply only in confined modes. Namespace separation does not promise IPC
+confidentiality: peer reads, shared-logon-SID read-only writes and broad full-access
+rights remain limits of DSH's partial Windows enforcement.
+
 ## Recovery and complete uninstallation
 
 The cache layer provides guarded offline purge. Normal pin retirement retains
 the validated cache, refuses new uses, and protects existing uses with the same
 native directory handle until their last release. View cleanup is best effort;
 native handle close failures remain errors. Executor disposal blocks new work,
-signals commands before draining setup, and releases owned pins/uses. The public
-execution gate remains closed until the Phase 5 launcher joins its private family
-before exit; real Job/debugger shutdown remains part of that phase's verification.
+signals commands before draining setup, and releases owned pins/uses. The launcher
+joins debug-event exits and actual Job settlement before returning; after the root
+exits, surviving descendants receive the configured grace period before Job
+termination. Admission or native cleanup failure fails the execution without an
+unrestricted retry.
 
 `GitBashExecutor.rebuildRuntime()` is implemented as a backend operation, with no UI
 binding or workspace argument. It always prepares a fresh generation. A ready pin
@@ -140,8 +162,7 @@ completion. Deletion uses checked `DeleteFileW`/`RemoveDirectoryW` calls without
 attribute repair; read-only files cause an explicit obstruction. Enumerated names
 are addressed exactly, including unusual trailing characters. After an obstruction
 clears, rerun purge. For offline rebuilding,
-retain the package and settings. The executor's lazy preparation will be reachable
-on the next Bash call once Phase 5 opens the public execution gate.
+retain the package and settings. The next Bash call lazily prepares a fresh runtime.
 
 Complete uninstallation requires removing only the plugin-specific `gitBashPath`
 override while preserving shared Shell settings, closing all relevant DSH

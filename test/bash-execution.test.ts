@@ -3,32 +3,28 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 import { syncBuiltinESMExports } from 'node:module';
-import { setImmediate as turn } from 'node:timers/promises';
+import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
+import { setImmediate as turn, setTimeout as delay } from 'node:timers/promises';
 import { test, type TestContext } from 'node:test';
 import { Context } from '@deepseek-ai/cordis';
 import Loader from '@deepseek-ai/cordis-plugin-loader';
-import { SandboxBashExecutor } from '@deepseek-ai/dsh-bash-sandbox';
 import type { SandboxExecutionPolicy } from '@deepseek-ai/dsh-sandbox';
-import type { ShellExecRequest, ShellExecSpec } from '@deepseek-ai/dsh-shell';
+import type { ShellExecRequest, ShellExecution } from '@deepseek-ai/dsh-shell';
 import type Subprocess from '@deepseek-ai/dsh-subprocess';
 import type { SubprocessHandle, SubprocessOutcome, SubprocessSpawnSpec } from '@deepseek-ai/dsh-subprocess';
+import type { PrivateFamilyExit } from '../src/debugger/process-family.ts';
 import { Win32Error } from '@deepseek-ai/dsh-win32-process';
 import GitBashExecutor from '../src/index.ts';
 import { buildRuntimeEnvironment } from '../src/runtime/git-installation.ts';
 import { admitDirectory, claimDirectory, isBusy, NativeHold, pathExists } from '../src/runtime/ntfs-filesystem.ts';
 import { purgeRuntimeCache } from '../src/runtime/runtime-cache.ts';
-import { nativeOnly, runtimeFixture } from './fixtures.ts';
+import { executionFixture, nativeOnly, runtimeFixture } from './fixtures.ts';
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>(done => { resolve = done; });
   return { promise, resolve };
-}
-
-// Exercise DSH's actual deferred confinement/deadline machinery. Production's
-// public execute gate stays closed until Phase 5 supplies the private launcher.
-class ExecutorSeam extends GitBashExecutor {
-  override execute(spec: ShellExecSpec) { return SandboxBashExecutor.prototype.execute.call(this, spec); }
 }
 
 async function executorFixture(t: TestContext) {
@@ -66,14 +62,14 @@ async function executorFixture(t: TestContext) {
   ctx.provide('sandboxPolicy', { defaultMode: policy.mode, resolve: () => policy });
   ctx.provide('sandbox', { confine: (argv: string[]) => controls.confine(argv) });
   class FixtureLoader extends Loader {
-    override import() { return ExecutorSeam; }
+    override import() { return GitBashExecutor; }
     override commit() {} // No settings file or personal profile.
   }
   await ctx.plugin(FixtureLoader);
   const options = { id: 'phase4-executor', name: 'fixture-executor', config: { gitBashPath: fixture.request.gitBashPath } };
   await ctx.loader.root.update([options]);
   await ctx.loader.await();
-  const executor = ctx.shell as ExecutorSeam;
+  const executor = ctx.shell as GitBashExecutor;
   const entry = ctx.loader.resolve(options.id)!;
   const providerContext = entry.fiber!.ctx, providerId = entry.fiber!.uid;
   dispose = async () => { await ctx.fiber.dispose(); };
@@ -514,4 +510,211 @@ await test('runtime environment uses only the admitted layout and recorded sourc
     assert.equal(env.GIT_TEMPLATE_DIR, join(use.installationRoot, 'mingw64/share/git-core/templates').replaceAll('\\', '/'));
     assert.equal(env.MSYS2_PATH_TYPE, 'inherit');
   } finally { await use.release(); await pin.release(); }
+});
+
+await test('native DSH Bash execution across all modes', nativeOnly, async t => {
+  const f = await executionFixture(t);
+  if (!f) return;
+  const { default: BuiltExecutor } = await import(new URL('../lib/index.js', import.meta.url).href) as { default: typeof GitBashExecutor };
+  const pin = await f.prepare(); // Cold preparation is outside command deadlines.
+  const executorFiber = f.ctx.plugin(BuiltExecutor, { gitBashPath: f.request.gitBashPath, graceMs: 300 });
+  await executorFiber;
+  const executor = f.ctx.shell as GitBashExecutor;
+  const run = async (mode: SandboxExecutionPolicy['mode'], command: string, sessionId = mode) => {
+    const execution = await executor.execute(executor.resolve({ command, workdir: f.workspace, timeoutMs: 30000,
+      env: { gIt_ExEc_PaTh: 'must-not-leak', gIt_TeMpLaTe_DiR: 'must-not-leak' },
+      onExpiry: 'kill', sandboxPolicy: { mode, workspaceRoot: f.workspace, sessionId: sessionId as SandboxExecutionPolicy['sessionId'] } }));
+    const result = await execution.result();
+    await execution.done;
+    return result;
+  };
+  // This test entry reports the public debugger result after actual DSH
+  // confinement. The production launcher has no diagnostic stdout protocol.
+  const observer = join(f.directory, 'observe.mjs');
+  await fsp.writeFile(observer, `
+    import { runPrivateBash } from ${JSON.stringify(new URL('../lib/debugger/process-family.js', import.meta.url).href)};
+    import { inheritedCompatibility } from ${JSON.stringify(new URL('../lib/debugger/native-debug.js', import.meta.url).href)};
+    import { debugApi } from ${JSON.stringify(new URL('../lib/debugger/native-debug.js', import.meta.url).href)};
+    import { copyFileSync, renameSync } from 'node:fs';
+    import { join } from 'node:path';
+    import { buildRuntimeEnvironment } from ${JSON.stringify(new URL('../lib/runtime/git-installation.js', import.meta.url).href)};
+    const request = JSON.parse(process.argv[2]);
+    try {
+      const environment = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== 'path'));
+      Object.assign(environment, buildRuntimeEnvironment(request.installationRoot, request.sourceRoot, request.layout, process.env));
+      if (request.fault) {
+        // Race the real launch after its local DLL identity was retained. This
+        // changes fixture paths only; all debug events and hooks remain real.
+        if (request.alias) environment.PATH = request.alias + ';' + environment.PATH;
+        const api = debugApi(), original = api.createProcessW;
+        api.createProcessW = (...args) => {
+          api.createProcessW = original;
+          const target = join(request.baseRoot, 'usr/bin/msys-2.0.dll');
+          renameSync(target, target + '.held');
+          if (request.fault === 'identity') copyFileSync(join(request.sourceRoot, 'usr/bin/msys-2.0.dll'), target);
+          return original(...args);
+        };
+      }
+      const result = await runPrivateBash({ ...request, cwd: process.cwd(), environment, compatibility: inheritedCompatibility(request.mode), graceMs: 300 });
+      console.log('@@FAMILY@@' + JSON.stringify(result));
+      process.exitCode = result.exitCode;
+    } catch (error) { console.error(error.message); process.exitCode = 127; }
+  `);
+  const captured = async (argv: string[], mode: SandboxExecutionPolicy['mode']) => {
+    const signal = AbortSignal.timeout(15000);
+    const policy: SandboxExecutionPolicy = { mode, workspaceRoot: f.workspace, sessionId: 'observed' as SandboxExecutionPolicy['sessionId'] };
+    if (mode !== 'danger-full-access') argv = [...(await f.ctx.sandbox.confine(argv, { ...policy, mode }, signal)).argv];
+    const child = f.ctx.subprocess.spawn({ argv, cwd: f.workspace, signal, graceMs: 300,
+      stdio: { stdin: 'ignore', stdout: { maxBytes: 65536 }, stderr: { maxBytes: 8192 } } });
+    try {
+      const outcome = await child.done;
+      assert.equal(await child.waitForExit(signal), true, 'DSH managed range must settle');
+      return { ...outcome, stdout: child.collected.stdout!.readFrom(0).text, stderr: child.collected.stderr!.readFrom(0).text };
+    } finally {
+      child.terminate();
+      assert.equal(await child.waitForExit(AbortSignal.timeout(3000)), true, 'fixture must join every child');
+    }
+  };
+  const observe = async (mode: SandboxExecutionPolicy['mode'], session: string, command = 'bash -c true; printf x | cat') => {
+    const use = await pin.lease({ mode, workspaceRoot: f.workspace, sessionId: session as SandboxExecutionPolicy['sessionId'] }, new AbortController().signal);
+    try {
+      const result = await captured([process.execPath, observer, JSON.stringify({ ...use, mode, command })], mode);
+      assert.equal(result.exitCode, 0, result.stderr);
+      const match = /@@FAMILY@@([^\r\n]+)/.exec(result.stdout);
+      assert.ok(match, result.stdout);
+      return JSON.parse(match[1]!) as PrivateFamilyExit;
+    } finally { await use.release(); }
+  };
+  const namespaces = new Set<string>();
+  for (const mode of ['read-only', 'workspace-write', 'danger-full-access'] as const) {
+    await t.test(mode, async () => {
+      const result = await run(mode, "printf 'pipeline\\n' | cat; bash -c 'printf child'; printf '%s\\n' \"$(printf fork)\"; git --version; printf '%s\\n' \"$GIT_EXEC_PATH\" \"$GIT_TEMPLATE_DIR\"");
+      assert.equal(result.exitCode, 0, result.stderr.text);
+      assert.match(result.stdout.text, /pipeline/);
+      assert.match(result.stdout.text, /childfork/);
+      assert.match(result.stdout.text, /git version/);
+      assert.match(result.stdout.text, /\/views\/.*\/libexec\/git-core/);
+      assert.match(result.stdout.text, /\/views\/.*\/share\/git-core\/templates/);
+      assert.doesNotMatch(result.stdout.text, /must-not-leak/);
+      const written = await run(mode, `printf write > '${mode}.txt'`);
+      assert.equal(written.exitCode === 0, mode !== 'read-only', written.stderr.text);
+      assert.equal(fs.existsSync(join(f.workspace, `${mode}.txt`)), mode !== 'read-only');
+      const outside = join(f.directory, `${mode}.txt`).replaceAll('\\', '/');
+      const out = await run(mode, `printf outside > '${outside}'`);
+      assert.equal(out.exitCode === 0, mode === 'danger-full-access', out.stderr.text);
+      assert.equal(fs.existsSync(outside), mode === 'danger-full-access');
+      const [first, second] = await Promise.all([observe(mode, 'first'), observe(mode, 'second')]);
+      assert.notEqual(first.installationKey, second.installationKey);
+      assert.equal((await observe(mode, 'first')).installationKey, first.installationKey);
+      namespaces.add(first.installationKey); namespaces.add(second.installationKey);
+      for (const result of [first, second]) {
+        if (mode === 'danger-full-access') assert.deepEqual([result.repaired, result.defaultDaclAdjusted, result.mappingsAdjusted], [0, 0, 0]);
+        else assert.ok(result.repaired > 0 && result.defaultDaclAdjusted > 0 && result.mappingsAdjusted > 0, JSON.stringify(result));
+      }
+    });
+  }
+  assert.equal(namespaces.size, 6, 'all modes and scoped views need distinct namespaces');
+  await t.test('child admission refuses redirected views and external MSYS descendants', async () => {
+    const use = await pin.lease({ mode: 'danger-full-access', workspaceRoot: f.workspace }, new AbortController().signal);
+    try {
+      await fsp.rmdir(use.installationRoot);
+      await fsp.symlink(f.source, use.installationRoot, 'junction');
+      const redirected = await captured([process.execPath, observer, JSON.stringify({ ...use, mode: 'danger-full-access', command: 'echo forbidden' })], 'danger-full-access');
+      assert.equal(redirected.exitCode, 127); assert.match(redirected.stderr, /junction/);
+      assert.doesNotMatch(redirected.stdout, /forbidden/);
+    } finally { await use.release(); }
+    const original = join(f.source, 'usr/bin/bash.exe').replaceAll('\\', '/');
+    const external = await run('danger-full-access', `'${original}' -c 'echo forbidden'`);
+    assert.equal(external.exitCode, 127); assert.match(external.stderr.text, /outside the admitted base/);
+    assert.doesNotMatch(external.stdout.text, /forbidden/);
+    const native = await run('danger-full-access', 'node.exe -p "process.platform"');
+    assert.equal(native.exitCode, 0, native.stderr.text); assert.match(native.stdout.text, /win32/);
+    const native32 = await run('danger-full-access', `MSYS2_ARG_CONV_EXCL='*' '${process.env.SystemRoot!.replaceAll('\\', '/')}/SysWOW64/cmd.exe' /d /c echo native32`);
+    assert.equal(native32.exitCode, 0, native32.stderr.text); assert.match(native32.stdout.text, /native32/);
+  });
+  await t.test('launcher validates invocation and inherited policy', async () => {
+    const launcher = fileURLToPath(new URL('../lib/bash-launcher.js', import.meta.url));
+    const invalid = spawnSync(process.execPath, [launcher], { encoding: 'utf8', timeout: 10000 });
+    assert.equal(invalid.status, 127); assert.match(invalid.stderr, /Invalid private/);
+    const use = await pin.lease({ mode: 'read-only', workspaceRoot: f.workspace }, new AbortController().signal);
+    try {
+      const args = [process.execPath, launcher, use.baseRoot, use.installationRoot, use.sourceRoot, use.layout, 'read-only', Buffer.from('echo forbidden').toString('base64'), '300'];
+      const wrongToken = await captured(args, 'danger-full-access');
+      assert.equal(wrongToken.exitCode, 127); assert.match(wrongToken.stderr, /restrictions are missing/);
+      assert.doesNotMatch(wrongToken.stdout, /forbidden/);
+      args[6] = 'danger-full-access';
+      const wrongMode = await captured(args, 'read-only');
+      assert.equal(wrongMode.exitCode, 127); assert.match(wrongMode.stderr, /restricted inherited token/);
+    } finally { await use.release(); }
+  });
+  await t.test('actual loaded MSYS identity and loader path are independently required', async () => {
+    const use = await pin.lease({ mode: 'danger-full-access', workspaceRoot: f.workspace }, new AbortController().signal);
+    const target = join(use.baseRoot, 'usr/bin/msys-2.0.dll'), held = target + '.held';
+    const alias = join(f.directory, 'foreign-dll');
+    await fsp.mkdir(alias);
+    await fsp.link(target, join(alias, 'msys-2.0.dll'));
+    try {
+      for (const fault of ['identity', 'loader-path']) {
+        try {
+          const result = await captured([process.execPath, observer, JSON.stringify({ ...use, mode: 'danger-full-access', fault, alias, command: 'echo forbidden' })], 'danger-full-access');
+          assert.equal(result.exitCode, 127, result.stderr);
+          assert.match(result.stderr, fault === 'identity' ? /module identity differs/ : /loader path is outside/);
+          assert.doesNotMatch(result.stdout, /forbidden/);
+        } finally {
+          if (fs.existsSync(held)) {
+            if (fs.existsSync(target)) await fsp.unlink(target);
+            await fsp.rename(held, target);
+          }
+        }
+      }
+    } finally {
+      await fsp.unlink(join(alias, 'msys-2.0.dll'));
+      await use.release();
+    }
+  });
+  await t.test('an admitted pin executes after its recorded source pathname disappears', async () => {
+    const retired = join(f.directory, 'retired-source');
+    await fsp.rename(f.source, retired);
+    try {
+      const result = await run('read-only', 'git --version');
+      assert.equal(result.exitCode, 0, result.stderr.text); assert.match(result.stdout.text, /git version/);
+    } finally { await fsp.rename(retired, f.source); }
+  });
+  await t.test('root exit drains descendants; cancellation and executor disposal join active families', async () => {
+    const lingering = await run('danger-full-access', 'sleep 60 & exit 7');
+    assert.equal(lingering.exitCode, 7, lingering.stderr.text);
+    assert.equal(lingering.timedOut, false, 'root exit must apply the bounded family grace');
+    const start = (signal?: AbortSignal) => executor.execute(executor.resolve({
+      command: 'node.exe -e "console.log(\'PID:\'+process.pid);setInterval(()=>{},1000)"', workdir: f.workspace,
+      timeoutMs: 15000, onExpiry: 'kill', signal,
+      sandboxPolicy: { mode: 'workspace-write', workspaceRoot: f.workspace },
+    }));
+    const ready = async (execution: ShellExecution) => {
+      let output = '';
+      const until = performance.now() + 10000;
+      while (performance.now() < until) {
+        output += execution.readOutput().delta;
+        const match = /PID:(\d+)/.exec(output);
+        if (match) return Number(match[1]);
+        assert.equal(execution.status, 'running', output);
+        await delay(20);
+      }
+      throw new Error(`Private native descendant did not start: ${output}`);
+    };
+    const controller = new AbortController(), cancelled = await start(controller.signal);
+    const cancelledPid = await ready(cancelled);
+    controller.abort(new Error('native fixture cancellation'));
+    assert.equal((await cancelled.result()).aborted, true);
+    await cancelled.done;
+    assert.throws(() => process.kill(cancelledPid, 0), { code: 'ESRCH' });
+    const [one, two] = await Promise.all([start(), start()]);
+    const pids = await Promise.all([ready(one), ready(two)]);
+    await executorFiber.dispose();
+    await Promise.all([one.done, two.done]);
+    for (const pid of pids) assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' });
+    await pin.release();
+    // Real executor and external pin retirement leave no held generation/view.
+    await purgeRuntimeCache(f.cache);
+    assert.equal(pathExists(f.cache), false);
+  });
 });

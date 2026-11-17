@@ -202,6 +202,14 @@ await test('structural and read-only source failures never create an elevated at
     assert.deepEqual(readdirSync(join(fixture.cache, 'generations')), []);
     assert.equal(pathExists(join(fixture.cache, 'current.json')), false);
   } finally { execFileSync('attrib.exe', ['-R', bash]); }
+  const relative = 'usr/lib/perl/module.pm', leaf = join(fixture.source, relative);
+  execFileSync('attrib.exe', ['+R', leaf]);
+  try {
+    assert.ok((await inventoryGitFiles(fixture.source, () => {})).includes(relative));
+    await assert.rejects(fixture.prepare(), { message: 'Refusing read-only source hardlink: ' + leaf });
+    assert.deepEqual(readdirSync(join(fixture.cache, 'generations')), []);
+    assert.equal(pathExists(join(fixture.cache, 'current.json')), false);
+  } finally { execFileSync('attrib.exe', ['-R', leaf]); }
 });
 
 await test('cold commit, ownerless warm reuse, immutable expectations and explicit rebuild', nativeOnly, async t => {

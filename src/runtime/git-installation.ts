@@ -129,11 +129,8 @@ export async function inventoryGitFiles(sourceRoot: string, checkActive: () => v
         const child = `${path}/${name}`;
         if (stat.isSymbolicLink()) throw new Error(`Refusing source reparse point: ${child}`);
         if (stat.isDirectory()) pending.push({ path: child, directory: admitChildDirectory(directory, name) });
-        else if (stat.isFile()) {
-          const hold = openOrdinaryFile(directory, name, true);
-          hold.close();
-          files.push(child);
-        } else throw new Error(`Unsupported Git runtime entry: ${child}`);
+        else if (stat.isFile()) files.push(child);
+        else throw new Error(`Unsupported Git runtime entry: ${child}`);
       }
     }
   }

@@ -11,7 +11,7 @@ import type { Context } from '@deepseek-ai/cordis';
 import type { SandboxProvider } from '@deepseek-ai/dsh-sandbox';
 import type Subprocess from '@deepseek-ai/dsh-subprocess';
 import { findInstalledDshManifest, installedDsh } from '../scripts/installed-dsh.ts';
-import { admitDirectory, removeTree } from '../src/runtime/ntfs-filesystem.ts';
+import { admitDirectory, pathExists, removeTree } from '../src/runtime/ntfs-filesystem.ts';
 import { prepareRuntime, purgeRuntimeCache, type GenerationPin, type RuntimePreparation } from '../src/runtime/runtime-cache.ts';
 import { anchorPaths, discoverGitInstallation, inventoryGitFiles, type AnchorStamps, type GitLayout } from '../src/runtime/git-installation.ts';
 
@@ -49,7 +49,8 @@ export async function runtimeFixture(t: TestContext, layout: GitLayout = 'ucrt64
   const caches = new Set([cache]);
   t.after(async () => {
     for (const pin of pins) await pin.release();
-    for (const path of caches) await purgeRuntimeCache(path);
+    // Official package removal may already have removed a purged cache's parent.
+    for (const path of caches) if (pathExists(path)) await purgeRuntimeCache(path);
     removeTree(admitDirectory(dirname(directory)), basename(directory));
   });
   await mkdir(source);

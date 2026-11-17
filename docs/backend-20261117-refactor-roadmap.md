@@ -6,7 +6,7 @@ Revised: 2026-11-17
 
 Baseline: 6c410c5a2496c30c9883fe471b38d9920c5c2675
 
-Status: Phase 0 contract baseline and Phases 1–4 implementation complete. Maintained native verification covers cache preparation, guarded provisioning/F4, executor readiness/rebuilding, direct scoped views, ownership, pins and recovery. Phases 5–6 (launcher/debugger integration and release verification, including real modal UAC) remain pending. Public command execution and release packaging remain gated.
+Status: Phases 0–6 implemented. Maintained native verification covers cache preparation, guarded provisioning/F4, executor readiness/rebuilding, direct scoped views, launcher/debugger execution, ownership, pins, recovery and packed installation/removal. See the [Phase 6 verification record](backend-20261117-phase6-verification.md) for results and limits. Actual modal UAC approval/denial/late-consent checks remain explicitly invoked manual verification; automated tests do not establish those outcomes.
 
 The versioned specification is [docs/backend-20261117-refactor-roadmap.md](../docs/backend-20261117-refactor-roadmap.md), promoted from the local planning roadmap on 2026-11-17. The [Phase 0 review checklist](../docs/backend-20261117-contract-baseline.md) records the implementation gates and verification handoff.
 
@@ -159,11 +159,11 @@ runtime-cache owns cache state and lifetime. git-installation owns source layout
 | 5 — Launcher/debugger | Type/refactor §4.4 while preserving verified native behavior and DSH ownership. |
 | 6 — Integration/package | Run §10, document recovery, freshness limits, explicit rebuilding and ownership/IO obstructions, then package. Implement guarded recovery rather than a permanent-freeze policy. |
 
-Archive relocation and Phases 1–4 are complete. Continue reviewing new modules against these contracts and preserved behavior independently of obsolete test internals. The executor now owns shared readiness and guarded rebuilding; launcher/debugger behavior remains Phase 5.
+Archive relocation and backend implementation are complete. Review maintained modules against these contracts and preserved behavior independently of obsolete test internals.
 
 ## 4. MINIMAL INTERNAL APIs
 
-Reuse DSH's `SandboxMode`, `SandboxExecutionPolicy`, `ShellExecution`, `Subprocess` and `NativePtr`. These are design contracts for the pending implementation.
+Reuse DSH's `SandboxMode`, `SandboxExecutionPolicy`, `ShellExecution`, `Subprocess` and `NativePtr`. These remain the implementation's design contracts.
 
 ### 4.1 Executor-facing preparation
 
@@ -590,6 +590,15 @@ Cover §8 workspace admission before confinement, concurrent/sequential reuse of
 Verify admitted layout propagation and the validation boundaries: lease has no repeated target queries, metadata/anchor reads or tree walks; launcher/debugger share one child path admission and retain actual loaded-module identity/path/Job checks. Assert these contracts and failures rather than incidental helper call counts.
 
 ### Phases 5–6 — Real execution, packaging and cleanup
+
+Implemented and verified on 2026-11-17: `pnpm test:release` passes typecheck, lint,
+clean build and **139 maintained tests with zero skips** on native Windows x64,
+pinned DSH and supported Git. The repository wrapper now delegates to the official
+package operation after guarded removal of both caches. A real packed installation
+test exposed and fixed missing standalone runtime dependencies under DSH's
+`autoInstallPeers: false`; it also verifies blocked removal, offline cleanup,
+settings preservation and source restoration. The [Phase 6 record](backend-20261117-phase6-verification.md)
+contains the ownership review, measurements and remaining manual-UAC limits.
 
 `bash-execution.test.ts` runs production DSH integration in a temporary context across read-only, workspace-write and full-access. Check representative Bash/Git execution, policy-appropriate writes, direct-view namespace behavior, overlapping uses and disposal. Preserve real module/loader/Job/token admission; do not mock the hook engine or count wiring checks as execution.
 

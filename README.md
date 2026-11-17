@@ -1,14 +1,15 @@
 # DSH Git Bash on Windows
 
-Backend refactor for native Windows x64, Node 26+ and DSH **0.2.2-rc.2**.
-**Phases 1–5 provide maintained inputs, cache preparation, optional guarded UAC,
-executor readiness/rebuilding, scoped views, native Bash execution and strict cache
-purge. Phase 6 release integration remains pending. Do not install or publish this
-tree.** Package-manager entries remain gated; `prepack` blocks release packaging.
+Experimental Git Bash backend for native Windows x64, Node 26+ and DSH
+**0.2.2-rc.2**. It provides lazy cache preparation, optional guarded UAC,
+shared executor readiness, explicit rebuilding, scoped views, native Bash
+execution and strict offline cache purge. There is no frontend or rebuild button.
 
 The approved [roadmap](docs/backend-20261117-refactor-roadmap.md),
 [contract baseline](docs/backend-20261117-contract-baseline.md) and
-[design decisions](docs/backend-20261117-design-decisions.md) govern later phases.
+[design decisions](docs/backend-20261117-design-decisions.md) govern the implementation.
+The [Phase 6 verification record](docs/backend-20261117-phase6-verification.md)
+records supported-system results and remaining manual consent checks.
 The local `.deprecated/` archive is reference material, excluded from maintained
 source, tooling, tests, build output and packages. No archived runtime is launched.
 
@@ -28,6 +29,10 @@ also cover `scripts/` and `test/`; `pnpm test` rebuilds and runs maintained
 `node --test` cases. The TypeScript 7 compiler uses the `@typescript/native`
 alias; TypeScript 6 supplies the API required by typescript-eslint.
 Public DSH dependencies, including `@deepseek-ai/dsh-atomic-write`, are pinned.
+Standalone launcher, broker, helper and cleanup imports are installed as explicit
+dependencies, including their runtime peer requirements. Host-facing peer
+constraints are retained. DSH profiles use `autoInstallPeers: false`; development
+dependency resolution alone does not validate an installed package.
 The broker declares Koffi 3.1.1 (the SDK's existing version) for ShellExecuteEx/COM,
 which the SDK does not expose; process wait/close still use the public DSH helpers.
 
@@ -52,7 +57,7 @@ Command subprocess outcomes and UAC denial are controlled fixtures; it does not
 launch Bash or grant workspace ACLs. It covers shared readiness, displaced waiters,
 rebuild success/failure, stale completion, disposal, and cleanup failures. View
 tests cover failed creation/cleanup, retry, unexpected EEXIST and validation ownership.
-The Phase 5 native lane runs the emitted executor, launcher and debugger through
+The native lane runs the emitted executor, launcher and debugger through
 installed DSH sandbox/subprocess providers in a temporary context. It copies the
 selected Git files into owned fixture storage before linking, so it never asks for
 consent or changes installed Git ACLs. It exercises Bash/Git, pipelines, nested
@@ -78,27 +83,72 @@ Windows-native Git Bash and answer the Windows prompt as specified:
 pnpm build
 DSH_GIT_BASH_UAC_TEST=approve node --test --test-name-pattern='manual UAC' test/provisioning.test.ts
 DSH_GIT_BASH_UAC_TEST=deny node --test --test-name-pattern='manual UAC' test/provisioning.test.ts
+DSH_GIT_BASH_UAC_TEST=late node --test --test-name-pattern='manual UAC' test/provisioning.test.ts
 ```
 
 This lane forces only the initial probe denial on an owned source fixture, then
 uses the production broker/helper and strict fixture purge. It changes no installed
 Git ACLs and opens no personal profile. It is not registered in the default suite.
-Real consent approval/denial and late-consent cancellation remain manual release
-verification; they were not exercised during Phase 3 implementation.
+For `late`, leave consent pending until `LOCAL SHUTDOWN COMPLETED` is printed
+after the ten-second cancellation deadline, then approve within twenty seconds.
+The test refuses publication and requires strict purge. If Windows dismisses the
+prompt when the broker stops, this exercises modal cancellation only; it does not
+establish that an independent late helper ran. Record what was observed. A busy
+helper or unfinished prompt makes purge fail explicitly; resolve it and retry the
+reported fixture's cleanup. These manual checks are not run by automated packaging.
 
 `scripts/installed-dsh.ts` discovers the installed CLI without loading a profile.
 If discovery is ambiguous, set `DSH_PACKAGE_JSON` for the current process to the
 absolute installed `@deepseek-ai/dsh/package.json`. The selected CLI must match
 the pinned release. Only an absent CLI skips the installed-CLI test; ambiguous,
-invalid or broken installations fail validation. `scripts/plugin.ts` currently
-rejects every package operation before loading a profile or starting pnpm. Its
-official DSH delegation will be enabled after runtime integration and release
-validation. It does not load a personal profile during these tests.
+invalid or broken installations fail validation. Packed-install tests use the
+official DSH package operation in an isolated profile with private pnpm storage.
+They exercise real tarball installation, standalone script resolution, both-cache
+purge, blocked removal, bundle restoration and preservation of shared Shell
+settings after removing the plugin-only override. No personal profile is opened.
 
 Production package inputs are limited to `lib/`, `cordis.patch.yml`, `README.md`
-and the manifest. For an inclusion audit only, `pnpm --ignore-scripts pack
---dry-run --json` bypasses the release gate without creating/installing a tarball.
-Do not use that bypass to distribute this bootstrap.
+and the manifest. `pnpm --ignore-scripts pack --dry-run --json` audits that allowlist.
+`prepack` runs typecheck, lint and a clean production build. Before producing a
+release artifact, run `pnpm test:release`: it also requires supported Windows,
+installed pinned DSH and supported Git before running the maintained suite, so
+missing native prerequisites cannot silently skip release verification.
+
+## Packaging and installation
+
+In Windows-native Git Bash:
+
+```bash
+pnpm test:release
+pnpm pack --pack-destination artifacts
+gitbash_pnpm="$(cygpath -m "$(type -P pnpm.exe)")"
+node scripts/plugin.ts "$gitbash_pnpm" web add "$(cygpath -m "$PWD/artifacts/dsh-git-bash-on-win-0.1.0-experimental.1.tgz")"
+```
+
+Choose the intended profile instead of `web`. The repository wrapper delegates to
+the pinned DSH public plugin-manager operation, including compatibility checks and
+bundle reconciliation, using an absolute pnpm executable. It accepts only `add`
+with an absolute tarball path or `remove dsh-git-bash-on-win`; lifecycle scripts
+are disabled and arbitrary pnpm flags are not forwarded. Where native executable
+lookup works, `dsh plugin --profile web add <tarball> --ignore-scripts` is equivalent.
+Restart DSH unelevated after installation or bundle enable/disable changes.
+
+For a nonstandard Git installation, set `gitBashPath` on the existing
+`pwsh-sandbox` row through DSH's native configuration editor. Both `bin/bash.exe`
+and `usr/bin/bash.exe` are accepted. A manual profile override can look like:
+
+```yaml
+- id: pwsh-sandbox
+  config:
+    gitBashPath: 'C:/Tools/Git/bin/bash.exe'
+    # Preserve all existing shared Shell values here.
+```
+
+DSH replaces a patched `config` wholesale. Preserve existing timeout, output,
+working-directory and grace settings when editing YAML. The cache and Git source
+must share an NTFS volume; neither may overlap the actual workspace in either
+containment direction. The profile cache is `<profile directory>/.git-bash-on-win`;
+contexts without profile metadata use `<installed package>/.runtime`.
 
 ## Integration and isolation contract
 
@@ -107,7 +157,7 @@ module names and Shell configuration. The native Bash schema is reused with one
 additional volatile `gitBashPath` setting; presets and tools reuse DSH modules.
 There is no frontend or custom settings UI.
 
-All future compatibility work stays within DSH's Windows Git Bash process family.
+Compatibility work stays within DSH's Windows Git Bash process family.
 Ordinary Git Bash, other hosts, WSL and non-Windows DSH must remain unaffected.
 Installed Git/DSH contents and ACLs, registry settings and global environment are
 never modified. Managed artifacts stay in private DSH cache directories.
@@ -157,10 +207,10 @@ namespace for retry and final cleanup. Unexpected namespace EEXIST grants no suc
 ownership. Native failures inside lease acquisition are also retained when the
 caller cancels or the selected pin changes.
 
-Close all relevant DSH instances before running:
+Close all relevant DSH instances before running the **installed package's** entry:
 
 ```bash
-node lib/cleanup.js '<absolute profile cache path>'
+node '<installed package>/lib/cleanup.js' '<absolute profile directory>/.git-bash-on-win'
 ```
 
 This purges both the supplied profile cache and the package `.runtime` fallback.
@@ -173,9 +223,37 @@ are addressed exactly, including unusual trailing characters. After an obstructi
 clears, rerun purge. For offline rebuilding,
 retain the package and settings. The next Bash call lazily prepares a fresh runtime.
 
+| Obstruction | Recovery |
+| --- | --- |
+| Markerless, unrecognized or unsafe cache root/ancestor | Stop; the plugin has no authority to adopt or recursively remove it. Verify the selected path and ownership. |
+| Live generation pin or writer lock | Close all DSH instances using the cache, then retry. Purge preclaims every generation before deleting payload. |
+| Busy helper plan or unconfirmed late elevated work | Keep the candidate unpublished. Let the helper drain/release its plan; retry guarded purge. A new attempt never reauthorizes the old lease. |
+| Access denial, read-only artifact, unsupported reparse point or failed close | Treat cleanup as incomplete and inspect the reported operation/path. The plugin never changes attributes or ACLs to force deletion. |
+| Failure after the initial hardlink probe | Resolve the source/IO obstruction and explicitly rebuild. Setup drains and rejects without resetting the base or requesting another UAC pass. |
+
+Once guards permit removal, normal preparation collects unused generations through
+the same non-following primitives. It does not permanently freeze a rejected
+candidate; warm hits perform no collection. Session-view residue can persist in a
+selected generation until eligible collection or offline purge.
+
 Complete uninstallation requires removing only the plugin-specific `gitBashPath`
 override while preserving shared Shell settings, closing all relevant DSH
 instances, successfully purging both caches, then using official package removal.
+After removing that field through the native editor or editing its profile patch
+(delete a manually added override row only if it becomes empty), the repository
+wrapper performs purge before official removal:
+
+```bash
+node scripts/plugin.ts "$gitbash_pnpm" web remove dsh-git-bash-on-win
+```
+
+The wrapper leaves configuration editing to DSH/user ownership. For native CLI
+removal instead, run the installed cleanup entry above first, then
+`dsh plugin --profile web remove dsh-git-bash-on-win --ignore-scripts`.
+Native package removal alone preserves settings and does not purge runtime caches.
+If multiple profiles used the same installed package, purge each profile cache
+before removing that package. An idle instance holding no pin is not detected by
+purge and can recreate storage, so closing all relevant instances is mandatory.
 Purge must not follow junctions/reparse points; interruptions, blocked removal
 and failed native closes must fail explicitly. Never recursively delete these
 caches as a substitute for guarded purge.
@@ -188,6 +266,13 @@ No bit-for-bit restoration of host state is promised.
 The six-anchor warm check is a bounded freshness sample, not a full-tree
 comparison. Restart does not promise non-anchor repair; explicit rebuild restores
 layout from installed Git and cannot repair damaged source bytes.
+Source pathname replacement does not invalidate an admitted live pin. In-place
+writes and ACL changes propagate through hardlinks, including Bash/MSYS files.
+Non-anchor additions, removals or replacements may be missed during preparation
+or survive warm restart; setup is not an atomic source snapshot. Child module
+checks admit repairs and execution, not freshness. Ordinary nonzero command exits
+do not trigger rebuilding. Atomic current-record replacement is the publication
+boundary, without a power-loss durability guarantee.
 
 Preparation probes one Bash hardlink before inventory. Only a permission denial
 from that link creation selects the fixed elevated linker; a later failure never

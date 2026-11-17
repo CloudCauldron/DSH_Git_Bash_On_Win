@@ -518,6 +518,13 @@ await test('native DSH Bash execution across all modes', nativeOnly, async t => 
   if (!f) return;
   const { default: BuiltExecutor } = await import(new URL('../lib/index.js', import.meta.url).href) as { default: typeof GitBashExecutor };
   const pin = await f.prepare(); // Cold preparation is outside command deadlines.
+  const warmTimes: number[] = [];
+  for (let sample = 0; sample < 5; sample++) {
+    const start = performance.now(), warm = await f.prepare();
+    warmTimes.push(performance.now() - start);
+    await warm.release();
+  }
+  t.diagnostic(`Real Git metadata/anchor warm admission (5 samples, ms): ${warmTimes.map(ms => ms.toFixed(2)).join(', ')}; no latency guarantee.`);
   const executorFiber = f.ctx.plugin(BuiltExecutor, { gitBashPath: f.request.gitBashPath, graceMs: 300 });
   await executorFiber;
   const executor = f.ctx.shell as GitBashExecutor;

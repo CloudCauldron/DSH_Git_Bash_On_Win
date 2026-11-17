@@ -515,17 +515,28 @@ await test('native broker launch and wait join through DSH before cache publicat
 // Never registered by the default suite. Only this explicit manual lane opens
 // real consent; it still uses owned source copies and the production broker.
 if (process.env.DSH_GIT_BASH_UAC_TEST) {
-  await test('manual UAC approval or denial', nativeOnly, async t => {
+  await test('manual UAC approval, denial or late consent after cancellation', nativeOnly, async t => {
     const choice = process.env.DSH_GIT_BASH_UAC_TEST;
-    assert.ok(choice === 'approve' || choice === 'deny', 'Use DSH_GIT_BASH_UAC_TEST=approve or deny.');
+    assert.ok(choice === 'approve' || choice === 'deny' || choice === 'late', 'Use DSH_GIT_BASH_UAC_TEST=approve, deny or late.');
     const spawn = await localSpawn(t); if (!spawn) return;
     const fixture = await runtimeFixture(t), restore = denyProbe(t);
     const { prepareRuntime: prepareBuilt } = await import(pathToFileURL(join(root, 'lib/runtime/runtime-cache.js')).href) as typeof import('../src/runtime/runtime-cache.ts');
-    t.diagnostic(`Respond ${choice === 'approve' ? 'Yes' : 'No'} to the Windows consent prompt.`);
+    console.error(choice === 'late'
+      ? 'Leave consent pending for 10 seconds. Approve only after LOCAL SHUTDOWN COMPLETED appears below; finish any prompt within the following 20 seconds.'
+      : `Respond ${choice === 'approve' ? 'Yes' : 'No'} to the Windows consent prompt.`);
     try {
-      const prepared = prepareBuilt({ ...fixture.request, spawn }, signal());
+      const prepared = prepareBuilt({ ...fixture.request, spawn }, choice === 'late' ? AbortSignal.timeout(10_000) : signal());
       if (choice === 'approve') { const pin = await prepared; await pin.release(); await fixture.current(); }
-      else { await assert.rejects(prepared, /Elevated setup failed/); assert.equal(pathExists(join(fixture.cache, 'current.json')), false); }
+      else if (choice === 'deny') { await assert.rejects(prepared, /Elevated setup failed/); assert.equal(pathExists(join(fixture.cache, 'current.json')), false); }
+      else {
+        await assert.rejects(prepared, { name: 'TimeoutError' });
+        assert.equal(pathExists(join(fixture.cache, 'current.json')), false);
+        console.error('LOCAL SHUTDOWN COMPLETED. If consent remains visible, approve now. Strict purge runs in 20 seconds.');
+        await new Promise(resolve => setTimeout(resolve, 20_000));
+        assert.equal(pathExists(join(fixture.cache, 'current.json')), false, 'late consent must never publish a revoked attempt');
+        await purgeRuntimeCache(fixture.cache); // Busy independent work is an explicit failure, never a passing cleanup.
+        assert.equal(pathExists(fixture.cache), false);
+      }
     } finally { restore(); }
   });
 }

@@ -22,10 +22,18 @@
     "build": "node --input-type=module -e \"import { rm } from 'node:fs/promises'; await rm('lib', { recursive: true, force: true });\" && tsc -p tsconfig.build.json",
     "test": "pnpm build && node --test test/*.test.ts",
     "test:windows": "node -e \"if (process.platform !== 'win32' || process.arch !== 'x64') throw new Error('Native Windows x64 Node is required.');\" && pnpm test",
-    "prepack": "node -e \"throw new Error('Backend refactor incomplete: runtime integration and release validation are pending; do not install or publish this package.');\""
+    "test:release": "node --input-type=module -e \"import { installedDsh } from './scripts/installed-dsh.ts'; import { discoverGitInstallation } from './src/runtime/git-installation.ts'; installedDsh(); discoverGitInstallation(process.env.DSH_TEST_GIT_BASH);\" && pnpm check && pnpm lint && pnpm test:windows",
+    "prepack": "pnpm check && pnpm lint && pnpm build"
   },
   "dependencies": {
+    "@deepseek-ai/cordis": "4.1.0",
+    "@deepseek-ai/schemastery": "3.19.0",
     "@deepseek-ai/dsh-atomic-write": "0.2.2-rc.2",
+    "@deepseek-ai/dsh-error": "0.2.2-rc.2",
+    "@deepseek-ai/dsh-sandbox-windows-acl": "0.2.2-rc.2",
+    "@deepseek-ai/dsh-scope": "0.2.2-rc.2",
+    "@deepseek-ai/dsh-skill": "0.2.2-rc.2",
+    "@deepseek-ai/dsh-win32-process": "0.2.2-rc.2",
     "koffi": "3.1.1"
   },
   "peerDependencies": {

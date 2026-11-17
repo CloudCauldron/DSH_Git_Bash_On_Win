@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { readFileSync, readdirSync } from 'node:fs';
-import { writeFile } from 'node:fs/promises';
+import { readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
+import { mkdir, rmdir, writeFile } from 'node:fs/promises';
 import { createRequire, findPackageJSON } from 'node:module';
 import { dirname, join, relative, resolve } from 'node:path';
 import { test } from 'node:test';
@@ -19,7 +19,9 @@ import * as Adapter from '../src/adapter.ts';
 import GitBashPreset from '../src/preset.ts';
 import * as BashTool from '../src/tool.ts';
 import { findInstalledDshManifest, installedDsh, SUPPORTED_DSH } from '../scripts/installed-dsh.ts';
-import { temporaryDirectory } from './fixtures.ts';
+import { localSpawn, runtimeFixture, temporaryDirectory } from './fixtures.ts';
+import { pathExists } from '../src/runtime/ntfs-filesystem.ts';
+import { purgeRuntimeCache } from '../src/runtime/runtime-cache.ts';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const require = createRequire(import.meta.url);
@@ -183,7 +185,7 @@ await test('maintained compiler graphs, lint and emitted public exports exclude 
   assert.equal(Object.getPrototypeOf(built.default), SandboxBashExecutor);
 });
 
-await test('execution uses native DSH policy; release packaging stays gated and purge refuses an unowned directory', async t => {
+await test('execution uses native DSH policy; package inputs are confined and purge refuses an unowned directory', async t => {
   assert.equal(GitBashExecutor.prototype.execute, SandboxBashExecutor.prototype.execute);
   const directory = await temporaryDirectory(t);
   const sentinel = join(directory, 'owned.txt');
@@ -192,24 +194,21 @@ await test('execution uses native DSH policy; release packaging stays gated and 
   assert.equal(cleanup.error, undefined);
   assert.equal(cleanup.status, 1);
   assert.match(cleanup.stderr, /uninstallation are incomplete/);
-  for (const operation of [['add', root], ['remove', 'dsh-git-bash-on-win'], ['--silent', 'remove', 'dsh-git-bash-on-win']]) {
+  for (const operation of [['add', root], ['remove', 'another-package'], ['--silent', 'remove', 'dsh-git-bash-on-win'],
+    ['remove', 'dsh-git-bash-on-win', '--dir', directory]]) {
     const plugin = spawnSync(process.execPath, [join(root, 'scripts/plugin.ts'), process.execPath, 'bootstrap', ...operation], {
       encoding: 'utf8', timeout: 30_000,
       env: { ...process.env, DSH_HOME: directory, DSH_PACKAGE_JSON: join(directory, 'missing-dsh.json') },
     });
     assert.equal(plugin.error, undefined);
     assert.equal(plugin.status, 1);
-    assert.match(plugin.stderr, /Plugin package operations are unavailable until runtime integration/);
+    assert.match(plugin.stderr, /Usage: node scripts\/plugin.ts/);
   }
   assert.deepEqual(filesUnder(directory), ['owned.txt']);
   assert.equal(readFileSync(sentinel, 'utf8'), 'unowned directory must be retained');
   const pnpm = process.env.npm_execpath ?? (process.platform === 'win32' ? 'pnpm.exe' : 'pnpm');
   const args = /\.[cm]?js$/.test(pnpm) ? [pnpm] : [];
   const executable = args.length ? process.execPath : pnpm;
-  const blocked = spawnSync(executable, [...args, 'pack', '--dry-run'], { cwd: root, encoding: 'utf8', timeout: 30_000 });
-  assert.equal(blocked.error, undefined);
-  assert.notEqual(blocked.status, 0);
-  assert.match(blocked.stdout + blocked.stderr, /Backend refactor incomplete/);
   const packed = JSON.parse(execFileSync(executable, [...args, '--ignore-scripts', 'pack', '--dry-run', '--json'], {
     cwd: root, encoding: 'utf8', timeout: 30_000,
   })) as { files: Array<{ path: string }> };
@@ -218,4 +217,112 @@ await test('execution uses native DSH policy; release packaging stays gated and 
     ...filesUnder(join(root, 'lib')).map(file => `lib/${file}`)].sort();
   assert.deepEqual(files, expected);
   assert.ok(files.every(file => dirname(file) === '.' || file.startsWith('lib/')));
+});
+
+await test('packed install, offline recovery and removal preserve shared Shell settings and source files', {
+  skip: !nativeWindows && 'Requires native Windows x64, pinned DSH and pnpm.',
+}, async t => {
+  const spawn = await localSpawn(t); if (!spawn) return;
+  const runtime = installedDsh(), fixture = await runtimeFixture(t);
+  const pnpm = realpathSync(process.env.npm_execpath?.endsWith('.exe') ? process.env.npm_execpath
+    : execFileSync('where.exe', ['pnpm.exe'], { encoding: 'utf8' }).trim().split(/\r?\n/)[0]!);
+  const home = join(fixture.directory, 'home'), profile = join(home, 'profiles', 'integration');
+  const { initProfile, assertBundlePlatform } = await runtime.load(runtime.cliRequire, '@deepseek-ai/dsh-app-boot') as {
+    initProfile(dir: string, bundles: string[]): void;
+    assertBundlePlatform(platforms: string[], host: string): void;
+  };
+  initProfile(profile, ['@deepseek-ai/dsh-base']);
+  assert.throws(() => assertBundlePlatform(['win32'], 'linux'), /supports Host platforms/);
+  const patchPath = join(profile, 'cordis.patch.yml');
+  const shared = { timeoutMs: 12345, maxOutputBytes: 65536, graceMs: 500 };
+  const patches = [{ id: 'pwsh-sandbox', config: { ...shared, gitBashPath: fixture.request.gitBashPath } }];
+  await writeFile(patchPath, JSON.stringify(patches)); // JSON is a valid native YAML patch.
+  // Keep package-manager state and all profile changes inside this fixture.
+  await writeFile(join(profile, '.npmrc'), `store-dir=${join(fixture.directory, 'store').replaceAll('\\', '/')}\nstate-dir=${join(fixture.directory, 'state').replaceAll('\\', '/')}\n`);
+  const run = async (argv: string[], cwd = fixture.directory) => {
+    const child = spawn({ argv, cwd, env: { ...process.env, DSH_HOME: home, DSH_TELEMETRY_DISABLED: '1' },
+      signal: AbortSignal.timeout(180_000), graceMs: 500,
+      stdio: { stdin: 'ignore', stdout: { maxBytes: 128 * 1024 }, stderr: { maxBytes: 128 * 1024 } } });
+    try {
+      const outcome = await child.done;
+      assert.equal(await child.waitForExit(AbortSignal.timeout(5000)), true);
+      return { ...outcome, stdout: child.collected.stdout!.readFrom(0).text, stderr: child.collected.stderr!.readFrom(0).text };
+    } finally {
+      child.terminate();
+      assert.equal(await child.waitForExit(AbortSignal.timeout(5000)), true, 'package fixture must join its entire managed range');
+    }
+  };
+  const success = (result: { exitCode: number | null; stdout: string; stderr: string }) => {
+    assert.equal(result.exitCode, 0, result.stdout + result.stderr);
+  };
+  // prepack is checked separately; invoking it here would rebuild under other tests.
+  const packed = await run([pnpm, '--ignore-scripts', 'pack', '--pack-destination', fixture.directory, '--json'], root);
+  success(packed);
+  const tarball = join(fixture.directory, readdirSync(fixture.directory).find(name => name.endsWith('.tgz'))!);
+  const operation = (verb: 'add' | 'remove', target: string) => run([process.execPath, join(root, 'scripts/plugin.ts'), pnpm, 'integration', verb, target]);
+  success(await operation('add', tarball));
+  const manifest = () => JSON.parse(readFileSync(join(profile, 'package.json'), 'utf8')) as {
+    dependencies?: Record<string, string>; dsh: { profile: { bundles: string[] } };
+  };
+  assert.ok(manifest().dsh.profile.bundles.includes('dsh-git-bash-on-win'));
+  assert.deepEqual(parse(readFileSync(patchPath, 'utf8')), patches);
+  const packageRoot = dirname(realpathSync(createRequire(join(profile, 'package.json')).resolve('dsh-git-bash-on-win/package.json')));
+  const fallback = join(packageRoot, '.runtime'), cache = join(profile, '.git-bash-on-win');
+  const sourceFile = join(fixture.source, 'usr/bin/bash.exe');
+  const before = { bytes: readFileSync(sourceFile), links: statSync(sourceFile).nlink,
+    acl: execFileSync('icacls.exe', [sourceFile], { encoding: 'utf8' }) };
+  const prepare = (path: string) => fixture.prepare(false, new AbortController().signal, path);
+  // Standalone script imports must resolve with native profile autoInstallPeers:false.
+  // No repository node_modules junction or custom module resolver hides omissions.
+  const invalidHelper = await run([process.execPath, join(packageRoot, 'lib/setup/link-helper.js')]);
+  assert.notEqual(invalidHelper.exitCode, 0);
+  assert.match(invalidHelper.stderr, /Expected one setup plan path/);
+  assert.doesNotMatch(invalidHelper.stderr, /ERR_MODULE_NOT_FOUND|Cannot find (?:module|package)/);
+  const invalidLauncher = await run([process.execPath, join(packageRoot, 'lib/bash-launcher.js')]);
+  assert.notEqual(invalidLauncher.exitCode, 0);
+  assert.match(invalidLauncher.stderr, /Invalid private Git Bash invocation/);
+  assert.doesNotMatch(invalidLauncher.stderr, /ERR_MODULE_NOT_FOUND|Cannot find (?:module|package)/);
+
+  for (const held of [fallback, cache]) {
+    await (await prepare(fallback)).release();
+    await (await prepare(cache)).release();
+    const pin = await prepare(held);
+    try {
+      const blocked = await operation('remove', 'dsh-git-bash-on-win');
+      assert.notEqual(blocked.exitCode, 0);
+      assert.match(blocked.stderr, /package removal was not started/);
+      assert.ok(manifest().dependencies?.['dsh-git-bash-on-win']);
+      assert.ok(pathExists(join(held, 'current.json')));
+    } finally { await pin.release(); }
+  }
+  const cleanup = () => run([process.execPath, join(packageRoot, 'lib/cleanup.js'), cache]);
+  success(await cleanup());
+  assert.equal(pathExists(cache), false); assert.equal(pathExists(fallback), false);
+  assert.deepEqual(parse(readFileSync(patchPath, 'utf8')), patches, 'offline rebuild retains the override and package');
+  assert.equal(statSync(sourceFile).nlink, before.links);
+
+  // An unowned fallback must block official removal without deleting its contents.
+  await mkdir(fallback);
+  const refused = await operation('remove', 'dsh-git-bash-on-win');
+  assert.notEqual(refused.exitCode, 0); assert.match(refused.stderr, /package removal was not started/);
+  assert.ok(manifest().dependencies?.['dsh-git-bash-on-win']);
+  await rmdir(fallback); // This test created the empty unowned directory.
+
+  // Documented uninstall step: edit only the plugin field before closing DSH.
+  const remaining = [{ id: 'pwsh-sandbox', config: shared }];
+  await writeFile(patchPath, JSON.stringify(remaining));
+  const dump = () => run([process.execPath, join(dirname(runtime.manifest), 'lib/bin.js'), '--profile', 'integration', '--dump-config']);
+  const enabled = await dump(); success(enabled); assert.match(enabled.stdout, /git-bash-adapter/);
+  await (await prepare(fallback)).release(); await (await prepare(cache)).release();
+  success(await operation('remove', 'dsh-git-bash-on-win'));
+  assert.equal(manifest().dependencies?.['dsh-git-bash-on-win'], undefined);
+  assert.equal(manifest().dsh.profile.bundles.includes('dsh-git-bash-on-win'), false);
+  assert.equal(pathExists(cache), false); assert.equal(pathExists(fallback), false);
+  assert.deepEqual(parse(readFileSync(patchPath, 'utf8')), remaining);
+  const restored = await dump(); success(restored); assert.doesNotMatch(restored.stdout, /git-bash-adapter|gitBashPath/);
+  assert.match(restored.stdout, /timeoutMs: 12345/);
+  assert.deepEqual(readFileSync(sourceFile), before.bytes);
+  assert.equal(statSync(sourceFile).nlink, before.links);
+  assert.equal(execFileSync('icacls.exe', [sourceFile], { encoding: 'utf8' }), before.acl);
+  await purgeRuntimeCache(cache); // The profile still exists; the package parent is now gone.
 });

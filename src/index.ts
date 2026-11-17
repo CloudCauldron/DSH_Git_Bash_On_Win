@@ -6,7 +6,7 @@ import type { ShellExecSpec, ShellExecution } from '@deepseek-ai/dsh-shell';
 import type Subprocess from '@deepseek-ai/dsh-subprocess';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { hasPreparationCleanupFailure, prepareRuntime, type GenerationPin, type RuntimeUse } from './runtime/runtime-cache.ts';
+import { hasRuntimeCleanupFailure, prepareRuntime, type GenerationPin, type RuntimeUse } from './runtime/runtime-cache.ts';
 
 export interface Config extends BashConfig { gitBashPath: Volatile<string | undefined> }
 
@@ -77,7 +77,7 @@ export default class GitBashExecutor extends SandboxBashExecutor {
     return this.track(slot.ready.then(() => {}, error => {
       // Preparation records resource failures at their boundary, independently
       // of retirement timing. Ordinary setup errors have already drained safely.
-      if (hasPreparationCleanupFailure(error)) throw error;
+      if (hasRuntimeCleanupFailure(error)) throw error;
     }), this.cleanup);
   }
 
@@ -106,7 +106,7 @@ export default class GitBashExecutor extends SandboxBashExecutor {
         controller.signal.throwIfAborted();
         this.stopping.signal.throwIfAborted();
         const pin = await prepareRuntime({ cacheDirectory, gitBashPath: selection, rebuild, spawn: this.setupSpawn }, controller.signal).catch(error => {
-          if (hasPreparationCleanupFailure(error)) this.cleanupErrors.push(error);
+          if (hasRuntimeCleanupFailure(error)) this.cleanupErrors.push(error);
           throw error;
         });
         try {
@@ -141,9 +141,15 @@ export default class GitBashExecutor extends SandboxBashExecutor {
       try {
         const pin = await waitForReady(slot, signal);
         if (!this.current(slot, signal)) continue;
-        use = await pin.lease(spec.sandboxPolicy, signal);
+        use = await pin.lease(spec.sandboxPolicy, signal).catch(error => {
+          // Lease may unwind its last reference before returning a RuntimeUse.
+          if (hasRuntimeCleanupFailure(error)) this.cleanupErrors.push(error);
+          throw error;
+        });
         if (this.current(slot, signal)) { transferred = true; return { slot, use }; }
       } catch (error) {
+        // Recorded at acquisition, never discarded by stale/cancelled waiters.
+        if (hasRuntimeCleanupFailure(error)) throw error;
         if (this.current(slot, signal)) throw error;
       } finally {
         // Transfer only a current, uncancelled use to the command.

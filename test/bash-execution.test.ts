@@ -416,6 +416,44 @@ await test('ordinary source IO failure during supersession drains without poison
   } finally { resume.resolve(); mock.mock.restore(); syncBuiltinESMExports(); log.mock.restore(); }
 });
 
+await test('native cleanup failure inside lease admission remains owned after current or cancelled acquisition', nativeOnly, async t => {
+  for (const cancelled of [false, true]) await t.test(cancelled ? 'cancelled and retired' : 'current', async t => {
+    const f = await executorFixture(t);
+    await f.executor.rebuildRuntime();
+    const generation = join(f.cache, 'generations', (await f.current()).generationId);
+    const failure = new Win32Error('CloseHandle', 6, 'fixture lease admission close failure');
+    const originalClose = NativeHold.prototype.close, originalRealpath = fsp.realpath;
+    const entered = deferred<void>(), resume = deferred<void>(), caller = new AbortController();
+    let injected = false;
+    const close = t.mock.method(NativeHold.prototype, 'close', function (this: NativeHold) {
+      originalClose.call(this);
+      if (!injected && this.path === join(generation, 'views')) { injected = true; throw failure; }
+    });
+    const realpath = t.mock.method(fsp, 'realpath', (async (...args: Parameters<typeof fsp.realpath>) => {
+      if (String(args[0]) === f.workspace) { entered.resolve(); await resume.promise; }
+      return originalRealpath(...args);
+    }) as typeof fsp.realpath); syncBuiltinESMExports();
+    const logged: unknown[][] = [];
+    const log = t.mock.method(f.providerContext.logger, 'error', (...args: unknown[]) => { logged.push(args); });
+    try {
+      const acquisition = assert.rejects(f.run({ signal: caller.signal }), error => cancelled ? error === caller.signal.reason : error === failure);
+      await entered.promise;
+      if (cancelled) {
+        await f.select(f.request.gitBashPath!.replaceAll('\\', '/'));
+        const stop = new Error('fixture cancelled observer');
+        await assert.rejects(f.run({ signal: AbortSignal.abort(stop) }), error => error === stop);
+        caller.abort(new Error('fixture caller cancelled'));
+      }
+      resume.resolve(); await acquisition;
+      assert.ok(injected);
+      await assert.rejects(f.executor.rebuildRuntime(), /Previous runtime cleanup failed/);
+      assert.equal(f.spawned.length, 0);
+      await f.dispose();
+      assert.ok(logged.flat().some(value => value instanceof AggregateError && /owned resources/.test(value.message)));
+    } finally { resume.resolve(); close.mock.restore(); realpath.mock.restore(); syncBuiltinESMExports(); log.mock.restore(); }
+  });
+});
+
 await test('selection or cancellation during confinement prevents launch and releases the use', nativeOnly, async t => {
   for (const kind of ['selection', 'cancellation', 'argv'] as const) await t.test(kind, async t => {
     const f = await executorFixture(t), cancelled = new AbortController();

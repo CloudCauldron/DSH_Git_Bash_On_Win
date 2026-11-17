@@ -137,6 +137,55 @@ await test('a namespace created before failed directory admission is rolled back
   await purgeRuntimeCache(f.cache);
 });
 
+await test('failed namespace rollback retains ownership for later retry and final cleanup', nativeOnly, async t => {
+  for (const retry of [false, true]) await t.test(retry ? 'retry' : 'retirement', async t => {
+    const f = await runtimeFixture(t), pin = await f.prepare();
+    const views = join(f.cache, 'generations', (await f.current()).generationId, 'views');
+    const originalInfo = NativeHold.prototype.information, originalCanonical = NativeHold.prototype.canonicalPath;
+    let created = '', rollbackFailed = false;
+    const admission = t.mock.method(NativeHold.prototype, 'information', function (this: NativeHold) {
+      if (!created && dirname(this.path) === views) { created = this.path; throw new Error('fixture namespace admission failed'); }
+      return originalInfo.call(this);
+    });
+    const rollback = t.mock.method(NativeHold.prototype, 'canonicalPath', function (this: NativeHold) {
+      if (created && this.path === views) { rollbackFailed = true; throw new Error('fixture namespace rollback failed'); }
+      return originalCanonical.call(this);
+    });
+    try { await assert.rejects(pin.lease(scope(f.workspace, 'session'), signal()), AggregateError); }
+    finally { admission.mock.restore(); rollback.mock.restore(); }
+    assert.ok(rollbackFailed);
+    assert.ok(pathExists(created));
+    if (retry) {
+      const use = await pin.lease(scope(f.workspace, 'session'), signal());
+      await use.release();
+    }
+    await pin.release();
+    assert.equal(pathExists(created), false, 'retirement must attempt its owned namespace residue');
+    await purgeRuntimeCache(f.cache);
+  });
+});
+
+await test('unexpected namespace EEXIST grants no ownership for retry or pin cleanup', nativeOnly, async t => {
+  const f = await runtimeFixture(t), pin = await f.prepare(), original = fs.mkdirSync;
+  const views = join(f.cache, 'generations', (await f.current()).generationId, 'views');
+  let collision = '';
+  const mock = t.mock.method(fs, 'mkdirSync', ((...args: Parameters<typeof fs.mkdirSync>) => {
+    const path = String(args[0]).replace(/^\\\\\?\\/, '');
+    if (dirname(path) === views) {
+      collision = path; original(...args);
+      fs.writeFileSync(join(path, 'sentinel'), 'unexpected namespace');
+    }
+    return original(...args);
+  }) as typeof fs.mkdirSync); syncBuiltinESMExports();
+  try { await assert.rejects(pin.lease(scope(f.workspace, 'session'), signal()), { code: 'EEXIST' }); }
+  finally { mock.mock.restore(); syncBuiltinESMExports(); }
+  assert.ok(collision);
+  await assert.rejects(pin.lease(scope(f.workspace, 'session'), signal()), { code: 'EEXIST' });
+  await pin.release();
+  assert.equal(fs.readFileSync(join(collision, 'sentinel'), 'utf8'), 'unexpected namespace');
+  await purgeRuntimeCache(f.cache);
+});
+
 await test('failed junction admission cleans only its created target and the shared view can retry', nativeOnly, async t => {
   const f = await runtimeFixture(t), pin = await f.prepare(), original = fs.realpathSync;
   let attempted = '';

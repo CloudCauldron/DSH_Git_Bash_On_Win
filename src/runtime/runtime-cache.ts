@@ -8,7 +8,7 @@ import { provisionRuntime, ProvisioningCleanupError } from '../setup/provision-r
 import {
   absolutePath, acquireWriterLock, admitChildDirectory, admitDirectory, admitJunction,
   bestEffort, canonicalWorkspace, children, claimDirectory, createDirectory, createHardlink,
-  createJunction, ensureDirectory, hasCloseFailure, InvalidMetadataError, isBusy, isMissing, ordinaryChildDirectory,
+  createJunction, DirectoryRollbackError, ensureDirectory, hasCloseFailure, InvalidMetadataError, isBusy, isMissing, ordinaryChildDirectory,
   overlaps, pathExists, pinDirectory, readMetadata, removeDirectoryTree, removeEmptyDirectory, removeTree,
   revalidateDirectory, sameIdentity, samePath, unlinkEntry, writeNewMetadata,
   type Directory, type NativeHold,
@@ -37,9 +37,9 @@ export interface RuntimeUse {
 }
 
 /** Preserve local resource failures without treating source/setup errors as leaks. */
-export function hasPreparationCleanupFailure(error: unknown): boolean {
+export function hasRuntimeCleanupFailure(error: unknown): boolean {
   return hasCloseFailure(error) || error instanceof ProvisioningCleanupError
-    || error instanceof AggregateError && error.errors.some(hasPreparationCleanupFailure);
+    || error instanceof AggregateError && error.errors.some(hasRuntimeCleanupFailure);
 }
 interface CurrentRuntime {
   readonly schemaVersion: 1;
@@ -301,6 +301,7 @@ class RuntimePin implements GenerationPin {
   private retired = false;
   private ownerRelease?: Promise<void>;
   private namespace?: Directory;
+  private namespaceResidue = false;
   private readonly instance = randomUUID();
   private readonly views = new Map<string, Promise<string>>();
 
@@ -345,8 +346,7 @@ class RuntimePin implements GenerationPin {
       // Yield once so even a synchronous creation error is evicted after insertion.
       await Promise.resolve();
       try {
-        this.namespace ??= createDirectory(ensureDirectory(this.generation, 'views'), this.instance);
-        return createJunction(this.namespace, randomUUID(), this.base);
+        return createJunction(this.viewParent(), randomUUID(), this.base);
       } catch (error) {
         if (key !== undefined) this.views.delete(key);
         throw error;
@@ -354,6 +354,22 @@ class RuntimePin implements GenerationPin {
     })();
     if (key !== undefined) this.views.set(key, promise);
     return promise;
+  }
+
+  private viewParent(): Directory {
+    if (this.namespace) return this.namespace;
+    const views = ensureDirectory(this.generation, 'views');
+    if (this.namespaceResidue) {
+      removeTree(views, this.instance);
+      this.namespaceResidue = false;
+    }
+    try { return this.namespace = createDirectory(views, this.instance); }
+    catch (error) {
+      // Only a failed rollback after our own mkdir grants ownership. An
+      // unexpected EEXIST must never authorize removal on retry or retirement.
+      if (error instanceof DirectoryRollbackError) this.namespaceResidue = true;
+      throw error;
+    }
   }
 
   private async releaseUse(view: string | undefined, agentless: boolean): Promise<void> {
@@ -366,7 +382,7 @@ class RuntimePin implements GenerationPin {
     this.references--;
     if (this.references !== 0 || !this.retired) return;
     try {
-      if (this.namespace) bestEffort(() => removeTree(admitChildDirectory(this.generation, 'views'), this.instance));
+      if (this.namespace || this.namespaceResidue) bestEffort(() => removeTree(admitChildDirectory(this.generation, 'views'), this.instance));
     } finally { this.views.clear(); this.hold.close(); }
   }
 }

@@ -61,6 +61,9 @@ export function isBusy(error: unknown): boolean {
 
 export class InvalidMetadataError extends Error {}
 
+/** The new name was created, but neither admission nor its rollback completed. */
+export class DirectoryRollbackError extends AggregateError {}
+
 export function hasCloseFailure(error: unknown): boolean {
   return (error instanceof Win32Error && error.api === 'CloseHandle')
     || (error instanceof AggregateError && error.errors.some(hasCloseFailure));
@@ -232,7 +235,7 @@ function createChildDirectory(parent: Directory, name: string): Directory {
     // Roll back only our successfully created, still-empty name. Never recurse
     // or repair attributes when admission itself could not establish a Directory.
     try { revalidateDirectory(parent); removeDirectoryName(path); }
-    catch (cleanup) { throw new AggregateError([error, cleanup], `Directory admission and cleanup failed: ${path}`, { cause: cleanup }); }
+    catch (cleanup) { throw new DirectoryRollbackError([error, cleanup], `Directory admission and cleanup failed: ${path}`, { cause: cleanup }); }
     throw error;
   }
 }

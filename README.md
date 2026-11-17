@@ -52,7 +52,7 @@ Command subprocess outcomes and UAC denial are controlled fixtures; it does not
 launch Bash or grant workspace ACLs. It covers shared readiness, displaced waiters,
 rebuild success/failure, stale completion, disposal, and cleanup failures. View
 tests cover failed creation/cleanup, retry, unexpected EEXIST and validation ownership.
-Typecheck, lint and all **119** default Windows tests pass, with zero
+Typecheck, lint and all **126** default Windows tests pass, with zero
 skips. These checks do not establish real consent-dialog or DSH Bash execution
 correctness. Close-failure injection reports failure after closing the test handle;
 it does not reproduce an unrecoverable kernel handle fault.
@@ -121,6 +121,10 @@ Cleanup failures are retained even when preparation rejects before retirement;
 ordinary source/setup errors during cancellation do not poison later rebuilding.
 Failed admission of a newly created empty directory attempts exact non-following
 rollback, allowing view creation to retry after a transient observation failure.
+If that rollback is also obstructed, the pin retains ownership of its created
+namespace for retry and final cleanup. Unexpected namespace EEXIST grants no such
+ownership. Native failures inside lease acquisition are also retained when the
+caller cancels or the selected pin changes.
 
 Close all relevant DSH instances before running:
 

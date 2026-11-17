@@ -140,7 +140,7 @@ export async function runPrivateBash(options: PrivateBashLaunch): Promise<Privat
       const informationClass = Number(reg(registers.rdx));
       if (fromPrivateMsys && informationClass === 6 && reg(registers.r9) === 8n) {
         const original = defaultDaclText(processHandle, reg(registers.r8));
-        if (!original.includes(grantSid)) {
+        if (!original.includes(`(A;;GA;;;${grantSid})`)) {
           ctx.write64(registers.r8, grantDefaultDacl(processHandle, original, grantSid));
           defaultDaclAdjusted++;
         }
@@ -161,7 +161,7 @@ export async function runPrivateBash(options: PrivateBashLaunch): Promise<Privat
         const descriptor = attrs.readBigUInt64LE(32);
         if (descriptor) {
           const original = descriptorText(readDescriptor(processHandle, descriptor));
-          if (!original.includes(grantSid)) {
+          if (!original.includes(`(A;;GA;;;${grantSid})`)) {
             ctx.write64(registers.r8, grantObjectAttributes(processHandle, attrs, original, grantSid));
             mappingsAdjusted++;
           }

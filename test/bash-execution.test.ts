@@ -613,7 +613,7 @@ await test('native DSH Bash execution across all modes', nativeOnly, async t => 
   await fsp.writeFile(observer, `
     import { runPrivateBash } from ${JSON.stringify(new URL('../lib/debugger/process-family.js', import.meta.url).href)};
     import { inheritedCompatibility } from ${JSON.stringify(new URL('../lib/debugger/native-debug.js', import.meta.url).href)};
-    import { debugApi, readMemory } from ${JSON.stringify(new URL('../lib/debugger/native-debug.js', import.meta.url).href)};
+    import { debugApi, readMemory, ThreadContext, registers } from ${JSON.stringify(new URL('../lib/debugger/native-debug.js', import.meta.url).href)};
     import { sectionAccess } from ${JSON.stringify(new URL('./fixtures.ts', import.meta.url).href)};
     import { copyFileSync, renameSync } from 'node:fs';
     import { join } from 'node:path';
@@ -639,6 +639,54 @@ await test('native DSH Bash execution across all modes', nativeOnly, async t => 
             }
           }
           return status;
+        };
+      }
+      if (request.grantHook) {
+        const api = debugApi(), original = { ...api };
+        const { grantSid } = inheritedCompatibility(request.mode);
+        const sddl = request.grantDescriptor.replaceAll('SID', grantSid);
+        const stopped = new Error('fixture grant selection observed');
+        let moduleBase, hook, targeting = false, injected = false, argument, merged, observed;
+        api.waitDebug = (data, milliseconds) => {
+          const result = original.waitDebug(data, milliseconds);
+          if (result && data.readUInt32LE() === 6) moduleBase = data.readBigUInt64LE(24);
+          return result;
+        };
+        api.symbol = (module, symbol) => {
+          const address = original.symbol(module, symbol);
+          if (symbol === request.grantHook) hook = moduleBase + address - module;
+          return address;
+        };
+        const load = ThreadContext.prototype.load, resume = ThreadContext.prototype.resume;
+        ThreadContext.prototype.load = function (thread) {
+          load.call(this, thread);
+          targeting = this.read64(248) === hook; // x64 CONTEXT.Rip at the real hook.
+          if (targeting) argument = this.read64(registers.r8);
+        };
+        api.descriptorText = (descriptor, ...args) => {
+          if (!targeting || injected) return original.descriptorText(descriptor, ...args);
+          const local = Buffer.alloc(8), bytes = Buffer.alloc(4);
+          if (!original.descriptor(sddl, 1, local, bytes)) throw new Error('fixture descriptor conversion failed');
+          const pointer = local.readBigUInt64LE();
+          try {
+            const result = original.descriptorText(pointer, ...args);
+            injected = !!result;
+            return result;
+          } finally { if (api.localFree(pointer)) throw new Error('fixture descriptor free failed'); }
+        };
+        api.descriptor = (text, ...args) => {
+          if (injected) merged = text.replaceAll(grantSid, 'SID');
+          return original.descriptor(text, ...args);
+        };
+        ThreadContext.prototype.resume = function (thread) {
+          if (!injected) return resume.call(this, thread);
+          observed = { repaired: this.read64(registers.r8) !== argument, merged: merged ?? null };
+          // Stop before saving the altered context: test descriptors never reach the pending OS call.
+          throw stopped;
+        };
+        reportFailure = error => {
+          if (error.errors?.length !== 1 || error.errors[0] !== stopped) throw error;
+          console.log('@@GRANT@@' + JSON.stringify(observed));
         };
       }
       if (request.cleanupSequence) {
@@ -791,6 +839,28 @@ await test('native DSH Bash execution across all modes', nativeOnly, async t => 
     });
   }
   assert.equal(namespaces.size, 6, 'all modes and scoped views need distinct namespaces');
+  await t.test('token and mapping repairs require the exact intended allow ACE', async () => {
+    const use = await pin.lease({ mode: 'workspace-write', workspaceRoot: f.workspace }, new AbortController().signal);
+    try {
+      for (const [name, grantDescriptor, repaired] of [
+        ['exact', 'D:(A;;GA;;;SID)', false],
+        ['prefix', 'D:(A;;GA;;;SID-1)', true],
+        ['owner', 'O:SIDD:(A;;GA;;;SY)', true],
+        ['deny', 'D:(D;;GA;;;SID)', true],
+        ['insufficient', 'D:(A;;GR;;;SID)', true],
+      ] as const) {
+        for (const grantHook of ['NtSetInformationToken', 'NtCreateSection']) {
+          const result = await captured([process.execPath, observer, JSON.stringify({ ...use, mode: 'workspace-write',
+            grantHook, grantDescriptor, command: 'bash -c true; printf x | cat' })], 'workspace-write');
+          const label = grantHook + '/' + name;
+          assert.equal(result.exitCode, 127, label + ': ' + result.stderr);
+          const match = /@@GRANT@@(.+)/.exec(result.stdout);
+          assert.ok(match, label + ': ' + result.stdout + result.stderr);
+          assert.deepEqual(JSON.parse(match[1]!), { repaired, merged: repaired ? grantDescriptor + '(A;;GA;;;SID)' : null }, label);
+        }
+      }
+    } finally { await use.release(); }
+  });
   await t.test('failed initial admission drains unregistered cleanup events', async () => {
     const use = await pin.lease({ mode: 'danger-full-access', workspaceRoot: f.workspace }, new AbortController().signal);
     try {

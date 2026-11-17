@@ -342,15 +342,22 @@ await test('a live pin leases without source probes after the source pathname di
 await test('plan unlink is an ordinary native sharing gate before any candidate payload', nativeOnly, async t => {
   const fixture = await runtimeFixture(t), pin = await fixture.prepare();
   await pin.release();
-  const generation = admitDirectory(join(fixture.cache, 'generations', (await fixture.current()).generationId));
+  const selected = await fixture.current(), generations = join(fixture.cache, 'generations');
+  const generation = admitDirectory(join(generations, selected.generationId));
+  const directoryPlan = join(generations, '!plan-directory', 'plan.json');
+  await mkdir(directoryPlan, { recursive: true });
+  await writeFile(join(directoryPlan, 'payload'), 'owned');
+  assert.deepEqual(readdirSync(generations), ['!plan-directory', selected.generationId], 'the directory plan must precede the held real plan');
   await writeFile(join(generation.path, 'plan.json'), '{malformed-but-owned');
   const plan = openExclusiveMetadata(generation, 'plan.json');
   try {
-    await assert.rejects(purgeRuntimeCache(fixture.cache));
+    await assert.rejects(purgeRuntimeCache(fixture.cache), isBusy);
+    assert.equal(await readFile(join(directoryPlan, 'payload'), 'utf8'), 'owned');
     assert.ok(pathExists(join(generation.path, 'base/usr/lib/perl/module.pm')));
-    assert.ok(pathExists(join(fixture.cache, 'current.json')));
+    assert.deepEqual(await fixture.current(), selected);
   } finally { plan.close(); }
   await purgeRuntimeCache(fixture.cache);
+  assert.equal(pathExists(fixture.cache), false);
 });
 
 await test('setup leases are exclusive, identity-bound and revoked by checked close', nativeOnly, async t => {

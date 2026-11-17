@@ -238,13 +238,23 @@ async function buildFresh(root: Directory, generations: Directory, source: GitIn
   }
 }
 
+/** Leave ordinary plan directories for payload traversal after the real plan gates. */
+function unlinkPlan(directory: Directory): void {
+  try {
+    if (ordinaryChildDirectory(directory, 'plan.json')) return;
+  } catch (error) {
+    if (hasCloseFailure(error) || !isMissing(error)) throw error;
+  }
+  unlinkEntry(directory, 'plan.json');
+}
+
 /** Claims and plan unlink are gates, including for malformed generation names. */
 function collectGeneration(generations: Directory, name: string): void {
   const directory = ordinaryChildDirectory(generations, name);
   if (!directory) { removeTree(generations, name); return; }
   const claim = claimDirectory(directory);
   try {
-    unlinkEntry(directory, 'plan.json');
+    unlinkPlan(directory);
     removeDirectoryTree(directory);
   } finally { claim.close(); }
 }
@@ -271,7 +281,7 @@ export async function purgeRuntimeCache(cacheDirectory: string): Promise<void> {
           if (directory) claims.push({ directory, hold: claimDirectory(directory) });
         }
       }
-      for (const { directory } of claims) unlinkEntry(directory, 'plan.json');
+      for (const { directory } of claims) unlinkPlan(directory);
       removeTree(root, 'current.json');
       if (generations) {
         for (const { directory, hold } of claims) {

@@ -420,13 +420,32 @@ await test('a redirected dangling internal junction is an error, not a cold cach
   assert.equal((await fixture.current()).generationId, record.generationId);
 });
 
-await test('purge owns the entire interior but removes junctions without visiting targets', nativeOnly, async t => {
-  const fixture = await runtimeFixture(t), pin = await fixture.prepare();
+await test('GC and purge own the entire interior but remove junctions without visiting targets', nativeOnly, async t => {
+  const fixture = await runtimeFixture(t), source = join(fixture.source, 'etc/profile');
+  const originalLinks = (await stat(source)).nlink;
+  const pin = await fixture.prepare();
   await pin.release();
+  const generation = join(fixture.cache, 'generations', (await fixture.current()).generationId);
   const outside = join(fixture.directory, 'outside');
   await mkdir(outside); await writeFile(join(outside, 'sentinel'), 'keep');
+  const oldPlan = join(generation, 'plan.json');
+  await mkdir(oldPlan);
+  await link(source, join(oldPlan, 'manual-link'));
+  await symlink(outside, join(oldPlan, 'outside-view'), 'junction');
+  // Losing the selector makes this unpinned generation eligible for ordinary GC.
+  await unlink(join(fixture.cache, 'current.json'));
+  const recovered = await fixture.prepare();
+  await recovered.release();
+  assert.equal(pathExists(generation), false);
+  assert.equal((await stat(source)).nlink, originalLinks + 1, 'only the recovered base retains a source link');
+  assert.equal(await readFile(join(outside, 'sentinel'), 'utf8'), 'keep');
+
+  const plan = join(fixture.cache, 'generations', (await fixture.current()).generationId, 'plan.json');
+  await mkdir(plan);
+  await link(source, join(plan, 'manual-link'));
+  await symlink(outside, join(plan, 'outside-view'), 'junction');
   await mkdir(join(fixture.cache, 'unexpected directory'));
-  await link(join(fixture.source, 'etc/profile'), join(fixture.cache, 'unexpected directory/manual-link'));
+  await link(source, join(fixture.cache, 'unexpected directory/manual-link'));
   await symlink(outside, join(fixture.cache, 'outside-view'), 'junction');
   await symlink(outside, join(fixture.cache, 'generations', 'malformed-junction'), 'junction');
   await mkdir(join(fixture.cache, 'generations', 'not-an-id'));
@@ -435,6 +454,7 @@ await test('purge owns the entire interior but removes junctions without visitin
   await purgeRuntimeCache(fixture.cache);
   assert.equal(await readFile(join(outside, 'sentinel'), 'utf8'), 'keep');
   assert.equal(pathExists(fixture.cache), false);
+  assert.equal((await stat(source)).nlink, originalLinks);
 });
 
 await test('purge preserves a source read-only bit and reports the obstruction explicitly', nativeOnly, async t => {

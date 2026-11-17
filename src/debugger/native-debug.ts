@@ -78,14 +78,17 @@ function freeLocal(memory: NativePtr): void {
   if (!isNullPtr(debugApi().localFree(memory))) throwLastError(debugApi(), 'LocalFree');
 }
 
+// Synchronous path queries decode independent strings before reusing this scratch.
+const pathBuffer = Buffer.alloc(65536);
+
 export function fileName(handle: NativePtr | null): string {
   if (!valid(handle)) return '';
-  const data = Buffer.alloc(65536), length = debugApi().filePath(handle, data, data.length / 2, 0);
-  return length > 0 && length < data.length / 2 ? data.subarray(0, length * 2).toString('utf16le') : '';
+  const length = debugApi().filePath(handle, pathBuffer, pathBuffer.length / 2, 0);
+  return length > 0 && length < pathBuffer.length / 2 ? pathBuffer.subarray(0, length * 2).toString('utf16le') : '';
 }
 export function loaderPath(process: NativePtr, base: bigint): string {
-  const data = Buffer.alloc(65536), length = debugApi().modulePath(process, base, data, data.length / 2);
-  return length > 0 && length < data.length / 2 ? data.subarray(0, length * 2).toString('utf16le') : '';
+  const length = debugApi().modulePath(process, base, pathBuffer, pathBuffer.length / 2);
+  return length > 0 && length < pathBuffer.length / 2 ? pathBuffer.subarray(0, length * 2).toString('utf16le') : '';
 }
 
 export function imagePath(process: NativePtr): string {

@@ -46,6 +46,16 @@ await test('root identity, source overlap and reparse ancestors are admission er
   assert.equal(pathExists(join(fixture.cache, 'nested')), false);
 });
 
+await test('successive native path reads retain exact Unicode and shorter strings', nativeOnly, async t => {
+  const fixture = await runtimeFixture(t), pin = await fixture.prepare();
+  await pin.release();
+  const longer = join(fixture.cache, '較長的路徑 含空格 😀');
+  await mkdir(longer);
+  const first = admitDirectory(longer).path;
+  const second = admitDirectory(fixture.cache).path;
+  assert.deepEqual([first, second], [longer, fixture.cache]);
+});
+
 await test('an unsafe writer-lock object is refused without a contention wait or target cleanup', nativeOnly, async t => {
   const fixture = await runtimeFixture(t), pin = await fixture.prepare();
   await pin.release();

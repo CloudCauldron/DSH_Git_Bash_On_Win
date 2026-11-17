@@ -76,6 +76,9 @@ export function bestEffort(action: () => void): void {
   }
 }
 
+// Synchronous path queries decode independent strings before reusing this scratch.
+const pathBuffer = Buffer.alloc(65536);
+
 export class NativeHold {
   private closed = false;
   private observation?: FileInformation;
@@ -106,11 +109,10 @@ export class NativeHold {
   }
 
   canonicalPath(): string {
-    const data = Buffer.alloc(32768 * 2);
-    const length = api().finalPath(this.handle, data, data.length / 2, 0);
+    const length = api().finalPath(this.handle, pathBuffer, pathBuffer.length / 2, 0);
     if (!length) throwLastError(api(), 'GetFinalPathNameByHandleW', this.path);
-    if (length >= data.length / 2) throw new Error(`Canonical path exceeds the supported bound: ${this.path}`);
-    return ordinaryPath(data.subarray(0, length * 2).toString('utf16le'));
+    if (length >= pathBuffer.length / 2) throw new Error(`Canonical path exceeds the supported bound: ${this.path}`);
+    return ordinaryPath(pathBuffer.subarray(0, length * 2).toString('utf16le'));
   }
 
   requireNtfs(): void {

@@ -202,28 +202,33 @@ async function buildFresh(root: Directory, generations: Directory, source: GitIn
     if (!elevated) unlinkEntry(generation, '.probe');
     signal.throwIfAborted();
     const base = createDirectory(generation, 'base');
+    const validate = () => {
+      signal.throwIfAborted();
+      createJunction(base, 'bin', admitChildDirectory(admitChildDirectory(base, 'usr'), 'bin'));
+      const anchors = captureAnchors(source.root, base.path, source.layout);
+      admitBase(generation, source.layout);
+      revalidateRoot(root);
+      return anchors;
+    };
+    let anchors: AnchorStamps;
     if (elevated) {
-      await provisionRuntime({ source: sourceDirectory, cache: root, generation, base, layout: source.layout }, signal, spawn);
+      anchors = await provisionRuntime({ source: sourceDirectory, cache: root, generation, base, layout: source.layout }, signal, spawn, validate);
     } else {
       const files = await inventoryGitFiles(source.root, () => signal.throwIfAborted());
       revalidateDirectory(sourceDirectory);
       revalidateDirectory(base);
       await linkFreshTree({ sourceRoot: source.root, baseRoot: base.path, files }, () => signal.throwIfAborted());
+      anchors = validate();
     }
-    signal.throwIfAborted();
-    createJunction(base, 'bin', admitChildDirectory(admitChildDirectory(base, 'usr'), 'bin'));
-    const anchors = captureAnchors(source.root, base.path, source.layout);
-    admitBase(generation, source.layout);
-    // provisionRuntime has closed its setup lease. Retire the input only after
-    // final admission; a blocked ordinary unlink must still prevent commit.
+    // Final admission and checked lease closure precede ordinary plan cleanup.
     if (elevated) unlinkEntry(generation, 'plan.json');
-    signal.throwIfAborted();
     hold = pinDirectory(generation);
     const record: CurrentRuntime = { schemaVersion: 1, generationId: id, sourceRoot: source.root, layout: source.layout, anchors };
-    revalidateRoot(root);
+    signal.throwIfAborted();
+    // Entering the atomic write is the cancellation cutoff. Once it succeeds,
+    // return its published pin even if aborted; the executor guards adoption.
     await writeFileAtomic(join(root.path, 'current.json'), `${JSON.stringify(record)}\n`, { mode: 0o600, dirMode: 0o700 });
     published = true;
-    signal.throwIfAborted();
     const pin = new RuntimePin(root, generation, base, record, hold);
     hold = undefined;
     return pin;

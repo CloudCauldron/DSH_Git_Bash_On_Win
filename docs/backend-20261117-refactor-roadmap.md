@@ -251,14 +251,15 @@ The method resolves after fresh commit and guarded adoption. Reject overlapping 
 ### 4.3 Elevated setup boundary
 
 ```typescript
-  provisionRuntime(
+  provisionRuntime<T>(
     attempt: ProvisioningAttempt, // admitted empty base, layout and boundary identities
     signal: AbortSignal,
-    spawn: Subprocess['spawn']
-  ): Promise<void>;
+    spawn: Subprocess['spawn'],
+    validate: () => T // synchronous final anchor/root admission owned by buildFresh
+  ): Promise<T>;
 ```
 
-This is the single awaited UAC operation selected by §6.1. `provision-runtime` owns the lease/plan and fixed broker supervision (§6.2); the helper inventories its source. Resolution requires the broker/DSH success contract there. Rejection is non-publishable and does not establish helper quiescence; cleanup follows §§6.4–6.5, not an outcome taxonomy or separate result/join API.
+This is the single awaited UAC operation selected by §6.1. `provision-runtime` owns the lease/plan and fixed broker supervision (§6.2); the helper inventories its source. After the broker/DSH success contract is satisfied, it invokes `buildFresh`'s synchronous final-admission callback while the setup lease remains active, then checked-closes the lease before returning the admitted result. Validation failure also closes the lease. The lease never transfers to the cache owner; plan unlink and publication remain in `buildFresh`. Rejection is non-publishable and does not establish helper quiescence; cleanup follows §§6.4–6.5, not an outcome taxonomy or separate result/join API.
 
 ### 4.4 Launch and debugger admission
 
@@ -285,7 +286,7 @@ This is the single awaited UAC operation selected by §6.1. `provision-runtime` 
 
 Use the scoped view for PATH, GIT_EXEC_PATH and GIT_TEMPLATE_DIR. Environment construction is pure path/string work from the recorded source and admitted layout, with neither `realpathSync(source)` nor a command-time `git.exe` layout probe. Logical sandbox mode remains explicit in policy and view keys.
 
-`bash-launcher` parses inputs and validates inherited mode/token/policy once. `process-family` admits base, executable and view once per invocation, retains canonical results and the local MSYS identity, and rejects redirection away from the parent's admitted absolute base. A redirected realpath cannot redefine that boundary. Validate the owned view junction against the admitted base before any grant decision uses `installationRoot`. No duplicate launcher path checks, cache metadata, source probes, six-anchor checks or cache-stamp argv belong in the child.
+`bash-launcher` parses inputs and validates inherited mode/token/policy once. `process-family` admits base, executable and view once per invocation, retains canonical results and the local MSYS identity, and rejects redirection away from the parent's admitted absolute base. A redirected realpath cannot redefine that boundary. Require `installationRoot` to be a strict descendant of the generation's `views` directory; the container itself is never a scoped view, even if replaced with a junction targeting base. Validate the owned view junction against the admitted base before any grant decision uses `installationRoot`. No duplicate launcher path checks, cache metadata, source probes, six-anchor checks or cache-stamp argv belong in the child.
 
 At debug events, verify actual private Job membership, loaded MSYS file ID and actual loader path; reuse admitted family values for hook predicates/descendants. Native children need not all be Bash/private executables, but processes receiving MSYS repairs must meet the private module/path predicates. Missing required admission stops and joins the family; there is no unrestricted retry.
 
@@ -309,6 +310,8 @@ Require `installationRoot` and the startup-root namespace hook in every mode, in
 ```
 
 These free functions and small data types live in `git-installation.ts`. `AnchorName`/`AnchorStamps` cover §7.2's six anchors. Inventory returns validated, normalized, unique relative pathnames under the fixed supported selection policy, not a stamp per leaf. Preserve distinct required names even when they share a file identity. The cache admits in-process arguments; privileged admission is §6.2.
+
+Default Git discovery skips absent candidate paths and missing targets encountered during canonical resolution, including dangling links. An explicit selection never falls back to defaults and retains its canonical-resolution errors. Other resolution and admission errors propagate.
 
 Inventory uses cooperative bounded Node `readdir`/`lstat`/`stat` with necessary authoritative native boundary queries. Reuse source-directory observations within the pass; creation primitives retain ordinary-file, path/reparse, read-only and no-overwrite checks. Existing file targets are errors. Inventory and linking call `checkActive` before starting and between bounded batches (controller signal or helper lease); cancellation stops scheduling and drains issued work.
 
@@ -370,13 +373,15 @@ Under the writer lock after linking and confirmed setup joins:
 
 1. Open all six source/base anchor pairs through authoritative handles. Admit file kinds/boundaries and require matching `volumeSerial`/`fileId` for each pair. Save each **base handle's** full `FileStamp` (identity, size, last-write time) as its §7.2 expectation. Do not compare size/mtime across the two handles, take a pre-link baseline, retry for stability or perform a second full-tree walk.
 2. Admit required roots/final junctions. Close the optional setup lease with checked handling, ordinarily unlink its plan and clean owned temporaries. Only genuine absence is harmless; close/unlink failure stops publication. The successful probe was already removed in §6.1; local linking creates no UAC controls.
-3. Acquire the fresh generation's §8.1 pin handle, atomically publish the complete `current.json` using §7.2 and return the pin.
+3. Acquire the fresh generation's §8.1 pin handle and perform the final cancellation check immediately before entering `writeFileAtomic`. Atomically publish the complete `current.json` using §7.2 and return the pin.
+
+Entering `writeFileAtomic` for `current.json` is the point of no return for cancellation. Before entry, an aborted preparation rejects without publishing its candidate. Once entered, await the entire write, including Windows sharing retries, under the writer lock and fresh pin; an abort during this phase cannot interrupt publication or turn a successful commit into a cancelled factory result. `prepareRuntime` returns the published generation's pin after successful writing and checked resource cleanup, even if its signal is now aborted. Actual write or native cleanup failures still reject; this cutoff does not promise that IO will succeed. The executor's §4.2 adoption/use guards remain mandatory: a stale or stopping executor releases the returned pin without rewinding `current.json`, and cancelled commands never launch.
 
 Use ordinary non-following plan unlink. An active helper's share-none handle or a blocking reader can prevent it; this is a cleanup failure, not an additional setup state. Windows may defer physical removal after successful unlink until readers close. Publication/warm admission need no physical-absence polling, DELETE_PENDING protocol, receipt or post-commit control repair. Strict purge's completion condition remains directory removal (§6.5).
 
 ### 6.4 Cancellation and bounded local shutdown
 
-Cancellation of shared setup closes `.setup-owner`; one caller cancelling its wait is governed by §4.2. Lease closure alone revokes the attempt, including late helpers. Do not unlink the plan as a second cancellation signal. Controller death closes the lease in the kernel; neither broker PID nor a later writer-lock holder can authorize the old attempt.
+Before §6.3's publication cutoff, cancellation of shared setup closes `.setup-owner`; one caller cancelling its wait is governed by §4.2. Lease closure alone revokes the attempt, including late helpers. Do not unlink the plan as a second cancellation signal. Controller death closes the lease in the kernel; neither broker PID nor a later writer-lock holder can authorize the old attempt. At the cutoff, helper work, final admission and setup-control cleanup have already completed; disposal must drain the non-cancellable write and release its returned pin through the normal executor guards.
 
 Allow a short cooperative grace while retaining observation, then terminate/join the unelevated broker through DSH if needed. Keep the writer lock while draining local linking, settling local native resources and attempting §6.5's guarded candidate cleanup; safe unpublished residue may remain for GC. Only then release the lock or finish local disposal. Local process/handle cleanup failure remains owned and reported. A late zero exit cannot resume publication after cancellation or observed selection supersession.
 
@@ -444,7 +449,7 @@ Supported architecture values are `ucrt64` and `mingw64`. OpenSSL ABI files, Per
 
 Publication (§6.3) uses the public pinned `@deepseek-ai/dsh-atomic-write` `writeFileAtomic`, explicit private metadata modes, an admitted existing parent and the cache writer lock. Its exclusive sibling-temp creation, same-volume atomic rename and bounded Windows sharing retries are sufficient. Its recursive parent mkdir is not root admission. Apply it only to plugin metadata, never runtime hardlinks or arbitrary user output; use neither an installed private implementation nor a custom writer/temp-name rule.
 
-The atomic replacement is the sole commit: before it, the old complete selection remains and an interrupted candidate is unused; afterward, the new complete record is selected. Never rewrite an existing generation's expectations. This is not a power-loss transaction guarantee; no journal or fsync/flush framework is added.
+The atomic replacement is the sole visibility commit: before it, the old complete selection remains and an interrupted candidate is unused; afterward, the new complete record is selected. The cancellation cutoff is earlier, at entry into the atomic-write phase (§6.3), so an abort cannot stop an already initiated commit. Never rewrite an existing generation's expectations. This is not a power-loss transaction guarantee; no journal or fsync/flush framework is added.
 
 ### 7.3 Freshness limits and recovery
 
@@ -557,7 +562,7 @@ The second audit round replaced Node deletion with checked ordinary `DeleteFileW
 
 A further fresh-context audit found a false positive in the interrupted-GC test: its hook acquired the collector claim too late, after the provisional pin opened. The corrected test holds the writer lock and DELETE claim before delivering the delayed metadata snapshot, verifies actual non-anchor removal with every anchor intact, and checks selection B. A negative control removing the selector guard only in memory fails the corrected test as intended. No production hook was added; all 44 maintained tests, typecheck and lint pass after the correction.
 
-`runtime-cache.test.ts` covers §5 markerless-root refusal, whole-interior ownership, non-following purge, current/anchor admission and cold/warm reuse. Exercise §4.5's shared source functions without per-leaf plan stamps.
+`runtime-cache.test.ts` covers §5 markerless-root refusal, whole-interior ownership, non-following purge, current/anchor admission and cold/warm reuse. Exercise §4.5's shared source functions without per-leaf plan stamps. Verify the §6.3 cutoff on first publication and replacement: cancellation before atomic writing preserves current; cancellation inside the write still returns the published pin; actual write failure after cancellation preserves its IO error and does not select the failed candidate. Confirm native pin protection, writer release and strict purge after these outcomes.
 
 `pin-lifetime.test.ts` uses real Win32 sharing for both pin/collector acquisition orders (§§6.5, 8.1), retain-before-await and idempotent releases. Verify ownerless warm admission and purge preflight finding a pin in **any** generation before payload deletion. Interrupt arbitrary-order GC with non-anchor payload removed and all anchors intact; a delayed reader must fail §7.1's selector recheck. Also interrupt purge after unpublication. Reparse ancestors must never send cleanup outside the cache. Normal view-removal failure must still close native resources, and later strict purge must remove the residue.
 

@@ -87,8 +87,8 @@ async function stopBroker(broker: SubprocessHandle): Promise<void> {
   if (errors.length) throw new ProvisioningCleanupError(errors, 'Failed to settle the setup broker.');
 }
 
-/** One awaited UAC operation. The cache writer remains held by the caller. */
-export async function provisionRuntime(attempt: ProvisioningAttempt, signal: AbortSignal, spawn: Subprocess['spawn']): Promise<void> {
+/** Keep the setup lease through the caller's synchronous final admission. */
+export async function provisionRuntime<T>(attempt: ProvisioningAttempt, signal: AbortSignal, spawn: Subprocess['spawn'], validate: () => T): Promise<T> {
   signal.throwIfAborted();
   const lease = createSetupLease(attempt.generation);
   let cancel!: () => void;
@@ -96,6 +96,7 @@ export async function provisionRuntime(attempt: ProvisioningAttempt, signal: Abo
   const errors: unknown[] = [];
   let broker: SubprocessHandle | undefined;
   let joined = false;
+  let validated!: T;
   const revoke = () => {
     try { lease.close(); } catch (error) { errors.push(error); }
     cancel();
@@ -131,6 +132,7 @@ export async function provisionRuntime(attempt: ProvisioningAttempt, signal: Abo
     signal.throwIfAborted();
     if (!result || !result[1]) throw new Error('Setup broker range did not settle.');
     joined = true;
+    validated = validate();
   } catch (error) { errors.push(error); }
   // Revocation precedes local shutdown even when observation failed. Never use
   // plan unlink as cancellation; the caller retires it after final admission or
@@ -141,4 +143,5 @@ export async function provisionRuntime(attempt: ProvisioningAttempt, signal: Abo
   if (errors.length === 1) throw errors[0];
   if (errors.length) throw new AggregateError(errors, 'Elevated setup or its local cleanup failed.');
   signal.throwIfAborted();
+  return validated;
 }

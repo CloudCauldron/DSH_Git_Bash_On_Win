@@ -43,7 +43,8 @@ export async function runPrivateBash(options: PrivateBashLaunch): Promise<Privat
   const base = admitDirectory(options.baseRoot);
   if (!samePath(base.path, absolutePath(options.baseRoot))) throw new Error('The admitted base was redirected.');
   const installationRoot = absolutePath(options.installationRoot);
-  if (!containsPath(join(dirname(base.path), 'views'), installationRoot)) throw new Error('The MSYS view must be generation-owned.');
+  const viewsRoot = join(dirname(base.path), 'views');
+  if (samePath(viewsRoot, installationRoot) || !containsPath(viewsRoot, installationRoot)) throw new Error('The MSYS view must be generation-owned.');
   admitJunction(admitDirectory(dirname(installationRoot)), basename(installationRoot), base);
   const bin = admitChildDirectory(admitChildDirectory(base, 'usr'), 'bin');
   const bash = openOrdinaryFile(bin, 'bash.exe');

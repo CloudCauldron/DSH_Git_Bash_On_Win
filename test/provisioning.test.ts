@@ -13,6 +13,7 @@ import type Subprocess from '@deepseek-ai/dsh-subprocess';
 import type { SubprocessHandle, SubprocessOutcome } from '@deepseek-ai/dsh-subprocess';
 import { localSpawn, nativeOnly, runtimeFixture } from './fixtures.ts';
 import { prepareRuntime, purgeRuntimeCache, type GenerationPin } from '../src/runtime/runtime-cache.ts';
+import { anchorPaths } from '../src/runtime/git-installation.ts';
 import {
   admitDirectory, children, createSetupLease, isBusy, isMissing, NativeHold, openExclusiveMetadata, openOrdinaryFile, pathExists, pinDirectory,
   requireActiveLease, unlinkEntry,
@@ -72,10 +73,21 @@ await test('local probe is removed before inventory and creates no elevation con
   finally { mock.mock.restore(); syncBuiltinESMExports(); }
 });
 
-await test('probe denial chooses independent helper inventory and waits for DSH range settlement', nativeOnly, async t => {
+await test('probe denial joins helper work and keeps its setup lease through final admission', nativeOnly, async t => {
   const fixture = await runtimeFixture(t), restore = denyProbe(t);
   const linked = deferred<void>(), range = deferred<boolean>();
   let started = false, generation = '', baseId = 0n;
+  let helperFinished = false;
+  let plan: ReturnType<typeof decodeElevationPlan>;
+  const expected = new Set<string>(), observed = new Set<string>();
+  const information = NativeHold.prototype.information;
+  const admission = t.mock.method(NativeHold.prototype, 'information', function (this: NativeHold) {
+    if (helperFinished && expected.has(this.path)) {
+      requireActiveLease(admitDirectory(generation), plan.identities.lease);
+      observed.add(this.path);
+    }
+    return information.call(this);
+  });
   const readdir = fsp.readdir;
   const mock = t.mock.method(fsp, 'readdir', (async (...args: Parameters<typeof fsp.readdir>) => {
     if (String(args[0]).startsWith(fixture.source)) {
@@ -89,12 +101,16 @@ await test('probe denial chooses independent helper inventory and waits for DSH 
     started = true;
     const planPath = spec.argv[2]!;
     generation = dirname(planPath);
-    const plan = decodeElevationPlan(JSON.parse(readFileSync(planPath, 'utf8')));
+    plan = decodeElevationPlan(JSON.parse(readFileSync(planPath, 'utf8')));
     assert.equal('files' in plan, false);
     assert.deepEqual(readdirSync(plan.baseRoot), []);
     assert.equal(pathExists(join(generation, '.probe')), false);
     baseId = fs.statSync(plan.baseRoot, { bigint: true }).ino;
-    const done = runLinkHelper(planPath).then(() => { linked.resolve(); return success; });
+    for (const path of Object.values(anchorPaths(plan.layout))) {
+      expected.add(join(plan.sourceRoot, path)); expected.add(join(plan.baseRoot, path));
+    }
+    expected.add(join(fixture.cache, '.owner.json'));
+    const done = runLinkHelper(planPath).then(() => { helperFinished = true; linked.resolve(); return success; });
     return brokerHandle(done, { waitForExit: () => range.promise });
   };
   try {
@@ -105,11 +121,12 @@ await test('probe denial chooses independent helper inventory and waits for DSH 
     range.resolve(true);
     const pin = await preparation;
     try {
+      assert.deepEqual(observed, expected, 'final anchors and root ownership must be admitted with the lease active');
       assert.equal(fs.statSync(join(generation, 'base'), { bigint: true }).ino, baseId);
       assert.deepEqual(readdirSync(generation), ['base']);
       assert.equal(fs.statSync(join(generation, 'base/usr/bin/bash.exe')).ino, fs.statSync(join(fixture.source, 'usr/bin/bash.exe')).ino);
     } finally { await pin.release(); }
-  } finally { range.resolve(true); restore(); mock.mock.restore(); syncBuiltinESMExports(); }
+  } finally { range.resolve(true); restore(); admission.mock.restore(); mock.mock.restore(); syncBuiltinESMExports(); }
 });
 
 await test('probe non-permission, structural, read-only and cleanup failures never request UAC', nativeOnly, async t => {

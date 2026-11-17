@@ -42,7 +42,13 @@ export function discoverGitInstallation(setting?: string): GitInstallation {
   ];
   for (const candidate of candidates) {
     if (!isAbsolute(candidate) || basename(candidate).toLowerCase() !== 'bash.exe' || !pathExists(candidate)) continue;
-    const executable = realpathSync(candidate), parent = dirname(executable);
+    let executable: string;
+    try { executable = realpathSync(candidate); }
+    catch (error) {
+      if (setting === undefined && isMissing(error)) continue;
+      throw error;
+    }
+    const parent = dirname(executable);
     if (basename(executable).toLowerCase() !== 'bash.exe' || !/[\\/](?:usr[\\/])?bin$/i.test(parent)) continue;
     const internalBin = /[\\/]usr[\\/]bin$/i.test(parent);
     const root = admitDirectory(resolve(parent, internalBin ? '../..' : '..'));

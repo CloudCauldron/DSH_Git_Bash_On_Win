@@ -180,9 +180,9 @@ export default class GitBashExecutor extends SandboxBashExecutor {
         use = acquired.use;
         try {
           // Lease admission precedes the native deferred confinement callback.
-          if (!this.current(acquired.slot, signal)) throw new Error('Git Bash selection changed before confinement.');
+          if (!this.current(acquired.slot, signal)) throw new Error('Git Bash runtime changed before confinement.');
           const argv = typeof argvOrPrepare === 'function' ? await argvOrPrepare(signal) : argvOrPrepare;
-          if (!this.current(acquired.slot, signal)) throw new Error('Git Bash selection changed during command preparation.');
+          if (!this.current(acquired.slot, signal)) throw new Error('Git Bash runtime changed during command preparation.');
           const offset = argv.length - 3;
           if (offset < 0 || argv[offset] !== 'bash' || argv[offset + 1] !== '-c' || argv[offset + 2] !== spec.command) throw new Error('Unexpected DSH shell argv; the command did not run.');
           return [...argv.slice(0, offset), process.execPath, fileURLToPath(new URL('./bash-launcher.js', import.meta.url)),

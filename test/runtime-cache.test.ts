@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs, { readFileSync, readdirSync } from 'node:fs';
+import fsp from 'node:fs/promises';
 import { link, mkdir, readFile, rename, stat, symlink, unlink, writeFile } from 'node:fs/promises';
-import { join, toNamespacedPath } from 'node:path';
+import { dirname, join, toNamespacedPath } from 'node:path';
 import { syncBuiltinESMExports } from 'node:module';
 import { test } from 'node:test';
 import { nativeOnly, runtimeFixture } from './fixtures.ts';
@@ -10,7 +11,7 @@ import { prepareRuntime, purgeRuntimeCache } from '../src/runtime/runtime-cache.
 import { anchorPaths, discoverGitInstallation, inventoryGitFiles, linkFreshTree } from '../src/runtime/git-installation.ts';
 import {
   absolutePath, acquireWriterLock, admitDirectory, createDirectory, createJunction, NativeHold,
-  pathExists, removeTree, unlinkEntry,
+  isBusy, pathExists, removeTree, unlinkEntry,
 } from '../src/runtime/ntfs-filesystem.ts';
 
 await test('F1 refuses markerless and unrecognized roots before mutation or purge', nativeOnly, async t => {
@@ -74,7 +75,7 @@ await test('source inventory retains distinct hardlink names and the fixed selec
   removeTree(parent, 'links');
 });
 
-await test('discovery skips incomplete defaults and rejects a misplaced Bash selection', nativeOnly, async t => {
+await test('discovery skips missing or incomplete defaults without hiding selection or IO errors', nativeOnly, async t => {
   const fixture = await runtimeFixture(t);
   const stale = join(fixture.directory, 'stale'), valid = join(fixture.directory, 'valid');
   await mkdir(join(stale, 'Git/bin'), { recursive: true });
@@ -89,6 +90,34 @@ await test('discovery skips incomplete defaults and rejects a misplaced Bash sel
     for (const key of keys) delete process.env[key];
     process.env.ProgramW6432 = stale; process.env.ProgramFiles = valid;
     assert.equal(discoverGitInstallation().root, fixture.source);
+
+    const candidate = join(stale, 'Git/bin/bash.exe');
+    await unlink(candidate);
+    // A dangling junction exercises native reparse resolution without requiring
+    // file-symlink privileges or changing any installed Git directory.
+    await symlink(join(fixture.directory, 'missing'), candidate, 'junction');
+    assert.ok(pathExists(candidate), 'the broken candidate must pass lstat admission');
+    assert.equal(discoverGitInstallation().root, fixture.source);
+    assert.throws(() => discoverGitInstallation(candidate), { code: 'ENOENT' });
+
+    const original = fs.realpathSync;
+    for (const code of ['EACCES', 'ELOOP']) {
+      const failure = Object.assign(new Error(`fixture discovery ${code}`), { code });
+      const mock = t.mock.method(fs, 'realpathSync', ((...args: Parameters<typeof fs.realpathSync>) => {
+        if (args[0] === candidate) throw failure;
+        return original(...args);
+      }) as typeof fs.realpathSync);
+      syncBuiltinESMExports();
+      try {
+        assert.throws(() => discoverGitInstallation(), error => error === failure);
+        assert.throws(() => discoverGitInstallation(candidate), error => error === failure);
+      } finally { mock.mock.restore(); syncBuiltinESMExports(); }
+    }
+
+    delete process.env.ProgramFiles;
+    assert.throws(() => discoverGitInstallation(), /^Error: Supported Git for Windows was not found\./);
+    unlinkEntry(admitDirectory(dirname(candidate)), 'bash.exe');
+    assert.throws(() => discoverGitInstallation(), /^Error: Supported Git for Windows was not found\./);
   } finally {
     keys.forEach((key, i) => { if (saved[i] === undefined) delete process.env[key]; else process.env[key] = saved[i]; });
   }
@@ -227,6 +256,88 @@ await test('warm admission compares source and base to saved stamps, not only to
   const third = await fixture.prepare();
   assert.notEqual((await fixture.current()).generationId, current.generationId);
   await third.release();
+});
+
+await test('cancellation before atomic publication preserves the selected generation', nativeOnly, async t => {
+  const fixture = await runtimeFixture(t), first = await fixture.prepare();
+  await first.release();
+  const before = await fixture.current(), controller = new AbortController();
+  const original = NativeHold.prototype.canonicalPath;
+  let cancelled = false;
+  const mock = t.mock.method(NativeHold.prototype, 'canonicalPath', function (this: NativeHold) {
+    const path = original.call(this);
+    // Cancel at fresh pin acquisition, after final admission but before writing.
+    if (dirname(this.path) === join(fixture.cache, 'generations') && pathExists(join(this.path, 'base/bin'))) {
+      cancelled = true; controller.abort();
+    }
+    return path;
+  });
+  try { await assert.rejects(fixture.prepare(true, controller.signal), { name: 'AbortError' }); }
+  finally { mock.mock.restore(); }
+  assert.ok(cancelled, 'cancellation must reach the last pre-publication boundary');
+  assert.deepEqual(await fixture.current(), before);
+  assert.deepEqual(readdirSync(join(fixture.cache, 'generations')), [before.generationId]);
+  assert.equal(pathExists(join(fixture.cache, '.writer-lock')), false);
+  await purgeRuntimeCache(fixture.cache);
+});
+
+await test('atomic publication returns its pinned generation despite cancellation during the write', nativeOnly, async t => {
+  for (const rebuild of [false, true]) await t.test(rebuild ? 'replacement' : 'first publication', async t => {
+    const fixture = await runtimeFixture(t), controller = new AbortController();
+    const sourceFile = join(fixture.source, 'usr/bin/bash.exe'), links = (await stat(sourceFile)).nlink;
+    if (rebuild) { const first = await fixture.prepare(); await first.release(); }
+    const before = rebuild ? await fixture.current() : undefined;
+    const original = fsp.mkdir;
+    let entered = false;
+    const mock = t.mock.method(fsp, 'mkdir', ((...args: Parameters<typeof fsp.mkdir>) => {
+      // The public writer's first asynchronous operation precedes its temp write
+      // and rename. Exercise the whole non-cancellable phase, not just post-commit.
+      if (args[0] === fixture.cache) {
+        entered = true;
+        assert.equal(pathExists(join(fixture.cache, 'current.json')), rebuild);
+        controller.abort();
+      }
+      return original(...args);
+    }) as typeof fsp.mkdir);
+    syncBuiltinESMExports();
+    try {
+      const pin = await fixture.prepare(rebuild, controller.signal);
+      assert.ok(entered && controller.signal.aborted);
+      const published = await fixture.current();
+      assert.notEqual(published.generationId, before?.generationId);
+      assert.equal(pathExists(join(fixture.cache, '.writer-lock')), false);
+      const use = await pin.lease({ mode: 'read-only', workspaceRoot: fixture.workspace }, new AbortController().signal);
+      try { assert.equal(use.baseRoot, join(fixture.cache, 'generations', published.generationId, 'base')); }
+      finally { await use.release(); }
+      await assert.rejects(purgeRuntimeCache(fixture.cache), isBusy);
+      await pin.release();
+    } finally { mock.mock.restore(); syncBuiltinESMExports(); }
+    await purgeRuntimeCache(fixture.cache);
+    assert.equal((await stat(sourceFile)).nlink, links);
+  });
+});
+
+await test('an atomic write failure after cancellation remains an IO failure and preserves current', nativeOnly, async t => {
+  const fixture = await runtimeFixture(t), first = await fixture.prepare();
+  await first.release();
+  const before = await fixture.current(), controller = new AbortController();
+  const original = fsp.rename, failure = Object.assign(new Error('fixture publication IO failure'), { code: 'EIO' });
+  let attempted = false;
+  const mock = t.mock.method(fsp, 'rename', async (...args: Parameters<typeof fsp.rename>) => {
+    if (args[1] === join(fixture.cache, 'current.json')) {
+      attempted = true; controller.abort();
+      throw failure;
+    }
+    return original(...args);
+  });
+  syncBuiltinESMExports();
+  try { await assert.rejects(fixture.prepare(true, controller.signal), error => error === failure); }
+  finally { mock.mock.restore(); syncBuiltinESMExports(); }
+  assert.ok(attempted && controller.signal.aborted);
+  assert.deepEqual(await fixture.current(), before);
+  assert.deepEqual(readdirSync(join(fixture.cache, 'generations')), [before.generationId]);
+  assert.deepEqual(readdirSync(fixture.cache).sort(), ['.owner.json', 'current.json', 'generations']);
+  await purgeRuntimeCache(fixture.cache);
 });
 
 await test('concurrent preparations recheck under the writer lock and own independent pins', nativeOnly, async t => {

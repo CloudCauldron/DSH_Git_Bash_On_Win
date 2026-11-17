@@ -281,6 +281,13 @@ checks admit repairs and execution, not freshness. Ordinary nonzero command exit
 do not trigger rebuilding. Atomic current-record replacement is the publication
 boundary, without a power-loss durability guarantee.
 
+Entering the `current.json` atomic-write phase is the cancellation cutoff. Before
+entry, cancellation prevents publication. Once entered, the factory drains the
+write and returns the published pin on success even if cancellation arrives;
+actual write or native cleanup failures still reject. Executor selection and
+shutdown guards still release stale pins and prevent cancelled commands from
+launching. Disposal waits for an initiated write rather than rolling it back.
+
 Preparation probes one Bash hardlink before inventory. Only a permission denial
 from that link creation selects the fixed elevated linker; a later failure never
 resets the base or triggers another UAC pass. The helper validates the immutable
@@ -289,6 +296,8 @@ exclusively while linking. Source contents and ACLs remain unchanged.
 
 The parent requires an uncancelled normal broker zero exit and DSH managed-range
 settlement before final admission and atomic publication of `current.json`.
+Provisioning retains the setup lease through the cache owner's synchronous final
+anchor/root validation, then checked-closes it before plan cleanup and publication.
 Failed target outcomes revoke setup without waiting for surviving managed work.
 Both linking callers revalidate their admitted source/base identities after
 inventory and before writing payload; this is not an atomic source snapshot.

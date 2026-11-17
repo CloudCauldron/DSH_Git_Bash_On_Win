@@ -13,11 +13,11 @@ import type { SandboxExecutionPolicy } from '@deepseek-ai/dsh-sandbox';
 import type { ShellExecRequest, ShellExecution } from '@deepseek-ai/dsh-shell';
 import type Subprocess from '@deepseek-ai/dsh-subprocess';
 import type { SubprocessHandle, SubprocessOutcome, SubprocessSpawnSpec } from '@deepseek-ai/dsh-subprocess';
-import type { PrivateFamilyExit } from '../src/debugger/process-family.ts';
+import { runPrivateBash, type PrivateFamilyExit } from '../src/debugger/process-family.ts';
 import { Win32Error } from '@deepseek-ai/dsh-win32-process';
 import GitBashExecutor from '../src/index.ts';
 import { buildRuntimeEnvironment } from '../src/runtime/git-installation.ts';
-import { admitDirectory, claimDirectory, isBusy, NativeHold, pathExists } from '../src/runtime/ntfs-filesystem.ts';
+import { admitDirectory, claimDirectory, createDirectory, createJunction, isBusy, NativeHold, pathExists } from '../src/runtime/ntfs-filesystem.ts';
 import { purgeRuntimeCache } from '../src/runtime/runtime-cache.ts';
 import { executionFixture, nativeOnly, runtimeFixture } from './fixtures.ts';
 
@@ -459,11 +459,35 @@ await test('selection or cancellation during confinement prevents launch and rel
       if (kind === 'cancellation') cancelled.abort(new Error('cancel during confinement'));
       return { argv: kind === 'argv' ? ['wrong-command'] : argv, enforcement: 'partial', denialSignatures: [], runnerFailureRules: [] };
     };
-    await assert.rejects(f.run({ signal: cancelled.signal }), kind === 'selection' ? /selection changed/ : kind === 'cancellation' ? /cancel during/ : /Unexpected DSH shell argv/);
+    await assert.rejects(f.run({ signal: cancelled.signal }), kind === 'selection' ? /runtime changed/ : kind === 'cancellation' ? /cancel during/ : /Unexpected DSH shell argv/);
     assert.equal(f.spawned.length, 0);
     await f.dispose();
     await purgeRuntimeCache(f.cache);
   });
+});
+
+await test('same-selection rebuild during confinement rejects the old use and preserves fresh readiness', nativeOnly, async t => {
+  const f = await executorFixture(t), confine = f.controls.confine;
+  const selection = f.executor.config.gitBashPath.get();
+  let previous = '';
+  f.controls.confine = async argv => {
+    previous = join(f.cache, 'generations', (await f.current()).generationId);
+    await f.executor.rebuildRuntime();
+    assert.equal(f.executor.config.gitBashPath.get(), selection);
+    assert.throws(() => claimDirectory(admitDirectory(previous)), isBusy, 'the unlaunched use still protects its retired generation');
+    return confine(argv);
+  };
+  await assert.rejects(f.run(), { message: 'Git Bash runtime changed during command preparation.' });
+  assert.equal(f.spawned.length, 0);
+  const current = await f.current();
+  assert.notEqual(current.generationId, basename(previous));
+  const claim = claimDirectory(admitDirectory(previous)); claim.close();
+  f.controls.confine = confine;
+  const next = await f.run();
+  assert.equal(invocation(f.spawned[0]!.spec).base, join(f.cache, 'generations', current.generationId, 'base'));
+  f.spawned[0]!.finish(); await next.done;
+  await f.dispose();
+  await purgeRuntimeCache(f.cache);
 });
 
 await test('disposal stops executions before waiting for cancelled setup and drains all references', nativeOnly, async t => {
@@ -511,6 +535,27 @@ await test('runtime environment uses only the admitted layout and recorded sourc
     assert.equal(env.GIT_TEMPLATE_DIR, join(use.installationRoot, 'mingw64/share/git-core/templates').replaceAll('\\', '/'));
     assert.equal(env.MSYS2_PATH_TYPE, 'inherit');
   } finally { await use.release(); await pin.release(); }
+});
+
+await test('child admission requires a strict descendant of the generation views directory', nativeOnly, async t => {
+  for (const kind of ['ordinary', 'junction']) await t.test(kind, async t => {
+    const f = await runtimeFixture(t), pin = await f.prepare();
+    const generation = admitDirectory(join(f.cache, 'generations', (await f.current()).generationId));
+    const base = admitDirectory(join(generation.path, 'base')), views = join(generation.path, 'views');
+    if (kind === 'ordinary') createDirectory(generation, 'views');
+    else createJunction(generation, 'views', base);
+    // Invalid view paths must fail before executable admission. Removing only
+    // this cache name also prevents a regressed guard from launching the fixture.
+    await fsp.unlink(join(base.path, 'usr/bin/bash.exe'));
+    for (const installationRoot of [views, views.toUpperCase(), views + '\\', join(generation.path, 'views-other/scope'), f.workspace]) {
+      await assert.rejects(runPrivateBash({
+        baseRoot: base.path, installationRoot, cwd: f.workspace, command: 'echo forbidden',
+        environment: {}, compatibility: { grantSid: undefined }, graceMs: 300,
+      }), /The MSYS view must be generation-owned\./);
+    }
+    await pin.release();
+    await purgeRuntimeCache(f.cache);
+  });
 });
 
 await test('native DSH Bash execution across all modes', nativeOnly, async t => {

@@ -521,23 +521,38 @@ if (process.env.DSH_GIT_BASH_UAC_TEST) {
     const spawn = await localSpawn(t); if (!spawn) return;
     const fixture = await runtimeFixture(t), restore = denyProbe(t);
     const { prepareRuntime: prepareBuilt } = await import(pathToFileURL(join(root, 'lib/runtime/runtime-cache.js')).href) as typeof import('../src/runtime/runtime-cache.ts');
+    const bash = join(fixture.source, 'usr/bin/bash.exe');
+    const before = { bytes: readFileSync(bash), links: fs.statSync(bash).nlink,
+      acl: execFileSync('icacls.exe', [bash], { encoding: 'utf8' }) };
+    let pin: GenerationPin | undefined;
     console.error(choice === 'late'
       ? 'Leave consent pending for 10 seconds. Approve only after LOCAL SHUTDOWN COMPLETED appears below; finish any prompt within the following 20 seconds.'
       : `Respond ${choice === 'approve' ? 'Yes' : 'No'} to the Windows consent prompt.`);
     try {
-      const prepared = prepareBuilt({ ...fixture.request, spawn }, choice === 'late' ? AbortSignal.timeout(10_000) : signal());
-      if (choice === 'approve') { const pin = await prepared; await pin.release(); await fixture.current(); }
-      else if (choice === 'deny') { await assert.rejects(prepared, /Elevated setup failed/); assert.equal(pathExists(join(fixture.cache, 'current.json')), false); }
+      const started = performance.now();
+      // Keep ownership even if an unexpected consent response fulfils a promise
+      // which assert.rejects expected to reject.
+      const prepared = prepareBuilt({ ...fixture.request, spawn }, choice === 'late' ? AbortSignal.timeout(10_000) : signal())
+        .then(value => pin = value);
+      if (choice === 'approve') { await prepared; await fixture.current(); }
+      else if (choice === 'deny') {
+        await assert.rejects(prepared, /ShellExecuteExW failed \(Win32 1223\)/);
+        assert.equal(pathExists(join(fixture.cache, 'current.json')), false);
+      }
       else {
         await assert.rejects(prepared, { name: 'TimeoutError' });
+        assert.ok(performance.now() - started < 15_000, 'local shutdown must settle within five seconds of cancellation');
         assert.equal(pathExists(join(fixture.cache, 'current.json')), false);
         console.error('LOCAL SHUTDOWN COMPLETED. If consent remains visible, approve now. Strict purge runs in 20 seconds.');
         await new Promise(resolve => setTimeout(resolve, 20_000));
         assert.equal(pathExists(join(fixture.cache, 'current.json')), false, 'late consent must never publish a revoked attempt');
-        await purgeRuntimeCache(fixture.cache); // Busy independent work is an explicit failure, never a passing cleanup.
-        assert.equal(pathExists(fixture.cache), false);
       }
-    } finally { restore(); }
+    } finally { restore(); await pin?.release(); }
+    await purgeRuntimeCache(fixture.cache); // Busy independent work is an explicit failure, never a passing cleanup.
+    assert.equal(pathExists(fixture.cache), false);
+    assert.deepEqual(readFileSync(bash), before.bytes);
+    assert.equal(fs.statSync(bash).nlink, before.links);
+    assert.equal(execFileSync('icacls.exe', [bash], { encoding: 'utf8' }), before.acl);
   });
 }
 

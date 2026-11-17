@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
-import { mkdir, rmdir, writeFile } from 'node:fs/promises';
+import { mkdir, rmdir, unlink, writeFile } from 'node:fs/promises';
 import { createRequire, findPackageJSON } from 'node:module';
 import { dirname, join, relative, resolve } from 'node:path';
 import { test } from 'node:test';
@@ -267,6 +267,28 @@ await test('packed install, offline recovery and removal preserve shared Shell s
   assert.ok(manifest().dsh.profile.bundles.includes('dsh-git-bash-on-win'));
   assert.deepEqual(parse(readFileSync(patchPath, 'utf8')), patches);
   const packageRoot = dirname(realpathSync(createRequire(join(profile, 'package.json')).resolve('dsh-git-bash-on-win/package.json')));
+  // Exercise DSH's real profile resolver: adding standalone dependencies must
+  // not split the host's Cordis service or native Shell schema identities.
+  const identityEntry = join(fixture.directory, 'profile-identity.mjs');
+  await writeFile(identityEntry, `
+    import assert from 'node:assert/strict';
+    import { createRequire } from 'node:module';
+    import { join } from 'node:path';
+    import { pathToFileURL } from 'node:url';
+    import { Context } from ${JSON.stringify(pathToFileURL(runtime.baseRequire.resolve('@deepseek-ai/cordis')).href)};
+    import { SandboxBashExecutor } from ${JSON.stringify(pathToFileURL(runtime.baseRequire.resolve('@deepseek-ai/dsh-bash-sandbox')).href)};
+    import { PluginPackages, createRuntimeResolution, loadProfileDirectory } from ${JSON.stringify(pathToFileURL(runtime.cliRequire.resolve('@deepseek-ai/dsh-app-boot')).href)};
+    const [dir, home, installAnchor] = process.argv.slice(2), ctx = new Context();
+    try {
+      const profile = loadProfileDirectory('dsh', dir, installAnchor);
+      await ctx.plugin(PluginPackages, { resolution: await createRuntimeResolution({ profile, home, installAnchor }) });
+      const require = createRequire(join(dir, 'package.json'));
+      const { default: Executor } = await import(pathToFileURL(require.resolve('dsh-git-bash-on-win')).href);
+      assert.equal(Object.getPrototypeOf(Executor), SandboxBashExecutor);
+      for (const [name, field] of Object.entries(SandboxBashExecutor.Config.dict)) assert.equal(Executor.Config.dict[name], field);
+    } finally { await ctx.fiber.dispose(); }
+  `);
+  success(await run([process.execPath, identityEntry, profile, home, runtime.manifest]));
   const fallback = join(packageRoot, '.runtime'), cache = join(profile, '.git-bash-on-win');
   const sourceFile = join(fixture.source, 'usr/bin/bash.exe');
   const before = { bytes: readFileSync(sourceFile), links: statSync(sourceFile).nlink,
@@ -282,6 +304,17 @@ await test('packed install, offline recovery and removal preserve shared Shell s
   assert.notEqual(invalidLauncher.exitCode, 0);
   assert.match(invalidLauncher.stderr, /Invalid private Git Bash invocation/);
   assert.doesNotMatch(invalidLauncher.stderr, /ERR_MODULE_NOT_FOUND|Cannot find (?:module|package)/);
+
+  const replacementPin = await prepare(fallback);
+  try {
+    const blocked = await operation('add', tarball);
+    assert.notEqual(blocked.exitCode, 0);
+    assert.match(blocked.stderr, /package installation was not started/);
+    assert.ok(pathExists(join(fallback, 'current.json')));
+  } finally { await replacementPin.release(); }
+  success(await operation('add', tarball));
+  assert.equal(pathExists(fallback), false, 'replacement must purge the old package fallback before pnpm runs');
+  assert.equal(statSync(sourceFile).nlink, before.links);
 
   for (const held of [fallback, cache]) {
     await (await prepare(fallback)).release();
@@ -301,12 +334,29 @@ await test('packed install, offline recovery and removal preserve shared Shell s
   assert.deepEqual(parse(readFileSync(patchPath, 'utf8')), patches, 'offline rebuild retains the override and package');
   assert.equal(statSync(sourceFile).nlink, before.links);
 
-  // An unowned fallback must block official removal without deleting its contents.
+  // Unowned fallback contents block either operation, even with a damaged manifest.
   await mkdir(fallback);
-  const refused = await operation('remove', 'dsh-git-bash-on-win');
-  assert.notEqual(refused.exitCode, 0); assert.match(refused.stderr, /package removal was not started/);
-  assert.ok(manifest().dependencies?.['dsh-git-bash-on-win']);
-  await rmdir(fallback); // This test created the empty unowned directory.
+  const sentinel = join(fallback, 'unowned.txt');
+  try {
+    await writeFile(sentinel, 'Do not delete unowned contents.');
+    for (const [verb, target] of [['add', tarball], ['remove', 'dsh-git-bash-on-win']] as const) {
+      const refused = await operation(verb, target);
+      assert.notEqual(refused.exitCode, 0); assert.match(refused.stderr, /package (installation|removal) was not started/);
+      assert.equal(readFileSync(sentinel, 'utf8'), 'Do not delete unowned contents.');
+    }
+    const packageManifest = join(packageRoot, 'package.json'), savedManifest = readFileSync(packageManifest);
+    await unlink(packageManifest);
+    try {
+      const refused = await operation('remove', 'dsh-git-bash-on-win');
+      assert.notEqual(refused.exitCode, 0); assert.match(refused.stderr, /package removal was not started/);
+      assert.equal(readFileSync(sentinel, 'utf8'), 'Do not delete unowned contents.');
+    } finally { if (pathExists(packageRoot)) await writeFile(packageManifest, savedManifest); }
+    assert.ok(manifest().dependencies?.['dsh-git-bash-on-win']);
+  } finally {
+    // Only the objects this test created; plugin purge must refuse this root.
+    if (pathExists(sentinel)) await unlink(sentinel);
+    if (pathExists(fallback)) await rmdir(fallback);
+  }
 
   // Documented uninstall step: edit only the plugin field before closing DSH.
   const remaining = [{ id: 'pwsh-sandbox', config: shared }];

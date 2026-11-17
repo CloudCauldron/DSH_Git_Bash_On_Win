@@ -1,8 +1,7 @@
-import { realpathSync } from 'node:fs';
-import { createRequire } from 'node:module';
-import { dirname, isAbsolute, join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { installedDsh } from './installed-dsh.ts';
 import { purgeRuntimeCache } from '../src/runtime/runtime-cache.ts';
+import { canonicalExistingPath, pathExists } from '../src/runtime/ntfs-filesystem.ts';
 
 // Arbitrary pnpm flags could redirect removal or bypass the cache purge.
 // DSH owns package compatibility and bundle reconciliation.
@@ -23,18 +22,15 @@ const { runPluginCommand } = await runtime.load(runtime.cliRequire, '@deepseek-a
       onOutput(text: string, stream: 'stdout' | 'stderr'): void }): Promise<{ exitCode: number | null }>;
 };
 const dir = resolveProfileDir(profile);
-if (operation === 'remove') {
-  // Offline precondition: remove only gitBashPath, then close every relevant DSH
-  // instance. An idle instance without a pin can otherwise recreate the cache.
-  let packageDirectory: string | undefined;
-  try { packageDirectory = dirname(realpathSync(createRequire(join(dir, 'package.json')).resolve(`${packageName}/package.json`))); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'MODULE_NOT_FOUND') throw error; }
-  try {
-    if (packageDirectory) await purgeRuntimeCache(join(packageDirectory, '.runtime'));
-    await purgeRuntimeCache(join(dir, '.git-bash-on-win'));
-  } catch (cause) {
-    throw new Error('Runtime cleanup and uninstallation are incomplete; package removal was not started. Close every DSH instance and resolve the reported obstruction before retrying.', { cause });
-  }
+// Offline precondition for installation/replacement too: pnpm may remove the old
+// package tree. Locate its entry without relying on an intact package manifest.
+// An idle DSH instance without a pin can otherwise recreate the fallback cache.
+try {
+  const entry = join(dir, 'node_modules', packageName);
+  if (pathExists(entry)) await purgeRuntimeCache(join(canonicalExistingPath(entry), '.runtime'));
+  if (operation === 'remove') await purgeRuntimeCache(join(dir, '.git-bash-on-win'));
+} catch (cause) {
+  throw new Error(`Runtime cleanup is incomplete; package ${operation === 'remove' ? 'removal' : 'installation'} was not started. Close every DSH instance and resolve the reported obstruction before retrying.`, { cause });
 }
 const result = await runPluginCommand({ profile, dir, installAnchor: runtime.manifest, cwd: process.cwd() },
   [operation, target!, '--ignore-scripts'], {

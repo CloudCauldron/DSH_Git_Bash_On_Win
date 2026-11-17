@@ -76,7 +76,7 @@ the earlier suites reports failure after closing the test handle; it does not
 reproduce an unrecoverable kernel handle fault. Modal consent remains a separate
 manual lane.
 
-For explicit manual consent checks, build first, then run either command in
+For explicit manual consent checks, build first, then run the selected command in
 Windows-native Git Bash and answer the Windows prompt as specified:
 
 ```bash
@@ -93,9 +93,11 @@ For `late`, leave consent pending until `LOCAL SHUTDOWN COMPLETED` is printed
 after the ten-second cancellation deadline, then approve within twenty seconds.
 The test refuses publication and requires strict purge. If Windows dismisses the
 prompt when the broker stops, this exercises modal cancellation only; it does not
-establish that an independent late helper ran. Record what was observed. A busy
-helper or unfinished prompt makes purge fail explicitly; resolve it and retry the
-reported fixture's cleanup. These manual checks are not run by automated packaging.
+establish that an independent late helper ran. Record what was observed. A helper
+holding its plan or another removal obstruction makes purge fail explicitly;
+resolve it and retry the reported fixture's cleanup. A pending prompt alone may
+outlive successful cleanup; the revoked lease still prevents late helper work.
+These manual checks are not run by automated packaging.
 
 `scripts/installed-dsh.ts` discovers the installed CLI without loading a profile.
 If discovery is ambiguous, set `DSH_PACKAGE_JSON` for the current process to the
@@ -130,7 +132,13 @@ the pinned DSH public plugin-manager operation, including compatibility checks a
 bundle reconciliation, using an absolute pnpm executable. It accepts only `add`
 with an absolute tarball path or `remove dsh-git-bash-on-win`; lifecycle scripts
 are disabled and arbitrary pnpm flags are not forwarded. Where native executable
-lookup works, `dsh plugin --profile web add <tarball> --ignore-scripts` is equivalent.
+lookup works, `dsh plugin --profile web add <tarball> --ignore-scripts` uses the same
+official package operation. Close all DSH instances using the package before
+installation or replacement: pnpm can remove the old package directory. The wrapper
+strictly purges its fallback cache first, including when its manifest is missing;
+an active pin or unowned cache blocks installation. With the native CLI, run the
+installed cleanup entry first before replacing an existing package. Profile caches
+are retained by wrapper installation, and are purged by wrapper removal.
 Restart DSH unelevated after installation or bundle enable/disable changes.
 
 For a nonstandard Git installation, set `gitBashPath` on the existing

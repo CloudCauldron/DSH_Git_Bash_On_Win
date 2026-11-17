@@ -29,8 +29,8 @@ tree freshness check or per-command scan.
 
 ## Packaging and installed-profile coverage
 
-`pnpm pack --pack-destination artifacts` completed with its normal prepack checks.
-The resulting `artifacts/dsh-git-bash-on-win-0.1.0-experimental.1.tgz` contains
+The initial `pnpm pack --pack-destination artifacts` completed with its normal prepack checks.
+That `artifacts/dsh-git-bash-on-win-0.1.0-experimental.1.tgz` contained
 exactly the 31 expected production/package files (44,581 bytes). SHA-256:
 `c17c1077d530e6850674dd59f416100197ff1cb4071e69954d1437a22e70d549`.
 The generated tarball and detailed logs under `test/results/` remain Git-ignored.
@@ -59,6 +59,8 @@ Coverage includes:
 - Official bundle activation and restoration, platform refusal, and strict
   wrapper argument admission before profile operations. The wrapper supports
   only adding an absolute tarball or removing this plugin, with scripts disabled.
+- Installed-host superclass and Shell schema identity through DSH's public
+  profile resolution service, including the newly installed standalone dependencies.
 - Packaged helper/launcher argument rejection after successful dependency loading,
   and successful execution of the packaged offline cleanup entry.
 - Live pins in either profile or package fallback cache block package removal;
@@ -91,21 +93,44 @@ remains with DSH/the user, following the README's complete-uninstall sequence.
 | Source and host isolation | Canonical workspace/source/cache separation precedes confinement. Fixtures use owned copies; standalone imports use pinned public APIs. Source hardlink bookkeeping remains observable and is not concealed. |
 | Freshness | Six saved anchor stamps are a bounded sample. Live pins do no freshness walk; non-anchor damage may survive restart. Explicit rebuilding restores layout from the current source but cannot repair damaged shared bytes. |
 
-## Manual verification limits
+## Adversarial audit round 1
 
-Actual UAC approval, denial and late consent were **not run** in this automated
-implementation session. The README documents explicitly invoked `approve`, `deny`
-and `late` lanes. The late lane leaves consent pending for a ten-second cancellation
-deadline, reports completed local shutdown, then allows twenty seconds for the
-operator to finish any remaining prompt before checking non-publication and
-strict purge. A purge obstruction fails the test.
+A context-independent reviewer and the implementing agent inspected Phase 6 and
+the pinned public DSH code. Native isolated experiments reproduced two package
+cleanup bypasses: upgrading could let pnpm remove an existing `.runtime` without
+guarded purge, and a missing installed manifest could be mistaken for package
+absence during removal. The wrapper now locates the fixed package entry directly
+with existing NTFS primitives and purges the fallback before either operation.
+Profile-cache purge remains removal-only. Regressions exercise pinned and unowned
+fallbacks, retry after release, and missing-manifest refusal. No new state or
+coordination layer was added.
 
-If Windows dismisses consent when the broker stops, that run establishes modal
-cancellation only, not execution of an independent late helper. Record the actual
-observation when running the manual lane. Automated F4/native fault coverage does
-not prove secure-desktop behavior. Stopping the broker does not promise consent
-dismissal or independent-helper termination; the revoked lease and guarded cleanup
-remain the authorization boundary.
+Both reviewers also found that a manual deny/late assertion could lose an
+unexpectedly fulfilled pin. The manual test now retains and finally releases it,
+then verifies source contents/ACLs/link counts after strict purge. An early-approval
+attempt during this audit exercised that failing-assertion cleanup path.
+`pnpm test:release` passed again: typecheck, lint, clean build and all 139 tests,
+zero failures or skips (68.74 seconds). No recent native/bootstrap fixture
+directories remained after the audit runs.
+
+## Manual verification and limits
+
+With the user's help, real UAC approval passed (2.56 seconds); the user confirmed
+clicking Yes on the prompt. Denial passed again with an assertion requiring the
+actual `ShellExecuteExW` cancellation code **1223** (5.52 seconds), rather than
+accepting any setup failure. Delayed consent passed (30.48 seconds): the controller
+cancelled at ten seconds, the user confirmed the prompt remained and was approved
+after twenty seconds, no cancelled attempt was published, and strict purge and
+source-restoration checks completed. The test also now asserts that local shutdown
+settles within five seconds of cancellation.
+
+These observations establish approval, denial and delayed consent after controller
+cancellation. They do not independently establish that an elevated helper actually
+started after the broker stopped: the detached helper's process exit is not observed
+by the cancelled controller. No receipt or extra production protocol was added.
+A pending prompt alone need not block purge; a helper holding its plan does.
+Stopping the broker does not promise prompt dismissal or independent-helper
+termination. The revoked lease and guarded cleanup remain the authorization boundary.
 
 Normal disposal may retain cache-local view residue while closing owned resources.
 Complete uninstall requires successful purge of all relevant profile/fallback

@@ -535,14 +535,33 @@ await test('native DSH Bash execution across all modes', nativeOnly, async t => 
   await fsp.writeFile(observer, `
     import { runPrivateBash } from ${JSON.stringify(new URL('../lib/debugger/process-family.js', import.meta.url).href)};
     import { inheritedCompatibility } from ${JSON.stringify(new URL('../lib/debugger/native-debug.js', import.meta.url).href)};
-    import { debugApi } from ${JSON.stringify(new URL('../lib/debugger/native-debug.js', import.meta.url).href)};
+    import { debugApi, readMemory } from ${JSON.stringify(new URL('../lib/debugger/native-debug.js', import.meta.url).href)};
+    import { sectionAccess } from ${JSON.stringify(new URL('./fixtures.ts', import.meta.url).href)};
     import { copyFileSync, renameSync } from 'node:fs';
     import { join } from 'node:path';
     import { buildRuntimeEnvironment } from ${JSON.stringify(new URL('../lib/runtime/git-installation.js', import.meta.url).href)};
     const request = JSON.parse(process.argv[2]);
     try {
+      if (request.section) {
+        inheritedCompatibility(request.mode);
+        console.log('@@ACCESS@@' + JSON.stringify({ read: sectionAccess(request.section, false), write: sectionAccess(request.section, true) }));
+      } else {
       const environment = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== 'path'));
       Object.assign(environment, buildRuntimeEnvironment(request.installationRoot, request.sourceRoot, request.layout, process.env));
+      if (request.observeNamespace) {
+        const api = debugApi(), original = api.queryObject;
+        const seen = new Set();
+        api.queryObject = (handle, kind, buffer, size, needed) => {
+          const status = original(handle, kind, buffer, size, needed);
+          if (status >= 0 && kind === 1) {
+            const name = readMemory(api.currentProcess(), buffer.readBigUInt64LE(8), buffer.readUInt16LE()).toString('utf16le');
+            if (name.toLowerCase().startsWith('\\\\basenamedobjects\\\\msys-') && !seen.has(name)) {
+              seen.add(name); console.log('@@NAMESPACE@@' + name);
+            }
+          }
+          return status;
+        };
+      }
       if (request.fault) {
         // Race the real launch after its local DLL identity was retained. This
         // changes fixture paths only; all debug events and hooks remain real.
@@ -559,17 +578,21 @@ await test('native DSH Bash execution across all modes', nativeOnly, async t => 
       const result = await runPrivateBash({ ...request, cwd: process.cwd(), environment, compatibility: inheritedCompatibility(request.mode), graceMs: 300 });
       console.log('@@FAMILY@@' + JSON.stringify(result));
       process.exitCode = result.exitCode;
+      }
     } catch (error) { console.error(error.message); process.exitCode = 127; }
   `);
-  const captured = async (argv: string[], mode: SandboxExecutionPolicy['mode']) => {
+  const startCaptured = async (argv: string[], mode: SandboxExecutionPolicy['mode'], session = 'observed') => {
     const signal = AbortSignal.timeout(15000);
-    const policy: SandboxExecutionPolicy = { mode, workspaceRoot: f.workspace, sessionId: 'observed' as SandboxExecutionPolicy['sessionId'] };
+    const policy: SandboxExecutionPolicy = { mode, workspaceRoot: f.workspace, sessionId: session as SandboxExecutionPolicy['sessionId'] };
     if (mode !== 'danger-full-access') argv = [...(await f.ctx.sandbox.confine(argv, { ...policy, mode }, signal)).argv];
-    const child = f.ctx.subprocess.spawn({ argv, cwd: f.workspace, signal, graceMs: 300,
+    return f.ctx.subprocess.spawn({ argv, cwd: f.workspace, signal, graceMs: 300,
       stdio: { stdin: 'ignore', stdout: { maxBytes: 65536 }, stderr: { maxBytes: 8192 } } });
+  };
+  const captured = async (argv: string[], mode: SandboxExecutionPolicy['mode'], session?: string) => {
+    const child = await startCaptured(argv, mode, session);
     try {
       const outcome = await child.done;
-      assert.equal(await child.waitForExit(signal), true, 'DSH managed range must settle');
+      assert.equal(await child.waitForExit(AbortSignal.timeout(3000)), true, 'DSH managed range must settle');
       return { ...outcome, stdout: child.collected.stdout!.readFrom(0).text, stderr: child.collected.stderr!.readFrom(0).text };
     } finally {
       child.terminate();
@@ -579,7 +602,7 @@ await test('native DSH Bash execution across all modes', nativeOnly, async t => 
   const observe = async (mode: SandboxExecutionPolicy['mode'], session: string, command = 'bash -c true; printf x | cat') => {
     const use = await pin.lease({ mode, workspaceRoot: f.workspace, sessionId: session as SandboxExecutionPolicy['sessionId'] }, new AbortController().signal);
     try {
-      const result = await captured([process.execPath, observer, JSON.stringify({ ...use, mode, command })], mode);
+      const result = await captured([process.execPath, observer, JSON.stringify({ ...use, mode, command })], mode, session);
       assert.equal(result.exitCode, 0, result.stderr);
       const match = /@@FAMILY@@([^\r\n]+)/.exec(result.stdout);
       assert.ok(match, result.stdout);
@@ -623,6 +646,48 @@ await test('native DSH Bash execution across all modes', nativeOnly, async t => 
     });
   }
   assert.equal(namespaces.size, 6, 'all modes and scoped views need distinct namespaces');
+  await t.test('actual MSYS mapping grants separate workspace sessions while preserving peer reads', async () => {
+    const use = await pin.lease({ mode: 'workspace-write', workspaceRoot: f.workspace,
+      sessionId: 'ipc-owner' as SandboxExecutionPolicy['sessionId'] }, new AbortController().signal);
+    let owner: SubprocessHandle | undefined;
+    let ownerOutcome: Promise<PromiseSettledResult<SubprocessOutcome>[]> | undefined;
+    try {
+      owner = await startCaptured([process.execPath, observer, JSON.stringify({ ...use, mode: 'workspace-write', observeNamespace: true,
+        command: 'printf "@@PID@@%s\\n" "$$"; sleep 60' })], 'workspace-write', 'ipc-owner');
+      ownerOutcome = Promise.allSettled([owner.done]);
+      let namespace: string | undefined, pid: string | undefined;
+      const until = performance.now() + 10000;
+      while (performance.now() < until) {
+        const output = owner.collected.stdout!.readFrom(0).text;
+        namespace = /@@NAMESPACE@@([^\r\n]+)/.exec(output)?.[1];
+        pid = /@@PID@@(\d+)/.exec(output)?.[1];
+        if (namespace && pid) break;
+        await delay(20);
+      }
+      assert.ok(namespace && pid, owner.collected.stdout!.readFrom(0).text + owner.collected.stderr!.readFrom(0).text);
+      const section = `${namespace}\\cygpid.${pid}`;
+      for (const [mode, session, write] of [
+        ['workspace-write', 'ipc-owner', 0], ['workspace-write', 'ipc-peer', 0xc0000022],
+        ['read-only', 'ipc-read', 0xc0000022], ['danger-full-access', 'ipc-full', 0],
+      ] as const) {
+        const result = await captured([process.execPath, observer, JSON.stringify({ mode, section })], mode, session);
+        assert.equal(result.exitCode, 0, result.stderr);
+        const match = /@@ACCESS@@([^\r\n]+)/.exec(result.stdout);
+        assert.ok(match, result.stdout);
+        assert.deepEqual(JSON.parse(match[1]!), { read: 0, write }, `${mode}/${session}: ${result.stdout}`);
+      }
+    } finally {
+      if (owner) {
+        try { owner.terminate(); }
+        finally {
+          assert.equal(await owner.waitForExit(AbortSignal.timeout(3000)), true);
+          await use.release();
+        }
+        const [outcome] = await ownerOutcome!;
+        assert.equal(outcome!.status, 'fulfilled', outcome!.status === 'rejected' ? String(outcome!.reason) : '');
+      } else { await use.release(); }
+    }
+  });
   await t.test('child admission refuses redirected views and external MSYS descendants', async () => {
     const use = await pin.lease({ mode: 'danger-full-access', workspaceRoot: f.workspace }, new AbortController().signal);
     try {
@@ -705,8 +770,12 @@ await test('native DSH Bash execution across all modes', nativeOnly, async t => 
       while (performance.now() < until) {
         output += execution.readOutput().delta;
         const match = /PID:(\d+)/.exec(output);
-        if (match) return Number(match[1]);
         assert.equal(execution.status, 'running', output);
+        if (match) {
+          const pid = Number(match[1]);
+          process.kill(pid, 0); // Readiness must refer to a currently live child.
+          return pid;
+        }
         await delay(20);
       }
       throw new Error(`Private native descendant did not start: ${output}`);
@@ -719,8 +788,12 @@ await test('native DSH Bash execution across all modes', nativeOnly, async t => 
     assert.throws(() => process.kill(cancelledPid, 0), { code: 'ESRCH' });
     const [one, two] = await Promise.all([start(), start()]);
     const pids = await Promise.all([ready(one), ready(two)]);
+    for (const pid of pids) process.kill(pid, 0);
     await executorFiber.dispose();
     await Promise.all([one.done, two.done]);
+    for (const result of await Promise.all([one.result(), two.result()])) {
+      assert.equal(result.aborted, true); assert.equal(result.timedOut, false);
+    }
     for (const pid of pids) assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' });
     // Real executor and external pin retirement leave no held generation/view.
     await purgeRuntimeCache(f.cache);

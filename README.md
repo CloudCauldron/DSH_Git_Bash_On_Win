@@ -58,6 +58,9 @@ selected Git files into owned fixture storage before linking, so it never asks f
 consent or changes installed Git ACLs. It exercises Bash/Git, pipelines, nested
 shells, native descendants, mode-specific writes, namespace separation/reuse,
 child admission failures, overlapping execution, cancellation and disposal.
+Separate workspace sessions also probe a live MSYS pinfo mapping: the owner can
+open it for writing, peer confined sessions can read but receive access-denied
+for writing, and full-access retains write access. The probe never changes pinfo.
 Every fixture joins its processes and strictly purges the cache; source
 contents/ACLs and all copied source link counts are checked afterward. Missing
 Windows x64, supported Git or pinned DSH prerequisites are explicit skips; a

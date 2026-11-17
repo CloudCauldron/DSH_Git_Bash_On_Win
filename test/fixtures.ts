@@ -2,6 +2,8 @@ import { copyFile, mkdtemp, rm, mkdir, writeFile, link, readFile, stat } from 'n
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import assert from 'node:assert/strict';
+import koffi from 'koffi';
+import { closeHandleChecked, extendWin32ProcessBindings, type NativePtr } from '@deepseek-ai/dsh-win32-process';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import type { TestContext } from 'node:test';
@@ -22,6 +24,22 @@ export async function temporaryDirectory(t: TestContext): Promise<string> {
 
 export const nativeWindows = process.platform === 'win32' && process.arch === 'x64';
 export const nativeOnly = { skip: !nativeWindows && 'Requires native Windows x64 and NTFS.' };
+
+/** Query actual section write/read authorization without mapping or altering pinfo. */
+export function sectionAccess(name: string, write: boolean): number {
+  const unicode = koffi.struct({ Length: 'uint16', MaximumLength: 'uint16', Buffer: 'str16' });
+  const attributes = koffi.struct({ Length: 'uint32', RootDirectory: 'void *', ObjectName: koffi.pointer(unicode),
+    Attributes: 'uint32', SecurityDescriptor: 'void *', SecurityQualityOfService: 'void *' });
+  assert.equal(unicode.size, 16); assert.equal(attributes.size, 48);
+  const object = { Length: 48, RootDirectory: null, ObjectName: { Length: Buffer.byteLength(name, 'utf16le'),
+    MaximumLength: Buffer.byteLength(name, 'utf16le') + 2, Buffer: name }, Attributes: 64, SecurityDescriptor: null, SecurityQualityOfService: null };
+  const api = extendWin32ProcessBindings(({ bind }) => ({
+    openSection: bind(koffi.load('ntdll.dll'), 'NtOpenSection', 'int32', ['void *', 'uint32', koffi.pointer(attributes)]),
+  }) as { openSection(output: Buffer, access: number, attributes: typeof object): number });
+  const output = Buffer.alloc(8), status = api.openSection(output, write ? 2 : 4, object);
+  if (status >= 0) closeHandleChecked(api, output.readBigUInt64LE() as NativePtr, 'fixture pinfo access');
+  return status >>> 0;
+}
 
 /** All native payloads are owned copies; teardown never uses recursive rm. */
 export async function runtimeFixture(t: TestContext, layout: GitLayout = 'ucrt64', cacheName = 'cache') {

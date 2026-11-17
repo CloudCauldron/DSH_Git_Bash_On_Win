@@ -356,6 +356,32 @@ await test('an already rejected preparation retains its native close failure acr
   } finally { mock.mock.restore(); log.mock.restore(); }
 });
 
+await test('a rejected broker outcome with an empty range permits explicit rebuilding and clean disposal', nativeOnly, async t => {
+  const f = await executorFixture(t), original = fs.linkSync;
+  const failure = new Error('fixture broker target failed to start');
+  const mock = t.mock.method(fs, 'linkSync', (source: fs.PathLike, target: fs.PathLike) => {
+    if (basename(String(target)) === '.probe') throw Object.assign(new Error('fixture probe denial'), { code: 'EPERM' });
+    original(source, target);
+  }); syncBuiltinESMExports();
+  f.controls.setup = () => ({
+    stdin: undefined, stdout: undefined, stderr: undefined, control: undefined, collected: {},
+    done: Promise.reject(failure), terminate() {},
+    async waitForExit() { return true; },
+  });
+  const logged: unknown[][] = [];
+  const log = t.mock.method(f.providerContext.logger, 'error', (...args: unknown[]) => { logged.push(args); });
+  try {
+    await assert.rejects(f.run(), error => error === failure);
+    assert.equal(f.spawned.length, 0);
+    assert.equal(pathExists(join(f.cache, 'current.json')), false);
+    mock.mock.restore(); syncBuiltinESMExports();
+    await f.executor.rebuildRuntime();
+    const execution = await f.run(); f.spawned[0]!.finish(); await execution.done;
+    await f.dispose();
+    assert.deepEqual(logged, []);
+  } finally { mock.mock.restore(); syncBuiltinESMExports(); log.mock.restore(); }
+});
+
 await test('an already rejected broker shutdown remains a local resource failure at rebuild and disposal', nativeOnly, async t => {
   const f = await executorFixture(t), original = fs.linkSync;
   const failure = new Error('fixture broker range cannot be observed');

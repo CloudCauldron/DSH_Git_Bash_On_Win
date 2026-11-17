@@ -81,7 +81,7 @@ async function stopBroker(broker: SubprocessHandle): Promise<void> {
   try { exited = await broker.waitForExit(AbortSignal.timeout(brokerGraceMs)); }
   catch (error) { errors.push(error); }
   if (!exited) { try { broker.terminate(); } catch (error) { errors.push(error); } }
-  const settled = await Promise.allSettled([broker.done, broker.waitForExit()]);
+  const settled = await Promise.allSettled([broker.done.catch(() => {}), broker.waitForExit()]);
   for (const result of settled) if (result.status === 'rejected') errors.push(result.reason);
   if (settled[1]?.status === 'fulfilled' && !settled[1].value) errors.push(new Error('Setup broker range did not settle.'));
   if (errors.length) throw new ProvisioningCleanupError(errors, 'Failed to settle the setup broker.');

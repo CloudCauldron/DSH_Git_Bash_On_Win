@@ -14,7 +14,8 @@ import type { ShellExecRequest, ShellExecution } from '@deepseek-ai/dsh-shell';
 import type Subprocess from '@deepseek-ai/dsh-subprocess';
 import type { SubprocessHandle, SubprocessOutcome, SubprocessSpawnSpec } from '@deepseek-ai/dsh-subprocess';
 import { runPrivateBash, type PrivateFamilyExit } from '../src/debugger/process-family.ts';
-import { Win32Error } from '@deepseek-ai/dsh-win32-process';
+import { debugApi, descriptorText, wide, writeMemory } from '../src/debugger/native-debug.ts';
+import { extendWin32ProcessBindings, Win32Error, type NativePtr } from '@deepseek-ai/dsh-win32-process';
 import GitBashExecutor from '../src/index.ts';
 import { buildRuntimeEnvironment } from '../src/runtime/git-installation.ts';
 import { admitDirectory, claimDirectory, createDirectory, createJunction, isBusy, NativeHold, pathExists } from '../src/runtime/ntfs-filesystem.ts';
@@ -562,6 +563,72 @@ await test('runtime environment uses only the admitted layout and recorded sourc
     assert.equal(env.GIT_TEMPLATE_DIR, join(use.installationRoot, 'mingw64/share/git-core/templates').replaceAll('\\', '/'));
     assert.equal(env.MSYS2_PATH_TYPE, 'inherit');
   } finally { await use.release(); await pin.release(); }
+});
+
+await test('local SDDL reading bounds the reported extent and always frees its allocation', nativeOnly, async t => {
+  const api = debugApi(), address = 4096n, nul = String.fromCharCode(0);
+  const unicode = 'Ā漢字😀', tail = unicode + nul + 'ignored', maximum = 'x'.repeat(4095);
+  const failure = new Error('fixture memory read failed');
+  for (const [name, text, extent, expected] of [
+    ['empty', nul, 1, ''],
+    ['Unicode and first NUL', tail, tail.length, unicode],
+    ['maximum extent', maximum + nul, 4096, maximum],
+    ['zero extent', nul, 0, /Invalid SDDL buffer extent/],
+    ['excessive extent', nul, 4097, /Invalid SDDL buffer extent/],
+    ['missing terminator', 'AB', 2, /Unterminated SDDL string/],
+    ['failed read', nul, 1, failure],
+  ] as const) await t.test(name, t => {
+    const data = Buffer.from(text, 'utf16le');
+    t.mock.method(api, 'descriptorText', (_descriptor: Buffer, _revision: number, _information: number, output: Buffer, count: Buffer) => {
+      output.writeBigUInt64LE(address); count.writeUInt32LE(extent); return 1;
+    });
+    t.mock.method(api, 'readMemory', (_process: NativePtr, from: bigint, output: Buffer, length: number, count: Buffer) => {
+      if (expected === failure) throw failure;
+      const offset = Number(from - address);
+      assert.ok(offset >= 0 && offset + length <= data.length, 'read must remain within the supplied allocation');
+      data.copy(output, 0, offset, offset + length); count.writeBigUInt64LE(BigInt(length)); return 1;
+    });
+    const free = t.mock.method(api, 'localFree', () => null);
+    if (expected instanceof Error) assert.throws(() => descriptorText(Buffer.alloc(0)), error => error === expected);
+    else if (expected instanceof RegExp) assert.throws(() => descriptorText(Buffer.alloc(0)), expected);
+    else assert.equal(descriptorText(Buffer.alloc(0)), expected);
+    assert.equal(free.mock.callCount(), 1);
+    assert.deepEqual(free.mock.calls[0]!.arguments, [address]);
+  });
+});
+
+await test('remote Unicode reading respects chunk, page and WCHAR boundaries', nativeOnly, () => {
+  const api = debugApi(), self = api.currentProcess(), nul = String.fromCharCode(0);
+  const memoryApi = extendWin32ProcessBindings(({ kernel32, bind }) => ({
+    protect: bind(kernel32, 'VirtualProtectEx', 'int', ['void *', 'void *', 'size_t', 'uint32', 'void *']),
+    free: bind(kernel32, 'VirtualFreeEx', 'int', ['void *', 'void *', 'size_t', 'uint32']),
+  }) as {
+    protect(process: NativePtr, address: bigint, bytes: number, protection: number, previous: Buffer): number;
+    free(process: NativePtr, address: NativePtr, bytes: number, kind: number): number;
+  });
+  const memory = api.allocateMemory(self, null, 8192, 0x3000, 0x04);
+  assert.ok(memory);
+  try {
+    writeMemory(self, memory, Buffer.alloc(2));
+    assert.equal(wide(self, memory), '');
+    const unicode = 'x'.repeat(255) + '😀Ā漢字'; // Surrogate pair crosses the 512-byte chunk.
+    writeMemory(self, memory, Buffer.from(unicode + nul, 'utf16le'));
+    assert.equal(wide(self, memory, unicode.length + 1), unicode);
+
+    const tail = 'y'.repeat(255), previous = Buffer.alloc(4);
+    writeMemory(self, memory + 3584n, Buffer.from(tail + nul, 'utf16le'));
+    assert.equal(memoryApi.protect(self, memory + 4096n, 4096, 0x01, previous), 1);
+    assert.equal(wide(self, memory + 3584n), tail, 'NUL at a chunk/page end must not require the inaccessible next page');
+    assert.equal(wide(self, memory + 4094n), '');
+    assert.throws(() => wide(self, memory + 3584n, tail.length), /Unterminated process string/);
+    assert.throws(() => wide(self, memory + 4096n), /ReadProcessMemory/);
+    assert.throws(() => wide(self, memory + 4095n, 1), /ReadProcessMemory/, 'a lone page-tail byte is not a complete WCHAR');
+
+    assert.equal(memoryApi.protect(self, memory + 4096n, 4096, 0x04, previous), 1);
+    writeMemory(self, memory + 4095n, Buffer.from('Ā😀' + nul, 'utf16le'));
+    assert.equal(wide(self, memory + 4095n, 4), 'Ā😀');
+    assert.throws(() => wide(self, memory, 32769), /Invalid Unicode bound/);
+  } finally { assert.equal(memoryApi.free(self, memory, 0, 0x8000), 1); }
 });
 
 await test('child admission requires a strict descendant of the generation views directory', nativeOnly, async t => {

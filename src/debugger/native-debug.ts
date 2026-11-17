@@ -237,10 +237,17 @@ export function writeData(process: NativePtr, payload: Buffer): NativePtr {
 export function wide(process: NativePtr, address: bigint, maximum = 512): string {
   if (maximum > 32768) throw new Error('Invalid Unicode bound.');
   const chars: number[] = [];
-  for (let i = 0; i < maximum; i++) {
-    const code = readMemory(process, address + BigInt(i * 2), 2).readUInt16LE();
-    if (code === 0) return String.fromCharCode(...chars);
-    chars.push(code);
+  for (let i = 0; i < maximum;) {
+    const current = address + BigInt(i * 2);
+    const length = Math.min(512, (maximum - i) * 2, 4096 - Number(current & 4095n)) & ~1;
+    // An odd page tail still requires one complete, checked cross-page WCHAR.
+    const data = readMemory(process, current, length || 2);
+    for (let offset = 0; offset < data.length; offset += 2) {
+      const code = data.readUInt16LE(offset);
+      if (code === 0) return String.fromCharCode(...chars);
+      chars.push(code);
+    }
+    i += data.length / 2;
   }
   throw new Error('Unterminated process string.');
 }
@@ -319,8 +326,15 @@ export function descriptorText(buffer: Buffer) {
   const slot = Buffer.alloc(8), count = Buffer.alloc(4);
   checked(debugApi().descriptorText(buffer, 1, 0x0f, slot, count), "descriptorText");
   const address = pointer(slot);
-  try { return wide(debugApi().currentProcess(), address!, Math.min(count.readUInt32LE(), 4096)); }
-  finally { freeLocal(address); }
+  try {
+    const extent = count.readUInt32LE();
+    if (extent < 1 || extent > 4096) throw new Error('Invalid SDDL buffer extent.');
+    const data = readMemory(debugApi().currentProcess(), address, extent * 2);
+    for (let offset = 0; offset < data.length; offset += 2) {
+      if (data.readUInt16LE(offset) === 0) return data.subarray(0, offset).toString('utf16le');
+    }
+    throw new Error('Unterminated SDDL string.');
+  } finally { freeLocal(address); }
 }
 export function objectName(process: NativePtr, remoteHandle: bigint) {
   const output = Buffer.alloc(8);

@@ -1,4 +1,5 @@
 import type { Context, Volatile } from '@deepseek-ai/cordis';
+import { Service } from '@deepseek-ai/cordis';
 import z from '@deepseek-ai/schemastery';
 import { SandboxBashExecutor } from '@deepseek-ai/dsh-bash-sandbox';
 import type { Config as BashConfig } from '@deepseek-ai/dsh-bash-local';
@@ -7,6 +8,7 @@ import type Subprocess from '@deepseek-ai/dsh-subprocess';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { hasRuntimeCleanupFailure, prepareRuntime, type GenerationPin, type RuntimeUse } from './runtime/runtime-cache.ts';
+import { commandReceiver } from './adapter.ts';
 
 export interface Config extends BashConfig { gitBashPath: Volatile<string | undefined> }
 
@@ -39,7 +41,7 @@ export default class GitBashExecutor extends SandboxBashExecutor {
   private slot?: PreparationSlot;
   private rebuildOp?: PreparationSlot;
   private readonly stopping = new AbortController();
-  private readonly executions = new Set<ShellExecution>();
+  private readonly executions = new Map<ShellExecution, () => Promise<void>>();
   private readonly work = new Set<Promise<unknown>>();
   private readonly cleanup = new Set<Promise<unknown>>();
   private readonly cleanupErrors: unknown[] = [];
@@ -160,11 +162,16 @@ export default class GitBashExecutor extends SandboxBashExecutor {
     let use: RuntimeUse | undefined;
     let preparation: Promise<readonly string[]> | undefined;
     let started = false;
+    let rangeFailed = false;
     const release = () => {
       const held = use; use = undefined;
       return held ? this.ownCleanup(held.release()) : Promise.resolve();
     };
-    const operation = super.executeArgv(spec, signal => {
+    const receiver = commandReceiver(this[Service.extend]() as this, this.ctx, error => {
+      rangeFailed = true;
+      this.cleanupErrors.push(error);
+    });
+    const operation = super.executeArgv.call(receiver, spec, signal => {
       preparation = this.track((async () => {
         const acquired = await this.acquireUse(spec, signal);
         use = acquired.use;
@@ -183,8 +190,11 @@ export default class GitBashExecutor extends SandboxBashExecutor {
       return preparation;
     }, execution => {
       started = true;
-      this.executions.add(execution);
+      this.executions.set(execution, release);
       void this.track(execution.done.then(async () => {
+        // An unconfirmed range may still use the runtime. Keep its existing
+        // owned reference, and report failed disposal; process exit closes it.
+        if (rangeFailed) return;
         try { await release(); } finally { this.executions.delete(execution); }
       }));
       onStarted?.(execution);
@@ -226,7 +236,7 @@ export default class GitBashExecutor extends SandboxBashExecutor {
   private async disposeRuntime(): Promise<void> {
     this.stopping.abort(new Error('The Git Bash provider is stopping.'));
     // Signal executions before waiting for any setup, regardless of selection.
-    for (const execution of this.executions) {
+    for (const execution of this.executions.keys()) {
       try { execution.kill(); } catch (error) { this.cleanupErrors.push(error); }
     }
     const slots = new Set([this.slot, this.rebuildOp]);

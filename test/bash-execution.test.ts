@@ -37,6 +37,7 @@ async function executorFixture(t: TestContext) {
   const policy: SandboxExecutionPolicy = { mode: 'read-only', workspaceRoot: fixture.workspace };
   const controls = {
     setup: (() => { throw new Error('Unexpected setup subprocess in executor fixture.'); }) as Subprocess['spawn'],
+    range: async (outcome: Promise<SubprocessOutcome>) => { await outcome; return true; },
     confine: async (argv: string[]) => ({ argv: ['fixture-runner', '--', ...argv], enforcement: 'partial' as const, denialSignatures: [], runnerFailureRules: [] }),
   };
   const provider = {
@@ -53,7 +54,7 @@ async function executorFixture(t: TestContext) {
       return {
         stdin: undefined, stdout: undefined, stderr: undefined, control: undefined,
         collected: { stdout: reader, stderr: reader }, done: outcome.promise,
-        terminate: abort, async waitForExit() { await outcome.promise; return true; },
+        terminate: abort, waitForExit: () => controls.range(outcome.promise),
       };
     },
   };
@@ -598,10 +599,18 @@ await test('native DSH Bash execution across all modes', nativeOnly, async t => 
       assert.doesNotMatch(result.stdout.text, /must-not-leak/);
       const written = await run(mode, `printf write > '${mode}.txt'`);
       assert.equal(written.exitCode === 0, mode !== 'read-only', written.stderr.text);
+      if (mode === 'read-only') {
+        assert.equal(written.exitCode, 1, written.stderr.text);
+        assert.match(written.stderr.text, /permission denied|operation not permitted|read-only file system/i);
+      }
       assert.equal(fs.existsSync(join(f.workspace, `${mode}.txt`)), mode !== 'read-only');
       const outside = join(f.directory, `${mode}.txt`).replaceAll('\\', '/');
       const out = await run(mode, `printf outside > '${outside}'`);
       assert.equal(out.exitCode === 0, mode === 'danger-full-access', out.stderr.text);
+      if (mode !== 'danger-full-access') {
+        assert.equal(out.exitCode, 1, out.stderr.text);
+        assert.match(out.stderr.text, /permission denied|operation not permitted|read-only file system/i);
+      }
       assert.equal(fs.existsSync(outside), mode === 'danger-full-access');
       const [first, second] = await Promise.all([observe(mode, 'first'), observe(mode, 'second')]);
       assert.notEqual(first.installationKey, second.installationKey);
@@ -681,6 +690,7 @@ await test('native DSH Bash execution across all modes', nativeOnly, async t => 
     } finally { await fsp.rename(retired, f.source); }
   });
   await t.test('root exit drains descendants; cancellation and executor disposal join active families', async () => {
+    await pin.release(); // The executor must now protect the generation on its own.
     const lingering = await run('danger-full-access', 'sleep 60 & exit 7');
     assert.equal(lingering.exitCode, 7, lingering.stderr.text);
     assert.equal(lingering.timedOut, false, 'root exit must apply the bounded family grace');
@@ -712,9 +722,64 @@ await test('native DSH Bash execution across all modes', nativeOnly, async t => 
     await executorFiber.dispose();
     await Promise.all([one.done, two.done]);
     for (const pid of pids) assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' });
-    await pin.release();
     // Real executor and external pin retirement leave no held generation/view.
     await purgeRuntimeCache(f.cache);
     assert.equal(pathExists(f.cache), false);
   });
+});
+
+await test('target completion retains uses and disposal until DSH confirms the command range', nativeOnly, async t => {
+  const entered = deferred<void>(), settled = deferred<boolean>();
+  t.after(() => settled.resolve(true));
+  const f = await executorFixture(t);
+  f.controls.range = async () => { entered.resolve(); return settled.promise; };
+  const execution = await f.run();
+  const { view } = invocation(f.spawned[0]!.spec);
+  f.spawned[0]!.finish();
+  await entered.promise;
+  let finished = false;
+  void execution.done.then(() => { finished = true; });
+  const disposing = f.dispose();
+  await turn();
+  assert.equal(finished, false);
+  assert.equal(pathExists(view), true);
+  await assert.rejects(purgeRuntimeCache(f.cache), isBusy);
+
+  // This command-scoped adaptation must not change another consumer's handle.
+  const unrelated = f.ctx.subprocess.spawn({ argv: ['unrelated'], cwd: f.workspace, graceMs: 1,
+    stdio: { stdin: 'ignore', stdout: { maxBytes: 0 }, stderr: { maxBytes: 0 } } });
+  f.spawned.at(-1)!.finish(9);
+  assert.equal((await unrelated.done).exitCode, 9);
+
+  settled.resolve(true);
+  await Promise.all([execution.done, disposing]);
+  await purgeRuntimeCache(f.cache);
+  assert.equal(pathExists(f.cache), false);
+});
+
+await test('range observation failure survives cancellation and retains the last native pin', nativeOnly, async t => {
+  const f = await executorFixture(t), controller = new AbortController();
+  const failure = new Error('fixture command range cannot be observed');
+  const holds = new Set<NativeHold>(), information = NativeHold.prototype.information;
+  const capture = t.mock.method(NativeHold.prototype, 'information', function (this: NativeHold) {
+    if (dirname(this.path) === join(f.cache, 'generations')) holds.add(this);
+    return information.call(this);
+  });
+  const logged: unknown[][] = [];
+  const log = t.mock.method(f.providerContext.logger, 'error', (...args: unknown[]) => { logged.push(args); });
+  f.controls.range = async () => { throw failure; };
+  try {
+    const execution = await f.run({ signal: controller.signal });
+    controller.abort(new Error('caller cancellation'));
+    assert.equal((await execution.result()).aborted, true);
+    await f.dispose();
+    assert.ok(logged.flat().some(value => value instanceof AggregateError && value.errors.includes(failure)));
+    await assert.rejects(purgeRuntimeCache(f.cache), isBusy);
+    assert.ok(pathExists(invocation(f.spawned[0]!.spec).view));
+  } finally {
+    capture.mock.restore(); log.mock.restore();
+    // Simulate the final host-process teardown only AFTER asserting retention.
+    // A fake observation failure must not strand real fixture handles.
+    for (const hold of holds) hold.close();
+  }
 });

@@ -53,9 +53,7 @@ export async function runPrivateBash(options: PrivateBashLaunch): Promise<Privat
   let dllIdentity: FileIdentity, msysPath: string;
   try { dllIdentity = dll.information(); msysPath = dll.canonicalPath(); } finally { dll.close(); }
   const privateRoot = base.path;
-  for (const sid of [options.compatibility.pipeSid, options.compatibility.defaultDaclSid]) {
-    if (!/^S-1-(?:4|5-5)-\d+(?:-\d+)*$/.test(sid)) throw new Error('Expected an inherited capability or logon SID.');
-  }
+  const { grantSid } = options.compatibility;
   const api = debugApi(), ctx = new ThreadContext();
   const states = new Map<number, DebugState>();
   let state: DebugState, processHandle: NativePtr;
@@ -130,43 +128,40 @@ export async function runPrivateBash(options: PrivateBashLaunch): Promise<Privat
       const freshPrivatePipe = ownSignalPipe && state.msys !== undefined && (fromPrivateMsys || trustedForwarder)
         && (access & 0x80000) !== 0 && (mode & 8) !== 0 && instances === 1;
       let original: string | undefined;
-      if (options.compatibility.confined && attributes !== 0n) {
+      if (grantSid && freshPrivatePipe && attributes !== 0n) {
         const sd = remote64(attributes + 8n);
         if (sd) original = descriptorText(readDescriptor(processHandle, sd));
       }
-      if (options.compatibility.confined && freshPrivatePipe && attributes && original) {
-        grantPipe(processHandle, stack, attributes, original, options.compatibility.pipeSid); repaired++;
+      if (grantSid && original) {
+        grantPipe(processHandle, stack, attributes, original, grantSid); repaired++;
       }
-    } else if (slot === 1 && options.compatibility.confined) {
+    } else if (slot === 1 && grantSid) {
       const informationClass = Number(reg(registers.rdx));
       if (fromPrivateMsys && informationClass === 6 && reg(registers.r9) === 8n) {
         const original = defaultDaclText(processHandle, reg(registers.r8));
-        const defaultSid = options.compatibility.defaultDaclSid;
-        if (!original.includes(defaultSid)) {
-          ctx.write64(registers.r8, grantDefaultDacl(processHandle, original, defaultSid));
+        if (!original.includes(grantSid)) {
+          ctx.write64(registers.r8, grantDefaultDacl(processHandle, original, grantSid));
           defaultDaclAdjusted++;
         }
       }
-    } else if (slot === 2 && options.compatibility.confined) {
+    } else if (slot === 2 && grantSid && fromPrivateMsys && remote64(stack + 0x38n) === 0n) {
       const attributes = reg(registers.r8);
-      const pageFileBacked = remote64(stack + 0x38n) === 0n;
-      let name = '', rootName = '';
+      let rootName = '';
       let attrs: Buffer | undefined;
       if (attributes !== 0n) {
         const parsed = objectAttributes(processHandle, attributes);
-        attrs = parsed.attributes; name = parsed.name;
-        const root = parsed.root;
-        if (root && pageFileBacked && /^cygpid\.\d+$/.test(name) && fromPrivateMsys) rootName = objectName(processHandle, root);
+        attrs = parsed.attributes;
+        const { root, name } = parsed;
+        if (root && /^cygpid\.\d+$/.test(name)) rootName = objectName(processHandle, root);
       }
       const privateNamespaceVerified = state.installationKey !== undefined && rootName.toLowerCase().startsWith('\\basenamedobjects\\msys-')
         && rootName.toLowerCase().endsWith('-' + state.installationKey);
-      const ownMapping = state.msys !== undefined && pageFileBacked && /^cygpid\.\d+$/.test(name) && fromPrivateMsys && privateNamespaceVerified;
-      if (attrs) {
+      if (attrs && privateNamespaceVerified) {
         const descriptor = attrs.readBigUInt64LE(32);
         if (descriptor) {
           const original = descriptorText(readDescriptor(processHandle, descriptor));
-          if (ownMapping && !original.includes(options.compatibility.pipeSid)) {
-            ctx.write64(registers.r8, grantObjectAttributes(processHandle, attrs, original, options.compatibility.pipeSid));
+          if (!original.includes(grantSid)) {
+            ctx.write64(registers.r8, grantObjectAttributes(processHandle, attrs, original, grantSid));
             mappingsAdjusted++;
           }
         }
@@ -207,7 +202,7 @@ export async function runPrivateBash(options: PrivateBashLaunch): Promise<Privat
       if (state.pid !== pid) state.installationKey = familyKey;
     }
     state.hooks.forEach((hook, slot) => {
-      if (!x64 || name !== hook.module || (!options.compatibility.confined && (slot === 1 || slot === 2))) return;
+      if (!x64 || name !== hook.module || (!grantSid && (slot === 1 || slot === 2))) return;
       const localBase = api.module(hook.module);
       if (!valid(localBase)) throw new Error(`Missing ${hook.module}.`);
       const address = api.symbol(localBase, hook.symbol);
@@ -270,7 +265,7 @@ export async function runPrivateBash(options: PrivateBashLaunch): Promise<Privat
         else if (event.code === 0x80000003 && state.firstBreakpoint) {
           if (!cleanup) {
             verifyLoaderPath(true);
-            if (state.msys && state.hooks.some((hook, i) => (options.compatibility.confined || i === 0 || i === 3) && hook.address === undefined)) throw new Error('Required MSYS startup hooks are unavailable.');
+            if (state.msys && state.hooks.some((hook, i) => (grantSid || i === 0 || i === 3) && hook.address === undefined)) throw new Error('Required MSYS startup hooks are unavailable.');
           }
           state.firstBreakpoint = false;
         } else disposition = 0x80010001;

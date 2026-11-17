@@ -144,12 +144,17 @@ export function waitDebugEvent(milliseconds: number): DebugEvent | undefined {
 }
 
 /** Query only: DSH creates the token and policy; the plugin never relaxes it. */
-export interface IpcCompatibility { readonly confined: boolean; readonly pipeSid: string; readonly defaultDaclSid: string }
+export interface IpcCompatibility { readonly grantSid: string | undefined }
 export function inheritedCompatibility(mode: SandboxMode): IpcCompatibility {
   const api = debugApi(), output = Buffer.alloc(8);
   checked(api.openToken(api.currentProcess(), 8, output), 'OpenProcessToken(query)');
   const token = pointer(output);
   try {
+    requireJobMember(api.currentProcess(), null);
+    if (mode === 'danger-full-access') {
+      if (api.restricted(token)) throw new Error('Full-access policy cannot use a restricted inherited token.');
+      return { grantSid: undefined };
+    }
     const query = (kind: number): Buffer => {
       const needed = Buffer.alloc(4);
       api.tokenInfo(token, kind, null, 0, needed);
@@ -168,19 +173,14 @@ export function inheritedCompatibility(mode: SandboxMode): IpcCompatibility {
     };
     const logon = groups(2).find(group => ((group.attributes & 0xc0000000) >>> 0) === 0xc0000000)?.sid;
     if (!logon) throw new Error('The inherited token has no logon SID.');
-    requireJobMember(api.currentProcess(), null);
-    if (mode === 'danger-full-access') {
-      if (api.restricted(token)) throw new Error('Full-access policy cannot use a restricted inherited token.');
-      return { confined: false, pipeSid: logon, defaultDaclSid: logon };
-    }
     const restrictions = groups(11).map(group => group.sid);
     const user = sidText(query(1)), integrity = sidText(query(25));
     const capabilities = restrictions.filter(value => value.startsWith('S-1-4-'));
     if (!api.restricted(token) || integrity !== 'S-1-16-4096' || restrictions.includes(user)
       || restrictions.includes('S-1-5-11') || !restrictions.includes(logon)) throw new Error('DSH Windows sandbox restrictions are missing.');
-    if (mode === 'read-only' && capabilities.length === 0) return { confined: true, pipeSid: logon, defaultDaclSid: logon };
+    if (mode === 'read-only' && capabilities.length === 0) return { grantSid: logon };
     const temp = tempWriteSid(tmpdir());
-    if (mode === 'workspace-write' && capabilities.includes(temp)) return { confined: true, pipeSid: temp, defaultDaclSid: temp };
+    if (mode === 'workspace-write' && capabilities.includes(temp)) return { grantSid: temp };
     throw new Error('The inherited DSH mode or private-temp capability is incompatible.');
   } finally { close(token); }
 }

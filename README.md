@@ -129,6 +129,12 @@ joins debug-event exits and actual Job settlement before returning; after the ro
 exits, surviving descendants receive the configured grace period before Job
 termination. Admission or native cleanup failure fails the execution without an
 unrestricted retry.
+The pinned native Shell exposes target completion before the subprocess range is
+necessarily empty. A per-command Cordis receiver waits for DSH's existing
+`waitForExit()` before releasing the runtime use, including cancellation or a
+launcher crash; sibling subprocess consumers are unaffected. Failed range
+observation is reported at disposal and retains the existing pin reference until
+host-process exit, so an unconfirmed shutdown cannot authorize cache collection.
 
 `GitBashExecutor.rebuildRuntime()` is implemented as a backend operation, with no UI
 binding or workspace argument. It always prepares a fresh generation. A ready pin

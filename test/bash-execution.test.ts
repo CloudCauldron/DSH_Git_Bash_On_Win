@@ -450,7 +450,8 @@ await test('native cleanup failure inside lease admission remains owned after cu
     let injected = false;
     const close = t.mock.method(NativeHold.prototype, 'close', function (this: NativeHold) {
       originalClose.call(this);
-      if (!injected && this.path === join(generation, 'views')) { injected = true; throw failure; }
+      // Early cancellation skips views; unwinding must still close the retired pin.
+      if (!injected && this.path === (cancelled ? generation : join(generation, 'views'))) { injected = true; throw failure; }
     });
     const realpath = t.mock.method(fsp, 'realpath', (async (...args: Parameters<typeof fsp.realpath>) => {
       if (String(args[0]) === f.workspace) { entered.resolve(); await resume.promise; }

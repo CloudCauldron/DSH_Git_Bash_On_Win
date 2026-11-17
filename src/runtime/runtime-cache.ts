@@ -330,11 +330,13 @@ class RuntimePin implements GenerationPin {
 
   async lease(scope: Pick<SandboxExecutionPolicy, 'mode' | 'workspaceRoot' | 'sessionId'>, signal: AbortSignal): Promise<RuntimeUse> {
     if (this.retired) throw new Error('Runtime generation pin is retired.');
+    signal.throwIfAborted();
     this.references++;
     let transferred = false;
     let view: string | undefined;
     try {
       const workspace = await canonicalWorkspace(scope.workspaceRoot);
+      signal.throwIfAborted();
       if (overlaps(workspace, this.record.sourceRoot) || overlaps(workspace, this.root.path)) throw new Error('Workspace must not overlap Git source or runtime cache.');
       const key = scope.sessionId === undefined ? undefined : JSON.stringify([scope.mode, workspace.toLowerCase(), scope.sessionId]);
       view = await this.view(key);

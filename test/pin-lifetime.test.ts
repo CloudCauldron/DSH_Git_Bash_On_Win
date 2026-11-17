@@ -3,7 +3,7 @@ import fs, { readdirSync, unlinkSync } from 'node:fs';
 import fsp from 'node:fs/promises';
 import { syncBuiltinESMExports } from 'node:module';
 import { mkdir, readFile, rename, symlink, writeFile } from 'node:fs/promises';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, join, toNamespacedPath } from 'node:path';
 import { test } from 'node:test';
 import type { SandboxExecutionPolicy } from '@deepseek-ai/dsh-sandbox';
 import { nativeOnly, runtimeFixture } from './fixtures.ts';
@@ -94,11 +94,26 @@ await test('retain-before-await protects an acquiring use through retirement and
 
 await test('session view promises are shared, agentless views are distinct, and cancelled waiters unwind', nativeOnly, async t => {
   const fixture = await runtimeFixture(t), pin = await fixture.prepare(), cancelled = new AbortController();
+  const originalWorkspace = fsp.realpath, originalTarget = fs.realpathSync;
+  const workspace = await originalWorkspace(fixture.workspace);
+  let resume!: (path: string) => void, created = '';
+  const resolved = new Promise<string>(resolve => { resume = resolve; });
+  const admission = t.mock.method(fsp, 'realpath', ((...args: Parameters<typeof fsp.realpath>) =>
+    String(args[0]) === fixture.workspace ? resolved : originalWorkspace(...args)) as typeof fsp.realpath);
+  const target = t.mock.method(fs, 'realpathSync', ((...args: Parameters<typeof fs.realpathSync>) => {
+    if (!created && basename(dirname(dirname(String(args[0])))) === 'views') {
+      created = String(args[0]); cancelled.abort();
+    }
+    return originalTarget(...args);
+  }) as typeof fs.realpathSync); syncBuiltinESMExports();
   const failed = pin.lease(scope(fixture.workspace, 'session'), cancelled.signal);
   const active = pin.lease(scope(fixture.workspace, 'session'), signal());
-  cancelled.abort();
-  await assert.rejects(failed, { name: 'AbortError' });
+  // Both workspace awaits resume before the shared view's creation microtask.
+  resume(workspace);
+  try { await assert.rejects(failed, { name: 'AbortError' }); }
+  finally { admission.mock.restore(); target.mock.restore(); syncBuiltinESMExports(); }
   const use = await active;
+  assert.equal(created, toNamespacedPath(use.installationRoot), 'the surviving waiter must use the junction created during cancellation');
   const next = await pin.lease(scope(fixture.workspace, 'session'), signal());
   assert.equal(next.installationRoot, use.installationRoot);
   await use.release(); await next.release();
@@ -286,6 +301,20 @@ await test('unexpected EEXIST at a view name is neither adopted nor deleted by i
   assert.equal(fs.existsSync(collision), false);
 });
 
+await test('an already-aborted lease skips workspace admission and view creation', nativeOnly, async t => {
+  const f = await runtimeFixture(t), pin = await f.prepare();
+  const generation = join(f.cache, 'generations', (await f.current()).generationId);
+  const cancelled = AbortSignal.abort(new Error('fixture caller already left'));
+  const admission = t.mock.method(fsp, 'realpath');
+  syncBuiltinESMExports();
+  try {
+    await assert.rejects(pin.lease(scope(f.workspace, 'session'), cancelled), error => error === cancelled.reason);
+    assert.equal(admission.mock.callCount(), 0, 'an already-aborted lease must not start workspace admission');
+    assert.equal(pathExists(join(generation, 'views')), false);
+  } finally { admission.mock.restore(); syncBuiltinESMExports(); }
+  await pin.release();
+});
+
 await test('cancelled admission retains its one reference until the awaited operation finishes', nativeOnly, async t => {
   const f = await runtimeFixture(t), pin = await f.prepare(), cancelled = new AbortController();
   const original = fsp.realpath;
@@ -303,6 +332,7 @@ await test('cancelled admission retains its one reference until the awaited oper
     await started; cancelled.abort(); await pin.release();
     assert.throws(() => claimDirectory(admitDirectory(generation)), isBusy);
     resume(); await rejected;
+    assert.equal(pathExists(join(generation, 'views')), false);
     const claim = claimDirectory(admitDirectory(generation)); claim.close();
   } finally { resume(); mock.mock.restore(); syncBuiltinESMExports(); }
 });

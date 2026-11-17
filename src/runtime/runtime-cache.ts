@@ -64,7 +64,16 @@ function admitRoot(path: string, create: boolean): Directory | undefined {
   if (!pathExists(path)) {
     if (!create) { admitDirectory(dirname(path)); return undefined; }
     const parent = admitDirectory(dirname(path));
-    const root = createDirectory(parent, basename(path));
+    let root: Directory;
+    try { root = createDirectory(parent, basename(path)); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      // Another process may have completed ownership while mkdir was pending.
+      // Reuse normal admission; an incomplete or unknown marker still fails F1.
+      const competing = admitRoot(path, false);
+      if (competing) return competing;
+      throw error;
+    }
     try { writeNewMetadata(root, markerName, { schemaVersion: 1, owner: 'dsh-git-bash-on-win', rootPath: root.path, volumeSerial: root.volumeSerial, fileId: root.fileId }); }
     catch (error) { bestEffort(() => removeEmptyDirectory(root)); throw error; }
     return root;
@@ -336,13 +345,11 @@ class RuntimePin implements GenerationPin {
     } finally { await this.dropReference(); }
   }
 
-  private dropReference(): Promise<void> {
+  private async dropReference(): Promise<void> {
     this.references--;
-    if (this.references !== 0 || !this.retired) return Promise.resolve();
-    return (async () => {
-      try {
-        if (this.namespace) bestEffort(() => removeTree(admitChildDirectory(this.generation, 'views'), this.instance));
-      } finally { this.views.clear(); this.hold.close(); }
-    })();
+    if (this.references !== 0 || !this.retired) return;
+    try {
+      if (this.namespace) bestEffort(() => removeTree(admitChildDirectory(this.generation, 'views'), this.instance));
+    } finally { this.views.clear(); this.hold.close(); }
   }
 }

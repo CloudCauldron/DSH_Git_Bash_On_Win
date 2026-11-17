@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs, { readFileSync, readdirSync } from 'node:fs';
 import { cp, link, mkdir, readFile, rename, stat, symlink, unlink, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, toNamespacedPath } from 'node:path';
 import { syncBuiltinESMExports } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
@@ -111,7 +111,7 @@ await test('ordinary paths require a volume root and current metadata keeps cano
 await test('root creation unwinds an empty directory when its ownership-marker write fails', nativeOnly, async t => {
   const fixture = await runtimeFixture(t), original = fs.writeFileSync;
   const mock = t.mock.method(fs, 'writeFileSync', (...args: Parameters<typeof fs.writeFileSync>) => {
-    if (args[0] === join(fixture.cache, '.owner.json')) throw new Error('fixture ownership write failure');
+    if (args[0] === toNamespacedPath(join(fixture.cache, '.owner.json'))) throw new Error('fixture ownership write failure');
     return original(...args);
   });
   syncBuiltinESMExports();
@@ -242,6 +242,33 @@ await test('concurrent preparations recheck under the writer lock and own indepe
   try { assert.equal((await fixture.current()).generationId, id); } finally { await alias.release(); }
 });
 
+await test('a competing process can finish root ownership before the losing mkdir resumes', nativeOnly, async t => {
+  const fixture = await runtimeFixture(t), original = fs.mkdirSync;
+  let competed = false;
+  const mock = t.mock.method(fs, 'mkdirSync', (...args: Parameters<typeof fs.mkdirSync>) => {
+    if (!competed && args[0] === toNamespacedPath(fixture.cache)) {
+      competed = true;
+      const program = `
+        const [module, cacheDirectory, gitBashPath] = process.argv.slice(1);
+        const { prepareRuntime } = await import(module);
+        const pin = await prepareRuntime({ cacheDirectory, gitBashPath,
+          spawn() { throw new Error('Unexpected subprocess'); } }, new AbortController().signal);
+        await pin.release();
+      `;
+      execFileSync(process.execPath, ['--input-type=module', '-e', program,
+        new URL('../src/runtime/runtime-cache.ts', import.meta.url).href, fixture.cache, fixture.request.gitBashPath!], { timeout: 10_000 });
+    }
+    return original(...args);
+  });
+  syncBuiltinESMExports();
+  try {
+    const pin = await fixture.prepare();
+    assert.equal(competed, true);
+    assert.equal(readdirSync(join(fixture.cache, 'generations')).length, 1);
+    await pin.release();
+  } finally { mock.mock.restore(); syncBuiltinESMExports(); }
+});
+
 await test('a writer-close failure reports failure and does not leak the unpublished return value', nativeOnly, async t => {
   const fixture = await runtimeFixture(t), original = NativeHold.prototype.close;
   let injected = false;
@@ -298,6 +325,36 @@ await test('purge owns the entire interior but removes junctions without visitin
   await purgeRuntimeCache(fixture.cache);
   assert.equal(await readFile(join(outside, 'sentinel'), 'utf8'), 'keep');
   assert.equal(pathExists(fixture.cache), false);
+});
+
+await test('purge preserves a source read-only bit and reports the obstruction explicitly', nativeOnly, async t => {
+  const fixture = await runtimeFixture(t), source = join(fixture.source, 'usr/bin/bash.exe');
+  const originalLinks = (await stat(source)).nlink;
+  const pin = await fixture.prepare(); await pin.release();
+  execFileSync('attrib.exe', ['+R', source]);
+  try {
+    const readOnlyMode = (await stat(source)).mode;
+    await assert.rejects(purgeRuntimeCache(fixture.cache), error => (error as { win32Code?: number }).win32Code === 5);
+    assert.equal((await stat(source)).mode, readOnlyMode);
+    assert.ok(pathExists(join(fixture.cache, '.owner.json')));
+  } finally { execFileSync('attrib.exe', ['-R', source]); }
+  await purgeRuntimeCache(fixture.cache);
+  assert.equal((await stat(source)).nlink, originalLinks);
+});
+
+await test('purge addresses unusual enumerated NTFS names exactly and restores their hardlink counts', nativeOnly, async t => {
+  const fixture = await runtimeFixture(t), source = join(fixture.source, 'etc/profile');
+  const originalLinks = (await stat(source)).nlink;
+  const pin = await fixture.prepare(); await pin.release();
+  const unusualGeneration = toNamespacedPath(join(fixture.cache, 'generations', 'generation '));
+  await mkdir(unusualGeneration);
+  await link(source, join(unusualGeneration, 'payload.'));
+  await link(source, toNamespacedPath(join(fixture.cache, 'manual ')));
+  assert.ok(readdirSync(join(fixture.cache, 'generations')).includes('generation '));
+  assert.ok(readdirSync(unusualGeneration).includes('payload.'));
+  await purgeRuntimeCache(fixture.cache);
+  assert.equal(pathExists(fixture.cache), false);
+  assert.equal((await stat(source)).nlink, originalLinks);
 });
 
 await test('a generations junction is removed as an object, never admitted as a runtime tree', nativeOnly, async t => {

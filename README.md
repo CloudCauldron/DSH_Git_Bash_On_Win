@@ -82,7 +82,10 @@ This purges both the supplied profile cache and the package `.runtime` fallback.
 Only a root with this implementation's valid ownership marker is admitted; an old,
 markerless or unrecognized directory is refused without deletion. Recovery uses
 ordinary plan unlink and native generation claims; a busy pin or plan prevents
-completion. After an obstruction clears, rerun purge. For offline rebuilding,
+completion. Deletion uses checked `DeleteFileW`/`RemoveDirectoryW` calls without
+attribute repair; read-only files cause an explicit obstruction. Enumerated names
+are addressed exactly, including unusual trailing characters. After an obstruction
+clears, rerun purge. For offline rebuilding,
 retain the package and settings. Automatic cold preparation on the next Bash call
 will become available with the executor integration.
 

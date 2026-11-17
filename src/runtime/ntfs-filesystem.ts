@@ -1,4 +1,4 @@
-import { linkSync, lstatSync, mkdirSync, readdirSync, realpathSync, rmdirSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { linkSync, lstatSync, mkdirSync, readdirSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
 import { realpath } from 'node:fs/promises';
 import { dirname, isAbsolute, join, parse, relative, resolve, sep, toNamespacedPath } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -26,6 +26,8 @@ interface FileBindings {
   finalPath(handle: NativePtr, buffer: Buffer, size: number, flags: number): number;
   volume(handle: NativePtr, label: null, labelSize: number, serial: null, component: null, flags: null, filesystem: Buffer, size: number): number;
   readBytes(handle: NativePtr, buffer: Buffer, size: number, read: Buffer, overlapped: null): number;
+  deleteFile(path: string): number;
+  removeDirectory(path: string): number;
 }
 
 let bindings: ReturnType<typeof extendWin32ProcessBindings<FileBindings>> | undefined;
@@ -38,6 +40,8 @@ function api() {
     finalPath: bind(kernel32, 'GetFinalPathNameByHandleW', 'uint32', ['void *', 'void *', 'uint32', 'uint32']),
     volume: bind(kernel32, 'GetVolumeInformationByHandleW', 'int', ['void *', 'void *', 'uint32', 'void *', 'void *', 'void *', 'void *', 'uint32']),
     readBytes: bind(kernel32, 'ReadFile', 'int', ['void *', 'void *', 'uint32', 'void *', 'void *']),
+    deleteFile: bind(kernel32, 'DeleteFileW', 'int', ['str16']),
+    removeDirectory: bind(kernel32, 'RemoveDirectoryW', 'int', ['str16']),
   }) as FileBindings);
 }
 
@@ -194,7 +198,9 @@ export function revalidateDirectory(directory: Directory): void {
 }
 
 export function childPath(parent: Directory, name: string): string {
-  if (!name || name === '.' || name === '..' || /[\\/:\0]/.test(name) || /[. ]$/.test(name)) throw new Error(`Invalid child name: ${name}`);
+  // Enumerated interior names need not be valid generation IDs or conventional
+  // Win32 spellings. Preserve one exact component, including trailing dots/spaces.
+  if (!name || name === '.' || name === '..' || /[\\/:\0]/.test(name)) throw new Error(`Invalid child name: ${name}`);
   return join(parent.path, name);
 }
 
@@ -216,7 +222,7 @@ export function createDirectory(parent: Directory, name: string): Directory {
 }
 
 function createChildDirectory(parent: Directory, name: string): Directory {
-  mkdirSync(childPath(parent, name), { mode: 0o700 });
+  mkdirSync(toNamespacedPath(childPath(parent, name)), { mode: 0o700 });
   return admitChildDirectory(parent, name);
 }
 
@@ -246,7 +252,7 @@ export function readMetadata(parent: Directory, name: string, maxBytes: number):
 
 export function writeNewMetadata(parent: Directory, name: string, value: unknown): void {
   revalidateDirectory(parent);
-  writeFileSync(childPath(parent, name), `${JSON.stringify(value)}\n`, { flag: 'wx', mode: 0o600 });
+  writeFileSync(toNamespacedPath(childPath(parent, name)), `${JSON.stringify(value)}\n`, { flag: 'wx', mode: 0o600 });
 }
 
 function directoryHold(directory: Directory, access: number, sharing: number): NativeHold {
@@ -311,7 +317,7 @@ export function createHardlink(sourceParent: Directory, sourceName: string, targ
     // Keep admission and the syscall in one synchronous operation. Queuing an
     // async link would let a renamed/junction-replaced parent redirect the write
     // while it waits in libuv. The caller yields between bounded batches.
-    try { linkSync(source.path, childPath(targetParent, targetName)); }
+    try { linkSync(toNamespacedPath(source.path), toNamespacedPath(childPath(targetParent, targetName))); }
     catch (error) {
       if (['EACCES', 'EPERM'].includes((error as NodeJS.ErrnoException).code ?? '')) Object.assign(error as object, { linkPermissionDenied: true });
       throw error;
@@ -323,7 +329,7 @@ export function createJunction(parent: Directory, name: string, target: Director
   revalidateDirectory(parent);
   revalidateDirectory(target);
   const path = childPath(parent, name);
-  symlinkSync(target.path, path, 'junction'); // EEXIST is never adopted.
+  symlinkSync(toNamespacedPath(target.path), toNamespacedPath(path), 'junction'); // EEXIST is never adopted.
   try { admitJunction(parent, name, target); }
   catch (error) {
     // Only a successfully created name is ours to clean up on failed admission.
@@ -338,7 +344,7 @@ export function admitJunction(parent: Directory, name: string, target: Directory
   const path = childPath(parent, name), info = inspect(path);
   if (!(info.attributes & ATTR_REPARSE) || info.reparseTag !== MOUNT_POINT) throw new Error(`Unexpected runtime junction: ${path}`);
   let actual: string;
-  try { actual = realpathSync(path); }
+  try { actual = ordinaryPath(realpathSync(toNamespacedPath(path))); }
   catch (cause) { throw new Error(`Unexpected runtime junction: ${path}`, { cause }); }
   if (!samePath(actual, target.path)) {
     throw new Error(`Unexpected runtime junction: ${path}`);
@@ -350,7 +356,7 @@ export async function canonicalWorkspace(path: string): Promise<string> { return
 /** Includes malformed names; enumeration does not grant permission to follow links. */
 export function children(directory: Directory): string[] {
   revalidateDirectory(directory);
-  return readdirSync(directory.path);
+  return readdirSync(toNamespacedPath(directory.path));
 }
 
 export function ordinaryChildDirectory(parent: Directory, name: string): Directory | undefined {
@@ -372,10 +378,17 @@ export function unlinkEntry(parent: Directory, name: string): void {
 function unlinkObserved(path: string, info: FileInformation): void {
   if (info.attributes & ATTR_REPARSE) {
     if (![MOUNT_POINT, SYMLINK].includes(info.reparseTag)) throw new Error(`Unsupported reparse tag at ${path}`);
-    if (info.attributes & ATTR_DIRECTORY) rmdirSync(path); else unlinkSync(path);
+    if (info.attributes & ATTR_DIRECTORY) { removeDirectoryName(path); return; }
   } else if (info.attributes & ATTR_DIRECTORY) {
     throw new Error(`Expected an unlinkable name, not a directory: ${path}`);
-  } else unlinkSync(path);
+  }
+  // libuv's unlink/rmdir fallback can clear READONLY on the shared file.
+  // Ordinary Win32 deletion reports obstructions without repairing attributes.
+  if (!api().deleteFile(toNamespacedPath(path))) throwLastError(api(), 'DeleteFileW', path);
+}
+
+function removeDirectoryName(path: string): void {
+  if (!api().removeDirectory(toNamespacedPath(path))) throwLastError(api(), 'RemoveDirectoryW', path);
 }
 
 /** Caller owns any required generation claim; this primitive has no cache policy. */
@@ -397,7 +410,7 @@ export function removeDirectoryTree(directory: Directory): void {
 
 export function removeEmptyDirectory(directory: Directory): void {
   revalidateDirectory(directory);
-  rmdirSync(directory.path);
+  removeDirectoryName(directory.path);
 }
 
 /** Node enumeration hints are not authoritative for reparse/read-only admission. */
@@ -410,5 +423,5 @@ export function ordinaryFileExists(parent: Directory, name: string): boolean {
 }
 
 export function pathExists(path: string): boolean {
-  try { lstatSync(path); return true; } catch (error) { if (isMissing(error)) return false; throw error; }
+  try { lstatSync(toNamespacedPath(path)); return true; } catch (error) { if (isMissing(error)) return false; throw error; }
 }

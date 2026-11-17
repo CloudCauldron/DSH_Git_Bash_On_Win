@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { readFileSync, readdirSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
-import { createRequire } from 'node:module';
+import { createRequire, findPackageJSON } from 'node:module';
 import { dirname, join, relative, resolve } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -110,7 +110,9 @@ await test('public pinned dependencies resolve and atomic-write is usable', asyn
   assert.equal(packageJson.engines.dsh, SUPPORTED_DSH);
   assert.equal(packageJson.dependencies['@deepseek-ai/dsh-atomic-write'], SUPPORTED_DSH);
   for (const [name, version] of Object.entries({ ...packageJson.dependencies, ...packageJson.peerDependencies })) {
-    const metadata = JSON.parse(readFileSync(require.resolve(`${name}/package.json`), 'utf8')) as { version: string };
+    const manifest = findPackageJSON(name, import.meta.url);
+    assert.ok(manifest, name);
+    const metadata = JSON.parse(readFileSync(manifest, 'utf8')) as { version: string };
     assert.equal(metadata.version, version, name);
     assert.ok(require.resolve(name));
   }

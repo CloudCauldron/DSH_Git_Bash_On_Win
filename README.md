@@ -1,8 +1,8 @@
 # DSH Git Bash on Windows
 
 Backend refactor for native Windows x64, Node 26+ and DSH **0.2.2-rc.2**.
-**Phases 1–2 provide maintained inputs, local cache preparation, native pin lifetime
-and strict cache purge. UAC, executor and debugger integration remain pending.
+**Phases 1–3 provide maintained inputs, cache preparation, optional guarded UAC,
+native pin lifetime and strict cache purge. Executor and debugger integration remain pending.
 Do not install or publish this tree.** Execution and package-manager entries remain
 gated; `prepack` blocks release packaging.
 
@@ -28,6 +28,8 @@ also cover `scripts/` and `test/`; `pnpm test` rebuilds and runs maintained
 `node --test` cases. The TypeScript 7 compiler uses the `@typescript/native`
 alias; TypeScript 6 supplies the API required by typescript-eslint.
 Public DSH dependencies, including `@deepseek-ai/dsh-atomic-write`, are pinned.
+The broker declares Koffi 3.1.1 (the SDK's existing version) for ShellExecuteEx/COM,
+which the SDK does not expose; process wait/close still use the public DSH helpers.
 
 Bootstrap tests verify the native schema, Loader entry/configuration identity,
 installed CLI discovery, public dependency resolution and transitive input
@@ -36,7 +38,29 @@ The native Phase 2 suites verify root ownership, bounded inventory/linking,
 single-record publication, warm admission, pin/collector sharing, interrupted
 collection/purge, view lifetime and cleanup. Fixtures contain owned source files;
 tests verify restored source link counts and unchanged contents/ACLs after purge.
-These checks do not establish UAC or real DSH Bash execution correctness.
+The Phase 3 suite verifies probe-only escalation, independent helper admission and
+inventory, plan/lease sharing, cancellation/draining, failed native wait/exit/close
+outcomes, and publication gates. It also runs the fixed helper through a real
+isolated DSH subprocess provider and terminates a broker fixture blocked in a
+native call. Typecheck, lint and all **84** default Windows tests pass, with zero
+skips. These checks do not establish real consent-dialog or DSH Bash execution
+correctness. Close-failure injection reports failure after closing the test handle;
+it does not reproduce an unrecoverable kernel handle fault.
+
+For explicit manual consent checks, build first, then run either command in
+Windows-native Git Bash and answer the Windows prompt as specified:
+
+```bash
+pnpm build
+DSH_GIT_BASH_UAC_TEST=approve node --test --test-name-pattern='manual UAC' test/provisioning.test.ts
+DSH_GIT_BASH_UAC_TEST=deny node --test --test-name-pattern='manual UAC' test/provisioning.test.ts
+```
+
+This lane forces only the initial probe denial on an owned source fixture, then
+uses the production broker/helper and strict fixture purge. It changes no installed
+Git ACLs and opens no personal profile. It is not registered in the default suite.
+Real consent approval/denial and late-consent cancellation remain manual release
+verification; they were not exercised during Phase 3 implementation.
 
 `scripts/installed-dsh.ts` discovers the installed CLI without loading a profile.
 If discovery is ambiguous, set `DSH_PACKAGE_JSON` for the current process to the
@@ -105,10 +129,21 @@ The six-anchor warm check is a bounded freshness sample, not a full-tree
 comparison. Restart does not promise non-anchor repair; explicit rebuild restores
 layout from installed Git and cannot repair damaged source bytes.
 
-Local preparation probes one Bash hardlink before inventory, then links one fresh
-base and atomically publishes `current.json`. A permission denial at that probe
-currently reports that Phase 3 elevation is unavailable. Other setup failures drain
-work and leave no published partial generation. Preparation and recovery do not run
-archived helpers. Warm hits do not create owner files, scan the tree, collect old
-generations or wait on the writer lock. Native fixture measurements are reported
-by the tests; 5 ms remains an unestablished target.
+Preparation probes one Bash hardlink before inventory. Only a permission denial
+from that link creation selects the fixed elevated linker; a later failure never
+resets the base or triggers another UAC pass. The helper validates the immutable
+plan and existing NTFS identities, inventories independently and holds the plan
+exclusively while linking. Source contents and ACLs remain unchanged.
+
+The parent requires an uncancelled normal broker zero exit and DSH managed-range
+settlement before final admission and atomic publication of `current.json`.
+Cancellation closes the setup-only lease, then gives the broker a short grace
+before DSH termination/join. This does not promise dismissal of consent or exit
+of an independently elevated helper. Its revoked candidate stays unpublished;
+the exclusive plan handle prevents guarded GC/purge from traversing active payload.
+Once that obstruction clears, normal guarded recovery can remove the residue.
+
+Preparation and recovery do not run archived helpers. Warm hits do not create
+owner files, scan the tree, collect old generations or wait on the writer lock.
+Native fixture measurements are reported by the tests; 5 ms remains an
+unestablished target.

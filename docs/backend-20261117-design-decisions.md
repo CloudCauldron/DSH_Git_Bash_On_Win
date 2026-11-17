@@ -1,6 +1,6 @@
 # Backend design decisions
 
-Decisions recorded on 15–16 November 2026; Phase 0 contract baseline recorded on 17 November. Phases 1–2 now implement maintained inputs, local cache preparation, native pins and guarded recovery. UAC, executor/debugger integration and release verification remain pending.
+Decisions recorded on 15–16 November 2026; Phase 0 contract baseline recorded on 17 November. Phases 1–3 now implement maintained inputs, cache preparation, guarded optional elevation/F4, native pins and recovery. Executor/debugger integration and release verification, including real modal UAC, remain pending. Phase 3's implementation and verification limits are recorded in the [roadmap](backend-20261117-refactor-roadmap.md#phase-3--fresh-elevation-and-f4).
 
 The backend will make Git Bash work inside DSH on native Windows x64 while retaining DSH's execution policy, tools and settings. We chose a small compatibility layer, one shared runtime base, lazy preparation and explicit ownership of files and processes. Ordinary Git Bash, other applications, WSL and non-Windows DSH keep their existing behavior.
 

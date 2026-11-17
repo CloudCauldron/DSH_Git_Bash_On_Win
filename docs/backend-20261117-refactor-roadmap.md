@@ -6,7 +6,7 @@ Revised: 2026-11-17
 
 Baseline: 6c410c5a2496c30c9883fe471b38d9920c5c2675
 
-Status: Phase 0 contract baseline and Phases 1–2 implementation complete. Maintained native Phase 2 verification covers local preparation, ownership, pins and recovery. Phases 3–6 (UAC, executor/debugger integration and release verification) remain pending.
+Status: Phase 0 contract baseline and Phases 1–3 implementation complete. Maintained native verification covers cache preparation, guarded provisioning/F4, ownership, pins and recovery. Phases 4–6 (executor/debugger integration and release verification, including real modal UAC) remain pending.
 
 The versioned specification is [docs/backend-20261117-refactor-roadmap.md](../docs/backend-20261117-refactor-roadmap.md), promoted from the local planning roadmap on 2026-11-17. The [Phase 0 review checklist](../docs/backend-20261117-contract-baseline.md) records the implementation gates and verification handoff.
 
@@ -159,7 +159,7 @@ runtime-cache owns cache state and lifetime. git-installation owns source layout
 | 5 — Launcher/debugger | Type/refactor §4.4 while preserving verified native behavior and DSH ownership. |
 | 6 — Integration/package | Run §10, document recovery, freshness limits, explicit rebuilding and ownership/IO obstructions, then package. Implement guarded recovery rather than a permanent-freeze policy. |
 
-Archive relocation and Phases 1–2 are complete. Continue reviewing new modules against these contracts and preserved behavior independently of obsolete test internals. Phase 2 exposes the cache factory and pin lifetime for maintained tests; executor wiring remains Phase 4, and link-permission denial stays explicitly gated until Phase 3 supplies guarded UAC provisioning.
+Archive relocation and Phases 1–3 are complete. Continue reviewing new modules against these contracts and preserved behavior independently of obsolete test internals. The cache factory now selects guarded UAC only at the admitted probe-permission boundary; executor wiring remains Phase 4.
 
 ## 4. MINIMAL INTERNAL APIs
 
@@ -529,7 +529,7 @@ Phase 2 completed on 2026-11-17:
 - Implemented F1 ownership, the lock-free read/pin/selector-recheck path, local probe/link/capture/atomic publication, guarded unused-generation collection, pin references/direct views and strict whole-interior purge. The cleanup entry purges both profile and fallback caches. Existing source contents/ACLs are untouched by production operations; hardlink bookkeeping retains the approved exception.
 - Maintained Windows verification covers native sharing in both acquisition orders, ownerless warm admission while a writer is held, all-generation purge preflight, stale readers after interrupted arbitrary-order GC, interrupted purge, retained uses, cancellation, source separation, malformed controls, non-following cleanup and residue recovery. CLI verification uses an isolated package/profile/fallback fixture. No personal profile or archived helper is loaded.
 - `pnpm check`, `pnpm lint` and `pnpm test:windows` pass: 35 tests, zero skips, including the seven bootstrap checks. The fixture metadata/anchor warm path measured approximately 11–13 ms on Windows x64 Node 26.12.1 with the pinned DSH dependencies; this is not a full-installation benchmark or a 5 ms guarantee.
-- Optional elevation remains Phase 3: only an admitted probe's actual link-permission failure reaches its explicit unavailable error. No UAC is requested by this implementation or default tests. Executor/rebuild orchestration, child admission/debugger behavior and real DSH execution remain Phases 4–6; release installation and packaging stay gated.
+- At Phase 2 completion, optional elevation remained gated for Phase 3. The implementation below replaces that gate with guarded provisioning; default tests still request no UAC. Executor/rebuild orchestration, child admission/debugger behavior and real DSH execution remain Phases 4–6; release installation and packaging stay gated.
 
 The first subsequent audit round reduced repeated native observations and full ancestor walks, reused the SDK's Win32 errors, tightened canonical-path and dangling-junction admission, repaired default Git discovery and empty-root failure cleanup, and made link syscalls synchronous within bounded yielding batches so admitted writes cannot remain queued behind unrelated libuv work. Typecheck, lint and all 41 maintained Windows tests passed.
 
@@ -542,6 +542,15 @@ A further fresh-context audit found a false positive in the interrupted-GC test:
 `pin-lifetime.test.ts` uses real Win32 sharing for both pin/collector acquisition orders (§§6.5, 8.1), retain-before-await and idempotent releases. Verify ownerless warm admission and purge preflight finding a pin in **any** generation before payload deletion. Interrupt arbitrary-order GC with non-anchor payload removed and all anchors intact; a delayed reader must fail §7.1's selector recheck. Also interrupt purge after unpublication. Reparse ancestors must never send cleanup outside the cache. Normal view-removal failure must still close native resources, and later strict purge must remove the residue.
 
 ### Phase 3 — Fresh elevation and F4
+
+Phase 3 completed on 2026-11-17:
+
+- Added only §2's three setup modules. `provision-runtime.ts` owns the bounded plan, setup lease and one awaited broker operation; the fixed helper shares Git inventory/linking and imports no cache owner. NTFS admission and handle/deletion flags remain centralized.
+- Only the admitted sibling probe's link-permission denial selects UAC. No controller inventory crosses elevation and no later failure resets/recreates the base. The helper binds paths and identities, requires an ordinary empty base and matching source layout, checks the setup lease between batches and retains its exclusive plan handle until issued work drains.
+- Both scripts default to failure. Broker success requires ShellExecuteEx's process handle, public DSH `pollProcessExit` observing zero and checked handle close. The parent separately joins the DSH managed range, closes its lease before returning from provisioning, then captures final anchors, admits runtime boundaries and ordinarily unlinks the plan before publishing. Cancellation revokes the lease before bounded local broker shutdown; unconfirmed elevated work remains subject to guarded collection.
+- Added the direct pinned Koffi dependency already used by the SDK solely for the broker's ShellExecuteEx/COM ABI. DSH retains process supervision, wait/close helpers and execution-policy ownership. No result channel, cancellation file, recursive helper cleanup, coordinator or new setup state machine was introduced.
+- `pnpm check`, `pnpm lint` and `pnpm test:windows` pass: **84 tests, zero skips**. The native provider lane executes the fixed helper as an ordinary child over owned source files, verifies restored source link counts and unchanged contents/ACLs after purge, and stops/joins a broker fixture blocked in native Sleep. Fault cases cover F4, rejected range observation, cancelled inventory/batches, late helper refusal, delete-pending lease inactivity, final-anchor admission and control cleanup failures. Injected close failures occur after actual test-handle closure; they do not prove recovery from a kernel close failure.
+- The explicitly invoked approval/denial lane is documented in the root README and opens real UAC only when requested. It was not run for this implementation. Actual consent/late-helper behavior and full DSH Bash execution remain manual/integration release gates; the default suite opens no consent prompt or personal profile.
 
 `provisioning.test.ts` covers §6's setup/recovery contracts:
 

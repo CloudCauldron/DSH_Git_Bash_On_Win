@@ -25,7 +25,8 @@
     "prepack": "node -e \"throw new Error('Backend refactor incomplete: runtime integration and release validation are pending; do not install or publish this package.');\""
   },
   "dependencies": {
-    "@deepseek-ai/dsh-atomic-write": "0.2.2-rc.2"
+    "@deepseek-ai/dsh-atomic-write": "0.2.2-rc.2",
+    "koffi": "3.1.1"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "4.1.0",

@@ -2,6 +2,9 @@ import { mkdtemp, rm, mkdir, writeFile, link, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import type { TestContext } from 'node:test';
+import type { Context } from '@deepseek-ai/cordis';
+import type Subprocess from '@deepseek-ai/dsh-subprocess';
+import { findInstalledDshManifest, installedDsh } from '../scripts/installed-dsh.ts';
 import { admitDirectory, removeTree } from '../src/runtime/ntfs-filesystem.ts';
 import { prepareRuntime, purgeRuntimeCache, type GenerationPin, type RuntimePreparation } from '../src/runtime/runtime-cache.ts';
 import { anchorPaths, type AnchorStamps, type GitLayout } from '../src/runtime/git-installation.ts';
@@ -36,7 +39,7 @@ export async function runtimeFixture(t: TestContext, layout: GitLayout = 'ucrt64
   }
   const request: RuntimePreparation = {
     cacheDirectory: cache, gitBashPath: join(source, 'usr/bin/bash.exe'),
-    spawn: () => { throw new Error('A Phase 2 fixture must never start a subprocess or open UAC.'); },
+    spawn: () => { throw new Error('This fixture must never start a subprocess or open UAC.'); },
   };
   return {
     directory, source, cache, workspace, request,
@@ -52,4 +55,19 @@ export async function runtimeFixture(t: TestContext, layout: GitLayout = 'ucrt64
       };
     },
   };
+}
+
+/** An isolated installed provider, with no Loader, settings or personal profile. */
+export async function localSpawn(t: TestContext): Promise<Subprocess['spawn'] | undefined> {
+  const manifest = findInstalledDshManifest();
+  if (!manifest) { t.skip('No installed DSH; set DSH_PACKAGE_JSON for native subprocess checks.'); return; }
+  const runtime = installedDsh(manifest);
+  const { Context } = await runtime.load(runtime.baseRequire, '@deepseek-ai/cordis') as typeof import('@deepseek-ai/cordis');
+  const { LocalSubprocessRuntime } = await runtime.load(runtime.baseRequire, '@deepseek-ai/dsh-subprocess-local') as {
+    LocalSubprocessRuntime: new (ctx: Context) => Subprocess;
+  };
+  const ctx = new Context();
+  t.after(() => ctx.fiber.dispose());
+  await ctx.plugin(LocalSubprocessRuntime);
+  return ctx.subprocess.spawn.bind(ctx.subprocess);
 }

@@ -4,6 +4,7 @@ import z from '@deepseek-ai/schemastery';
 import { writeFileAtomic } from '@deepseek-ai/dsh-atomic-write';
 import type { SandboxExecutionPolicy } from '@deepseek-ai/dsh-sandbox';
 import type Subprocess from '@deepseek-ai/dsh-subprocess';
+import { provisionRuntime } from '../setup/provision-runtime.ts';
 import {
   absolutePath, acquireWriterLock, admitChildDirectory, admitDirectory, admitJunction,
   bestEffort, canonicalWorkspace, children, claimDirectory, createDirectory, createHardlink,
@@ -164,7 +165,7 @@ export async function prepareRuntime(request: RuntimePreparation, signal: AbortS
     }
     const generations = ensureDirectory(root, 'generations');
     collectUnused(generations, currentRecord(root)?.generationId);
-    pin = await buildFresh(root, generations, source, signal);
+    pin = await buildFresh(root, generations, source, signal, request.spawn);
     return pin;
   } finally { await closePreparationLock(lock, pin); }
 }
@@ -178,7 +179,7 @@ async function closePreparationLock(lock: NativeHold, pin: GenerationPin | undef
   }
 }
 
-async function buildFresh(root: Directory, generations: Directory, source: GitInstallation, signal: AbortSignal): Promise<GenerationPin> {
+async function buildFresh(root: Directory, generations: Directory, source: GitInstallation, signal: AbortSignal, spawn: Subprocess['spawn']): Promise<GenerationPin> {
   signal.throwIfAborted();
   const id = randomUUID().replaceAll('-', ''), generation = createDirectory(generations, id);
   let hold: NativeHold | undefined;
@@ -186,20 +187,28 @@ async function buildFresh(root: Directory, generations: Directory, source: GitIn
   try {
     const sourceDirectory = admitDirectory(source.root);
     const sourceBin = admitChildDirectory(admitChildDirectory(sourceDirectory, 'usr'), 'bin');
-    // Phase 3 supplies the one UAC operation at this permission boundary.
+    let elevated = false;
     try { createHardlink(sourceBin, 'bash.exe', generation, '.probe'); }
     catch (error) {
-      if ((error as { linkPermissionDenied?: boolean }).linkPermissionDenied) throw new Error('Git hardlink permission requires elevation; optional UAC provisioning is not implemented until Phase 3.', { cause: error });
-      throw error;
+      if (!(error as { linkPermissionDenied?: boolean }).linkPermissionDenied) throw error;
+      elevated = true;
     }
-    unlinkEntry(generation, '.probe');
+    if (!elevated) unlinkEntry(generation, '.probe');
     signal.throwIfAborted();
     const base = createDirectory(generation, 'base');
-    const files = await inventoryGitFiles(source.root, () => signal.throwIfAborted());
-    await linkFreshTree({ sourceRoot: source.root, baseRoot: base.path, files }, () => signal.throwIfAborted());
+    if (elevated) {
+      await provisionRuntime({ source: sourceDirectory, cache: root, generation, base, layout: source.layout }, signal, spawn);
+    } else {
+      const files = await inventoryGitFiles(source.root, () => signal.throwIfAborted());
+      await linkFreshTree({ sourceRoot: source.root, baseRoot: base.path, files }, () => signal.throwIfAborted());
+    }
+    signal.throwIfAborted();
     createJunction(base, 'bin', admitChildDirectory(admitChildDirectory(base, 'usr'), 'bin'));
     const anchors = captureAnchors(source.root, base.path, source.layout);
     admitBase(generation, source.layout);
+    // provisionRuntime has closed its setup lease. Retire the input only after
+    // final admission; a blocked ordinary unlink must still prevent commit.
+    if (elevated) unlinkEntry(generation, 'plan.json');
     signal.throwIfAborted();
     hold = pinDirectory(generation);
     const record: CurrentRuntime = { schemaVersion: 1, generationId: id, sourceRoot: source.root, layout: source.layout, anchors };

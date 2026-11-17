@@ -176,7 +176,7 @@ function inspect(path: string): FileInformation {
 }
 
 /** Walk ancestors before opening a target; cache/source policy stays with callers. */
-export function admitDirectory(path: string): Directory {
+export function admitDirectory(path: string, expected?: FileIdentity): Directory {
   path = absolutePath(path);
   const parents: string[] = [];
   for (let parent = dirname(path); ; parent = dirname(parent)) {
@@ -188,6 +188,7 @@ export function admitDirectory(path: string): Directory {
   try {
     const info = hold.information();
     requireKind(info, 'directory', path);
+    if (expected && !sameIdentity(info, expected)) throw new Error(`Directory identity changed: ${path}`);
     hold.requireNtfs();
     return { path: hold.canonicalPath(), volumeSerial: info.volumeSerial, fileId: info.fileId };
   } finally { hold.close(); }
@@ -205,9 +206,11 @@ export function childPath(parent: Directory, name: string): string {
 }
 
 /** An already admitted parent is reused during a bounded inventory/link pass. */
-export function admitChildDirectory(parent: Directory, name: string): Directory {
+export function admitChildDirectory(parent: Directory, name: string, expected?: FileIdentity): Directory {
   const path = childPath(parent, name);
-  return observedDirectory(path, inspect(path), parent.volumeSerial);
+  const info = inspect(path);
+  if (expected && !sameIdentity(info, expected)) throw new Error(`Directory identity changed: ${path}`);
+  return observedDirectory(path, info, parent.volumeSerial);
 }
 
 function observedDirectory(path: string, info: FileInformation, volumeSerial: string): Directory {

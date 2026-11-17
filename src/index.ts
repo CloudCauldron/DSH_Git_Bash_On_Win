@@ -21,7 +21,7 @@ export default class GitBashExecutor extends SandboxBashExecutor {
   }
 
   protected override async executeArgv(): Promise<ShellExecution> {
-    throw new Error('Git Bash execution is unavailable during the Phase 1 bootstrap.');
+    throw new Error('Git Bash execution is unavailable until executor and launcher integration is complete.');
   }
 
   async rebuildRuntime(): Promise<void> {

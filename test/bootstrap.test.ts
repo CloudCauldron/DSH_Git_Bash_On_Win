@@ -181,17 +181,17 @@ await test('maintained compiler graphs, lint and emitted public exports exclude 
   assert.equal(Object.getPrototypeOf(built.default), SandboxBashExecutor);
 });
 
-await test('bootstrap execution, purge and release packaging fail explicitly', async t => {
+await test('execution and release packaging remain gated; purge refuses an unowned directory', async t => {
   // The extension point rejects before either the deferred confinement callback
   // or DSH subprocess launch can run, including full-access callers.
   class ExecutorProbe extends GitBashExecutor {
     static attempt() { return this.prototype.executeArgv(); }
   }
-  await assert.rejects(ExecutorProbe.attempt(), /Phase 1 bootstrap/);
+  await assert.rejects(ExecutorProbe.attempt(), /executor and launcher integration/);
   await assert.rejects(GitBashExecutor.prototype.rebuildRuntime(), /not implemented/);
   const directory = await temporaryDirectory(t);
   const sentinel = join(directory, 'owned.txt');
-  await writeFile(sentinel, 'retain until guarded purge exists');
+  await writeFile(sentinel, 'unowned directory must be retained');
   const cleanup = spawnSync(process.execPath, [join(root, 'lib/cleanup.js'), directory], { encoding: 'utf8', timeout: 30_000 });
   assert.equal(cleanup.error, undefined);
   assert.equal(cleanup.status, 1);
@@ -203,17 +203,17 @@ await test('bootstrap execution, purge and release packaging fail explicitly', a
     });
     assert.equal(plugin.error, undefined);
     assert.equal(plugin.status, 1);
-    assert.match(plugin.stderr, /Plugin package operations are unavailable during the Phase 1 bootstrap/);
+    assert.match(plugin.stderr, /Plugin package operations are unavailable until runtime integration/);
   }
   assert.deepEqual(filesUnder(directory), ['owned.txt']);
-  assert.equal(readFileSync(sentinel, 'utf8'), 'retain until guarded purge exists');
+  assert.equal(readFileSync(sentinel, 'utf8'), 'unowned directory must be retained');
   const pnpm = process.env.npm_execpath ?? (process.platform === 'win32' ? 'pnpm.exe' : 'pnpm');
   const args = /\.[cm]?js$/.test(pnpm) ? [pnpm] : [];
   const executable = args.length ? process.execPath : pnpm;
   const blocked = spawnSync(executable, [...args, 'pack', '--dry-run'], { cwd: root, encoding: 'utf8', timeout: 30_000 });
   assert.equal(blocked.error, undefined);
   assert.notEqual(blocked.status, 0);
-  assert.match(blocked.stdout + blocked.stderr, /Phase 1 bootstrap only/);
+  assert.match(blocked.stdout + blocked.stderr, /Backend refactor incomplete/);
   const packed = JSON.parse(execFileSync(executable, [...args, '--ignore-scripts', 'pack', '--dry-run', '--json'], {
     cwd: root, encoding: 'utf8', timeout: 30_000,
   })) as { files: Array<{ path: string }> };

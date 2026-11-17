@@ -22,7 +22,7 @@
     "build": "node --input-type=module -e \"import { rm } from 'node:fs/promises'; await rm('lib', { recursive: true, force: true });\" && tsc -p tsconfig.build.json",
     "test": "pnpm build && node --test test/*.test.ts",
     "test:windows": "node -e \"if (process.platform !== 'win32' || process.arch !== 'x64') throw new Error('Native Windows x64 Node is required.');\" && pnpm test",
-    "prepack": "node -e \"throw new Error('Phase 1 bootstrap only: runtime and strict purge are not implemented; do not install or publish this package.');\""
+    "prepack": "node -e \"throw new Error('Backend refactor incomplete: runtime integration and release validation are pending; do not install or publish this package.');\""
   },
   "dependencies": {
     "@deepseek-ai/dsh-atomic-write": "0.2.2-rc.2"

@@ -6,7 +6,7 @@ Revised: 2026-11-17
 
 Baseline: 6c410c5a2496c30c9883fe471b38d9920c5c2675
 
-Status: Phase 0 approved contract baseline and Phase 1 bootstrap complete; Phases 2–6 implementation and maintained runtime verification pending.
+Status: Phase 0 contract baseline and Phases 1–2 implementation complete. Maintained native Phase 2 verification covers local preparation, ownership, pins and recovery. Phases 3–6 (UAC, executor/debugger integration and release verification) remain pending.
 
 The versioned specification is [docs/backend-20261117-refactor-roadmap.md](../docs/backend-20261117-refactor-roadmap.md), promoted from the local planning roadmap on 2026-11-17. The [Phase 0 review checklist](../docs/backend-20261117-contract-baseline.md) records the implementation gates and verification handoff.
 
@@ -159,7 +159,7 @@ runtime-cache owns cache state and lifetime. git-installation owns source layout
 | 5 — Launcher/debugger | Type/refactor §4.4 while preserving verified native behavior and DSH ownership. |
 | 6 — Integration/package | Run §10, document recovery, freshness limits, explicit rebuilding and ownership/IO obstructions, then package. Implement guarded recovery rather than a permanent-freeze policy. |
 
-Archive relocation is complete. Backend implementation remains outstanding; review new modules against these contracts and preserved behavior independently of obsolete test internals.
+Archive relocation and Phases 1–2 are complete. Continue reviewing new modules against these contracts and preserved behavior independently of obsolete test internals. Phase 2 exposes the cache factory and pin lifetime for maintained tests; executor wiring remains Phase 4, and link-permission denial stays explicitly gated until Phase 3 supplies guarded UAC provisioning.
 
 ## 4. MINIMAL INTERNAL APIs
 
@@ -522,6 +522,14 @@ Phase 1 completed on 2026-11-17:
 - Execution, rebuilding and cleanup deliberately reject until their implementation phases. `prepack` rejects release packaging. Runtime/cache/native-sharing/UAC/debugger and complete-uninstall correctness remain unverified; the Phase 1 wiring tests are not substitutes for later maintained runtime tests. Runtime/setup/debugger modules will be introduced with their implementations rather than empty scaffolds.
 
 ### Phase 2 — Source operations, ownership and native holds
+
+Phase 2 completed on 2026-11-17:
+
+- Added the three runtime modules in §2. Win32 flags, identity/kind/reparse admission, checked handle closure, writer/setup leases, pin/collector holds and non-following removal are centralized in `ntfs-filesystem.ts`. Git discovery, bounded inventory, fresh-tree linking and six-anchor capture remain separate from cache ownership and lifetime.
+- Implemented F1 ownership, the lock-free read/pin/selector-recheck path, local probe/link/capture/atomic publication, guarded unused-generation collection, pin references/direct views and strict whole-interior purge. The cleanup entry purges both profile and fallback caches. Existing source contents/ACLs are untouched by production operations; hardlink bookkeeping retains the approved exception.
+- Maintained Windows verification covers native sharing in both acquisition orders, ownerless warm admission while a writer is held, all-generation purge preflight, stale readers after interrupted arbitrary-order GC, interrupted purge, retained uses, cancellation, source separation, malformed controls, non-following cleanup and residue recovery. CLI verification uses an isolated package/profile/fallback fixture. No personal profile or archived helper is loaded.
+- `pnpm check`, `pnpm lint` and `pnpm test:windows` pass: 35 tests, zero skips, including the seven bootstrap checks. The fixture metadata/anchor warm path measured approximately 11–13 ms on Windows x64 Node 26.12.1 with the pinned DSH dependencies; this is not a full-installation benchmark or a 5 ms guarantee.
+- Optional elevation remains Phase 3: only an admitted probe's actual link-permission failure reaches its explicit unavailable error. No UAC is requested by this implementation or default tests. Executor/rebuild orchestration, child admission/debugger behavior and real DSH execution remain Phases 4–6; release installation and packaging stay gated.
 
 `runtime-cache.test.ts` covers §5 markerless-root refusal, whole-interior ownership, non-following purge, current/anchor admission and cold/warm reuse. Exercise §4.5's shared source functions without per-leaf plan stamps.
 

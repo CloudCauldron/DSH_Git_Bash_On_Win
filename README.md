@@ -1,10 +1,10 @@
 # DSH Git Bash on Windows
 
 Backend refactor for native Windows x64, Node 26+ and DSH **0.2.2-rc.2**.
-**Phase 1 restores development inputs only. Runtime preparation, execution and
-strict cache purge are not implemented yet. Do not install or publish this tree.**
-Execution, cleanup and package-manager entries fail explicitly; `prepack` blocks
-release packaging.
+**Phases 1–2 provide maintained inputs, local cache preparation, native pin lifetime
+and strict cache purge. UAC, executor and debugger integration remain pending.
+Do not install or publish this tree.** Execution and package-manager entries remain
+gated; `prepack` blocks release packaging.
 
 The approved [roadmap](docs/backend-20261117-refactor-roadmap.md),
 [contract baseline](docs/backend-20261117-contract-baseline.md) and
@@ -32,8 +32,11 @@ Public DSH dependencies, including `@deepseek-ai/dsh-atomic-write`, are pinned.
 Bootstrap tests verify the native schema, Loader entry/configuration identity,
 installed CLI discovery, public dependency resolution and transitive input
 exclusion. They use disposable fixtures and never open a personal profile.
-They do **not** establish native cache, UAC, debugger or Bash execution correctness.
-Those suites will be added with their modules in Phases 2–6.
+The native Phase 2 suites verify root ownership, bounded inventory/linking,
+single-record publication, warm admission, pin/collector sharing, interrupted
+collection/purge, view lifetime and cleanup. Fixtures contain owned source files;
+tests verify restored source link counts and unchanged contents/ACLs after purge.
+These checks do not establish UAC or real DSH Bash execution correctness.
 
 `scripts/installed-dsh.ts` discovers the installed CLI without loading a profile.
 If discovery is ambiguous, set `DSH_PACKAGE_JSON` for the current process to the
@@ -41,8 +44,8 @@ absolute installed `@deepseek-ai/dsh/package.json`. The selected CLI must match
 the pinned release. Only an absent CLI skips the installed-CLI test; ambiguous,
 invalid or broken installations fail validation. `scripts/plugin.ts` currently
 rejects every package operation before loading a profile or starting pnpm. Its
-official DSH delegation will be enabled with maintained installation and strict
-purge; no pnpm argument parser or provisional cleanup API is needed in Phase 1.
+official DSH delegation will be enabled after runtime integration and release
+validation. It does not load a personal profile during these tests.
 
 Production package inputs are limited to `lib/`, `cordis.patch.yml`, `README.md`
 and the manifest. For an inclusion audit only, `pnpm --ignore-scripts pack
@@ -63,15 +66,25 @@ never modified. Managed artifacts stay in private DSH cache directories.
 
 ## Recovery and complete uninstallation
 
-These are implementation requirements, not currently available operations.
-Normal disposal must stop/join owned work and close native handles and locks;
-the validated cache persists. Private ephemeral residue may remain for later GC.
+The cache layer now provides guarded offline purge. Normal pin retirement retains
+the validated cache, refuses new uses, and protects existing uses with the same
+native directory handle until their last release. View cleanup is best effort;
+native handle close failures remain errors. Process shutdown will be integrated
+with the executor in later phases.
 
-Once guarded cleanup is implemented, offline rebuilding will require closing all
-relevant DSH instances and running `node lib/cleanup.js <absolute profile cache
-path>` to purge both the profile `.git-bash-on-win` and package `.runtime` caches.
-Keep the package and settings, then restart for cold preparation. The future
-online rebuild operation will preserve existing uses of retired pins.
+Close all relevant DSH instances before running:
+
+```bash
+node lib/cleanup.js '<absolute profile cache path>'
+```
+
+This purges both the supplied profile cache and the package `.runtime` fallback.
+Only a root with this implementation's valid ownership marker is admitted; an old,
+markerless or unrecognized directory is refused without deletion. Recovery uses
+ordinary plan unlink and native generation claims; a busy pin or plan prevents
+completion. After an obstruction clears, rerun purge. For offline rebuilding,
+retain the package and settings. Automatic cold preparation on the next Bash call
+will become available with the executor integration.
 
 Complete uninstallation requires removing only the plugin-specific `gitBashPath`
 override while preserving shared Shell settings, closing all relevant DSH
@@ -85,6 +98,14 @@ restored. Hardlink creation/removal changes filesystem-maintained timestamps,
 archive bits and journal/audit records; this permitted bookkeeping is observable.
 No bit-for-bit restoration of host state is promised.
 
-The planned six-anchor warm check is a bounded freshness sample, not a full-tree
+The six-anchor warm check is a bounded freshness sample, not a full-tree
 comparison. Restart does not promise non-anchor repair; explicit rebuild restores
 layout from installed Git and cannot repair damaged source bytes.
+
+Local preparation probes one Bash hardlink before inventory, then links one fresh
+base and atomically publishes `current.json`. A permission denial at that probe
+currently reports that Phase 3 elevation is unavailable. Other setup failures drain
+work and leave no published partial generation. Preparation and recovery do not run
+archived helpers. Warm hits do not create owner files, scan the tree, collect old
+generations or wait on the writer lock. Native fixture measurements are reported
+by the tests; 5 ms remains an unestablished target.

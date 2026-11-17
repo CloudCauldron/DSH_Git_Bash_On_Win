@@ -71,6 +71,9 @@ export function admitElevationPlan(plan: ElevationPlan, openedGeneration: Direct
 
 const brokerGraceMs = 250;
 
+/** Local broker shutdown failed; ordinary setup rejection does not imply this. */
+export class ProvisioningCleanupError extends AggregateError {}
+
 /** A rejected observation is not a join. DSH retains the managed range throughout. */
 async function stopBroker(broker: SubprocessHandle): Promise<void> {
   const errors: unknown[] = [];
@@ -81,7 +84,7 @@ async function stopBroker(broker: SubprocessHandle): Promise<void> {
   const settled = await Promise.allSettled([broker.done, broker.waitForExit()]);
   for (const result of settled) if (result.status === 'rejected') errors.push(result.reason);
   if (settled[1]?.status === 'fulfilled' && !settled[1].value) errors.push(new Error('Setup broker range did not settle.'));
-  if (errors.length) throw new AggregateError(errors, 'Failed to settle the setup broker.');
+  if (errors.length) throw new ProvisioningCleanupError(errors, 'Failed to settle the setup broker.');
 }
 
 /** One awaited UAC operation. The cache writer remains held by the caller. */

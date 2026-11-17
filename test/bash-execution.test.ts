@@ -12,6 +12,7 @@ import type { SandboxExecutionPolicy } from '@deepseek-ai/dsh-sandbox';
 import type { ShellExecRequest, ShellExecSpec } from '@deepseek-ai/dsh-shell';
 import type Subprocess from '@deepseek-ai/dsh-subprocess';
 import type { SubprocessHandle, SubprocessOutcome, SubprocessSpawnSpec } from '@deepseek-ai/dsh-subprocess';
+import { Win32Error } from '@deepseek-ai/dsh-win32-process';
 import GitBashExecutor from '../src/index.ts';
 import { buildRuntimeEnvironment } from '../src/runtime/git-installation.ts';
 import { admitDirectory, claimDirectory, isBusy, NativeHold, pathExists } from '../src/runtime/ntfs-filesystem.ts';
@@ -315,7 +316,7 @@ await test('a selection observed just after commit releases the stale pin withou
 await test('retiring preparation close failure blocks replacement setup and remains a disposal error', nativeOnly, async t => {
   const f = await executorFixture(t), blocked = f.holdInventory();
   const initial = f.run(); await blocked.entered;
-  const original = NativeHold.prototype.close, failure = new Error('fixture checked writer close failure');
+  const original = NativeHold.prototype.close, failure = new Win32Error('CloseHandle', 6, 'fixture checked writer close failure');
   let injected = false;
   const mock = t.mock.method(NativeHold.prototype, 'close', function (this: NativeHold) {
     original.call(this); // Close the real fixture handle before injecting failure.
@@ -333,6 +334,86 @@ await test('retiring preparation close failure blocks replacement setup and rema
     await f.dispose();
     assert.ok(logged.flat().some(value => value instanceof AggregateError && /owned resources/.test(value.message)));
   } finally { mock.mock.restore(); log.mock.restore(); }
+});
+
+await test('an already rejected preparation retains its native close failure across rebuild and disposal', nativeOnly, async t => {
+  const f = await executorFixture(t), original = NativeHold.prototype.close;
+  const failure = new Win32Error('CloseHandle', 6, 'fixture settled writer close failure');
+  let injected = false;
+  const mock = t.mock.method(NativeHold.prototype, 'close', function (this: NativeHold) {
+    original.call(this); // Do not leak a real fixture handle to simulate a fault.
+    if (!injected && this.path === join(f.cache, '.writer-lock') && pathExists(join(f.cache, 'current.json'))) {
+      injected = true; throw failure;
+    }
+  });
+  const logged: unknown[][] = [];
+  const log = t.mock.method(f.providerContext.logger, 'error', (...args: unknown[]) => { logged.push(args); });
+  try {
+    await assert.rejects(f.run(), error => error === failure);
+    assert.ok(injected);
+    const before = await f.current();
+    await assert.rejects(f.executor.rebuildRuntime(), error => error === failure);
+    assert.equal((await f.current()).generationId, before.generationId);
+    await f.dispose();
+    assert.ok(logged.flat().some(value => value instanceof AggregateError && /owned resources/.test(value.message)));
+  } finally { mock.mock.restore(); log.mock.restore(); }
+});
+
+await test('an already rejected broker shutdown remains a local resource failure at rebuild and disposal', nativeOnly, async t => {
+  const f = await executorFixture(t), original = fs.linkSync;
+  const failure = new Error('fixture broker range cannot be observed');
+  const mock = t.mock.method(fs, 'linkSync', (source: fs.PathLike, target: fs.PathLike) => {
+    if (basename(String(target)) === '.probe') throw Object.assign(new Error('fixture probe denial'), { code: 'EPERM' });
+    original(source, target);
+  }); syncBuiltinESMExports();
+  let launches = 0;
+  f.controls.setup = () => {
+    launches++;
+    return {
+      stdin: undefined, stdout: undefined, stderr: undefined, control: undefined, collected: {},
+      done: Promise.resolve({ exitCode: 0, signal: null }), terminate() {},
+      async waitForExit() { throw failure; },
+    };
+  };
+  const logged: unknown[][] = [];
+  const log = t.mock.method(f.providerContext.logger, 'error', (...args: unknown[]) => { logged.push(args); });
+  try {
+    await assert.rejects(f.run(), AggregateError);
+    await assert.rejects(f.executor.rebuildRuntime(), AggregateError);
+    assert.equal(launches, 1, 'failed local shutdown must block another setup');
+    assert.equal(pathExists(join(f.cache, 'current.json')), false);
+    await f.dispose();
+    assert.ok(logged.flat().some(value => value instanceof AggregateError && /owned resources/.test(value.message)));
+  } finally { mock.mock.restore(); syncBuiltinESMExports(); log.mock.restore(); }
+});
+
+await test('ordinary source IO failure during supersession drains without poisoning shared rebuilding', nativeOnly, async t => {
+  const f = await executorFixture(t), entered = deferred<void>(), resume = deferred<void>(), original = fsp.readdir;
+  let first = true;
+  const mock = t.mock.method(fsp, 'readdir', (async (...args: Parameters<typeof fsp.readdir>) => {
+    if (first && String(args[0]).startsWith(f.source)) {
+      first = false; entered.resolve(); await resume.promise;
+      throw Object.assign(new Error('fixture source read failed after cancellation'), { code: 'EIO' });
+    }
+    return original(...args);
+  }) as typeof fsp.readdir); syncBuiltinESMExports();
+  const logged: unknown[][] = [];
+  const log = t.mock.method(f.providerContext.logger, 'error', (...args: unknown[]) => { logged.push(args); });
+  try {
+    const initial = f.run(); await entered.promise;
+    const rebuilding = f.executor.rebuildRuntime(), joined = f.run();
+    // Observe all three immediately, even when the regression rejects early.
+    const results = Promise.all([initial, rebuilding, joined]);
+    resume.resolve();
+    const [firstCommand, , nextCommand] = await results;
+    assert.equal(f.spawned.length, 2);
+    assert.equal(invocation(f.spawned[0]!.spec).base, invocation(f.spawned[1]!.spec).base);
+    f.spawned.forEach(item => item.finish());
+    await Promise.all([firstCommand!.done, nextCommand!.done]);
+    await f.executor.rebuildRuntime();
+    await f.dispose();
+    assert.deepEqual(logged, []);
+  } finally { resume.resolve(); mock.mock.restore(); syncBuiltinESMExports(); log.mock.restore(); }
 });
 
 await test('selection or cancellation during confinement prevents launch and releases the use', nativeOnly, async t => {

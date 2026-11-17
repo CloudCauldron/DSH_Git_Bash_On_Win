@@ -6,7 +6,7 @@ import type { ShellExecSpec, ShellExecution } from '@deepseek-ai/dsh-shell';
 import type Subprocess from '@deepseek-ai/dsh-subprocess';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { prepareRuntime, type GenerationPin, type RuntimeUse } from './runtime/runtime-cache.ts';
+import { hasPreparationCleanupFailure, prepareRuntime, type GenerationPin, type RuntimeUse } from './runtime/runtime-cache.ts';
 
 export interface Config extends BashConfig { gitBashPath: Volatile<string | undefined> }
 
@@ -27,11 +27,6 @@ async function waitForReady(slot: PreparationSlot, signal: AbortSignal): Promise
   finally { signal.removeEventListener('abort', abort); }
 }
 
-function isCancellation(error: unknown, signal: AbortSignal): boolean {
-  return signal.aborted && (error === signal.reason
-    || error instanceof Error && error.name === 'AbortError' && error.cause === signal.reason);
-}
-
 /** Native settings, command mechanics and one lazily owned runtime selection. */
 export default class GitBashExecutor extends SandboxBashExecutor {
   static override Config: typeof SandboxBashExecutor.Config = z.object({
@@ -46,7 +41,7 @@ export default class GitBashExecutor extends SandboxBashExecutor {
   private readonly stopping = new AbortController();
   private readonly executions = new Set<ShellExecution>();
   private readonly work = new Set<Promise<unknown>>();
-  private readonly cleanup = new Set<Promise<void>>();
+  private readonly cleanup = new Set<Promise<unknown>>();
   private readonly cleanupErrors: unknown[] = [];
 
   constructor(ctx: Context, config: Config) {
@@ -63,29 +58,27 @@ export default class GitBashExecutor extends SandboxBashExecutor {
     throw new Error('Git Bash execution is unavailable until launcher/debugger integration is complete.');
   }
 
-  private track<T>(operation: Promise<T>): Promise<T> {
-    this.work.add(operation);
-    void operation.then(() => this.work.delete(operation), () => this.work.delete(operation));
+  private track<T>(operation: Promise<T>, owned = this.work): Promise<T> {
+    owned.add(operation);
+    void operation.then(() => owned.delete(operation), () => owned.delete(operation));
     return operation;
   }
 
   private ownCleanup(operation: Promise<void>): Promise<void> {
-    this.cleanup.add(operation);
-    void operation.then(() => this.cleanup.delete(operation), error => {
-      this.cleanup.delete(operation);
+    return this.track(operation.catch(error => {
       this.cleanupErrors.push(error);
-    });
-    return operation;
+      throw error;
+    }), this.cleanup);
   }
 
   private retire(slot: PreparationSlot): Promise<void> {
     slot.controller.abort(new Error('Git Bash runtime preparation was superseded.'));
     if (slot.pin) return this.ownCleanup(slot.pin.release());
-    if (!this.work.has(slot.ready)) return Promise.resolve(); // Already failed readiness needs no drain.
-    return this.ownCleanup(slot.ready.then(() => {}, error => {
-      // A cleanup/close failure must not be mistaken for successful cancellation.
-      if (!isCancellation(error, slot.controller.signal)) throw error;
-    }));
+    return this.track(slot.ready.then(() => {}, error => {
+      // Preparation records resource failures at their boundary, independently
+      // of retirement timing. Ordinary setup errors have already drained safely.
+      if (hasPreparationCleanupFailure(error)) throw error;
+    }), this.cleanup);
   }
 
   /** Observation, not Loader events or string equality alone, detaches old work. */
@@ -112,7 +105,10 @@ export default class GitBashExecutor extends SandboxBashExecutor {
         this.observeSelection();
         controller.signal.throwIfAborted();
         this.stopping.signal.throwIfAborted();
-        const pin = await prepareRuntime({ cacheDirectory, gitBashPath: selection, rebuild, spawn: this.setupSpawn }, controller.signal);
+        const pin = await prepareRuntime({ cacheDirectory, gitBashPath: selection, rebuild, spawn: this.setupSpawn }, controller.signal).catch(error => {
+          if (hasPreparationCleanupFailure(error)) this.cleanupErrors.push(error);
+          throw error;
+        });
         try {
           this.observeSelection();
           controller.signal.throwIfAborted();
@@ -120,7 +116,7 @@ export default class GitBashExecutor extends SandboxBashExecutor {
           if (slot !== (rebuild ? this.rebuildOp : this.slot)) throw new Error('Stale Git Bash runtime preparation.');
           slot.pin = pin;
           return pin;
-        } catch (error) { await pin.release(); throw error; }
+        } catch (error) { await this.ownCleanup(pin.release()); throw error; }
       })),
     };
     return slot;

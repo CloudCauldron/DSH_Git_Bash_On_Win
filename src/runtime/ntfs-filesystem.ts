@@ -61,7 +61,7 @@ export function isBusy(error: unknown): boolean {
 
 export class InvalidMetadataError extends Error {}
 
-function hasCloseFailure(error: unknown): boolean {
+export function hasCloseFailure(error: unknown): boolean {
   return (error instanceof Win32Error && error.api === 'CloseHandle')
     || (error instanceof AggregateError && error.errors.some(hasCloseFailure));
 }
@@ -225,8 +225,16 @@ export function createDirectory(parent: Directory, name: string): Directory {
 }
 
 function createChildDirectory(parent: Directory, name: string): Directory {
-  mkdirSync(toNamespacedPath(childPath(parent, name)), { mode: 0o700 });
-  return admitChildDirectory(parent, name);
+  const path = childPath(parent, name);
+  mkdirSync(toNamespacedPath(path), { mode: 0o700 }); // EEXIST never authorizes cleanup.
+  try { return admitChildDirectory(parent, name); }
+  catch (error) {
+    // Roll back only our successfully created, still-empty name. Never recurse
+    // or repair attributes when admission itself could not establish a Directory.
+    try { revalidateDirectory(parent); removeDirectoryName(path); }
+    catch (cleanup) { throw new AggregateError([error, cleanup], `Directory admission and cleanup failed: ${path}`, { cause: cleanup }); }
+    throw error;
+  }
 }
 
 export function ensureDirectory(parent: Directory, name: string): Directory {

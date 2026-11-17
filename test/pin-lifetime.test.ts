@@ -118,6 +118,25 @@ await test('failed shared view creation unwinds waiters, evicts the promise and 
   await purgeRuntimeCache(fixture.cache);
 });
 
+await test('a namespace created before failed directory admission is rolled back so the pin can retry', nativeOnly, async t => {
+  const f = await runtimeFixture(t), pin = await f.prepare(), original = NativeHold.prototype.information;
+  const generation = join(f.cache, 'generations', (await f.current()).generationId);
+  const views = join(generation, 'views');
+  const failure = new Error('fixture namespace admission failed');
+  let created = '';
+  const mock = t.mock.method(NativeHold.prototype, 'information', function (this: NativeHold) {
+    if (!created && dirname(this.path) === views) { created = this.path; throw failure; }
+    return original.call(this);
+  });
+  try { await assert.rejects(pin.lease(scope(f.workspace, 'session'), signal()), error => error === failure); }
+  finally { mock.mock.restore(); }
+  assert.ok(created, 'fault must occur at the newly created namespace');
+  assert.equal(pathExists(created), false, 'failed admission must not leave the fixed namespace occupied');
+  const retried = await pin.lease(scope(f.workspace, 'session'), signal());
+  await retried.release(); await pin.release();
+  await purgeRuntimeCache(f.cache);
+});
+
 await test('failed junction admission cleans only its created target and the shared view can retry', nativeOnly, async t => {
   const f = await runtimeFixture(t), pin = await f.prepare(), original = fs.realpathSync;
   let attempted = '';

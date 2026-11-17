@@ -4,11 +4,11 @@ import z from '@deepseek-ai/schemastery';
 import { writeFileAtomic } from '@deepseek-ai/dsh-atomic-write';
 import type { SandboxExecutionPolicy } from '@deepseek-ai/dsh-sandbox';
 import type Subprocess from '@deepseek-ai/dsh-subprocess';
-import { provisionRuntime } from '../setup/provision-runtime.ts';
+import { provisionRuntime, ProvisioningCleanupError } from '../setup/provision-runtime.ts';
 import {
   absolutePath, acquireWriterLock, admitChildDirectory, admitDirectory, admitJunction,
   bestEffort, canonicalWorkspace, children, claimDirectory, createDirectory, createHardlink,
-  createJunction, ensureDirectory, InvalidMetadataError, isBusy, isMissing, ordinaryChildDirectory,
+  createJunction, ensureDirectory, hasCloseFailure, InvalidMetadataError, isBusy, isMissing, ordinaryChildDirectory,
   overlaps, pathExists, pinDirectory, readMetadata, removeDirectoryTree, removeEmptyDirectory, removeTree,
   revalidateDirectory, sameIdentity, samePath, unlinkEntry, writeNewMetadata,
   type Directory, type NativeHold,
@@ -34,6 +34,12 @@ export interface RuntimeUse {
   readonly sourceRoot: string;
   readonly layout: GitLayout;
   release(): Promise<void>;
+}
+
+/** Preserve local resource failures without treating source/setup errors as leaks. */
+export function hasPreparationCleanupFailure(error: unknown): boolean {
+  return hasCloseFailure(error) || error instanceof ProvisioningCleanupError
+    || error instanceof AggregateError && error.errors.some(hasPreparationCleanupFailure);
 }
 interface CurrentRuntime {
   readonly schemaVersion: 1;

@@ -950,8 +950,9 @@ await test('native DSH Bash execution across all modes', nativeOnly, async t => 
     let owner: SubprocessHandle | undefined;
     let ownerOutcome: Promise<PromiseSettledResult<SubprocessOutcome>[]> | undefined;
     try {
+      // Keep the published Bash identity stable while peers inspect its mapping.
       owner = await startCaptured([process.execPath, observer, JSON.stringify({ ...use, mode: 'workspace-write', observeNamespace: true,
-        command: 'printf "@@PID@@%s\\n" "$$"; sleep 60' })], 'workspace-write', 'ipc-owner');
+        command: 'printf "@@PID@@%s\\n" "$$"; sleep 60; :' })], 'workspace-write', 'ipc-owner');
       ownerOutcome = Promise.allSettled([owner.done]);
       let namespace: string | undefined, pid: string | undefined;
       const until = performance.now() + 10000;

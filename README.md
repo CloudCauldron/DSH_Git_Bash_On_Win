@@ -46,7 +46,7 @@ native call. The broker smoke test changes only its ShellExecuteEx verb to `open
 through a test-only ESM preload, exercising the real COM/request ABI, argv,
 process wait/close and emitted entry points without consent. The ordinary helper
 may inherit the broker's Job; this does not test independent elevated lifetime.
-Typecheck, lint and all **84** default Windows tests pass, with zero
+Typecheck, lint and all **90** default Windows tests pass, with zero
 skips. These checks do not establish real consent-dialog or DSH Bash execution
 correctness. Close-failure injection reports failure after closing the test handle;
 it does not reproduce an unrecoverable kernel handle fault.
@@ -141,6 +141,9 @@ exclusively while linking. Source contents and ACLs remain unchanged.
 
 The parent requires an uncancelled normal broker zero exit and DSH managed-range
 settlement before final admission and atomic publication of `current.json`.
+Failed target outcomes revoke setup without waiting for surviving managed work.
+Both linking callers revalidate their admitted source/base identities after
+inventory and before writing payload; this is not an atomic source snapshot.
 Cancellation closes the setup-only lease, then gives the broker a short grace
 before DSH termination/join. This does not promise dismissal of consent or exit
 of an independently elevated helper. Its revoked candidate stays unpublished;

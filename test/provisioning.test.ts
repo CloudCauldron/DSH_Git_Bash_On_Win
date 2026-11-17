@@ -12,7 +12,7 @@ import { loadWin32ProcessBindings, Win32Error, type NativePtr } from '@deepseek-
 import type Subprocess from '@deepseek-ai/dsh-subprocess';
 import type { SubprocessHandle, SubprocessOutcome } from '@deepseek-ai/dsh-subprocess';
 import { localSpawn, nativeOnly, runtimeFixture } from './fixtures.ts';
-import { prepareRuntime, purgeRuntimeCache } from '../src/runtime/runtime-cache.ts';
+import { prepareRuntime, purgeRuntimeCache, type GenerationPin } from '../src/runtime/runtime-cache.ts';
 import {
   admitDirectory, children, createSetupLease, isBusy, isMissing, NativeHold, openExclusiveMetadata, openOrdinaryFile, pathExists, pinDirectory,
   requireActiveLease, unlinkEntry,
@@ -219,6 +219,49 @@ await test('cancelled inventory drains before the exclusive helper plan handle c
   } finally { drain.resolve(); restore(); mock.mock.restore(); syncBuiltinESMExports(); }
 });
 
+await test('both link callers reject source/base replacement across inventory before writing payload', nativeOnly, async t => {
+  for (const caller of ['local', 'helper']) for (const boundary of ['source', 'base']) await t.test(`${caller} ${boundary}`, async t => {
+    const fixture = await runtimeFixture(t), readdir = fsp.readdir;
+    const restore = caller === 'helper' ? denyProbe(t) : () => {};
+    let base = '', replaced = false, helperFailure: unknown, pin: GenerationPin | undefined;
+    let retained: NativeHold | undefined;
+    const mock = t.mock.method(fsp, 'readdir', (async (...args: Parameters<typeof fsp.readdir>) => {
+      const result = await readdir(...args);
+      if (!replaced && String(args[0]) === join(fixture.source, 'usr/bin')) {
+        replaced = true;
+        const generation = admitDirectory(join(fixture.cache, 'generations', readdirSync(join(fixture.cache, 'generations'))[0]!));
+        base = join(generation.path, 'base');
+        // Keep the rejected candidate available for payload assertions; cleanup
+        // must defer while this native pin is held, then strictly purge below.
+        retained = pinDirectory(generation);
+        const path = boundary === 'source' ? fixture.source : base;
+        if (boundary === 'source') {
+          fs.renameSync(path, `${path}-admitted`);
+          fs.cpSync(`${path}-admitted`, path, { recursive: true });
+        } else {
+          fs.rmdirSync(path);
+          fs.mkdirSync(path);
+        }
+      }
+      return result;
+    }) as typeof fsp.readdir);
+    syncBuiltinESMExports();
+    const spawn: Subprocess['spawn'] = caller === 'local' ? fixture.request.spawn : spec => brokerHandle((async () => {
+      try { await runLinkHelper(spec.argv[2]!); return success; }
+      catch (error) { helperFailure = error; return { exitCode: 1, signal: null }; }
+    })());
+    try {
+      await assert.rejects(prepareRuntime({ ...fixture.request, spawn }, signal()).then(result => { pin = result; return result; }));
+      assert.ok(replaced);
+      if (caller === 'helper') assert.match(String(helperFailure), /Directory identity changed/);
+      assert.deepEqual(readdirSync(base), [], 'the replacement must be refused before any linking');
+      assert.equal(pathExists(join(fixture.cache, 'current.json')), false);
+    } finally {
+      await pin?.release(); retained?.close(); restore(); mock.mock.restore(); syncBuiltinESMExports();
+    }
+  });
+});
+
 await test('lease revocation stops helper link batches while its plan still excludes deletion', nativeOnly, async t => {
   const fixture = await runtimeFixture(t), controller = new AbortController();
   for (let i = 0; i < 80; i++) writeFileSync(join(fixture.source, `usr/bin/extra-${i}.dll`), 'owned');
@@ -353,6 +396,29 @@ await test('abnormal broker outcome and failed range observation remain non-publ
       assert.equal(pathExists(join(fixture.cache, 'current.json')), false);
     } finally { restore(); }
   });
+});
+
+await test('a nonzero broker outcome revokes the lease and stops a still-live managed range', nativeOnly, async t => {
+  const fixture = await runtimeFixture(t), restore = denyProbe(t), range = deferred<boolean>();
+  const controller = new AbortController();
+  const watchdog = setTimeout(() => controller.abort(new Error('fixture shutdown watchdog')), 2000);
+  let terminated = false;
+  const spawn: Subprocess['spawn'] = spec => brokerHandle(Promise.resolve({ exitCode: 9, signal: null }), {
+    terminate() {
+      assert.equal(pathExists(join(dirname(spec.argv[2]!), '.setup-owner')), false, 'revocation must precede range termination');
+      terminated = true; range.resolve(true);
+    },
+    async waitForExit(bound) {
+      if (!bound) return range.promise;
+      try { await delay(10_000, undefined, { signal: bound }); } catch (error) { if (!bound.aborted) throw error; }
+      return false;
+    },
+  });
+  try {
+    await assert.rejects(prepareRuntime({ ...fixture.request, spawn }, controller.signal), /Elevated setup failed \(exit 9/);
+    assert.ok(terminated);
+    assert.equal(pathExists(join(fixture.cache, 'current.json')), false);
+  } finally { clearTimeout(watchdog); restore(); }
 });
 
 await test('fixed scripts default to failure on invalid input', nativeOnly, () => {

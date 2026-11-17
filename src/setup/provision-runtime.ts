@@ -110,21 +110,24 @@ export async function provisionRuntime(attempt: ProvisioningAttempt, signal: Abo
     };
     writeNewMetadata(attempt.generation, 'plan.json', plan);
     signal.throwIfAborted();
-    broker = spawn({
+    const child = broker = spawn({
       argv: [process.execPath, fileURLToPath(new URL('./elevation-broker.js', import.meta.url)), join(attempt.generation.path, 'plan.json')],
       cwd: attempt.cache.path, graceMs: brokerGraceMs,
       stdio: { stdin: 'ignore', stdout: { maxBytes: 0 }, stderr: { maxBytes: 8192 } },
       env: { NODE_OPTIONS: undefined },
     });
-    const result = await Promise.race([Promise.all([broker.done, broker.waitForExit()]), cancelled]);
+    // A failed target outcome must revoke setup even if managed descendants
+    // remain alive. Only successful exit waits for normal range settlement.
+    const successfulExit = child.done.then(outcome => {
+      if (outcome.exitCode !== 0 || outcome.signal !== null) {
+        const diagnostic = child.collected.stderr?.readFrom(0).text ?? '';
+        throw new Error(`Elevated setup failed (exit ${outcome.exitCode}, signal ${outcome.signal}). ${diagnostic}`);
+      }
+    });
+    const result = await Promise.race([Promise.all([successfulExit, child.waitForExit()]), cancelled]);
     signal.throwIfAborted();
     if (!result || !result[1]) throw new Error('Setup broker range did not settle.');
     joined = true;
-    const [outcome] = result;
-    if (outcome.exitCode !== 0 || outcome.signal !== null) {
-      const diagnostic = broker.collected.stderr?.readFrom(0).text ?? '';
-      throw new Error(`Elevated setup failed (exit ${outcome.exitCode}, signal ${outcome.signal}). ${diagnostic}`);
-    }
   } catch (error) { errors.push(error); }
   // Revocation precedes local shutdown even when observation failed. Never use
   // plan unlink as cancellation; the caller retires it after final admission or

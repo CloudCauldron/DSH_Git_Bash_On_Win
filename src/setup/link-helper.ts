@@ -1,5 +1,5 @@
 import { inventoryGitFiles, linkFreshTree } from '../runtime/git-installation.ts';
-import { openExclusiveMetadata, requireActiveLease } from '../runtime/ntfs-filesystem.ts';
+import { openExclusiveMetadata, requireActiveLease, revalidateDirectory } from '../runtime/ntfs-filesystem.ts';
 import { admitElevationPlan, decodeElevationPlan, planByteLimit, planGeneration } from './provision-runtime.ts';
 
 /** Fixed linker only: no process launch, ACL repair, plan rewrite or recursive cleanup. */
@@ -11,6 +11,8 @@ export async function runLinkHelper(planPath: string): Promise<void> {
     const attempt = admitElevationPlan(plan, generation);
     const checkActive = () => requireActiveLease(attempt.generation, plan.identities.lease);
     const files = await inventoryGitFiles(attempt.source.path, checkActive);
+    revalidateDirectory(attempt.source);
+    revalidateDirectory(attempt.base);
     await linkFreshTree({ sourceRoot: attempt.source.path, baseRoot: attempt.base.path, files }, checkActive);
   } finally { input.close(); }
 }

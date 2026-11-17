@@ -10,7 +10,7 @@ import {
   bestEffort, canonicalWorkspace, children, claimDirectory, createDirectory, createHardlink,
   createJunction, ensureDirectory, InvalidMetadataError, isBusy, isMissing, ordinaryChildDirectory,
   overlaps, pathExists, pinDirectory, readMetadata, removeDirectoryTree, removeEmptyDirectory, removeTree,
-  sameIdentity, samePath, unlinkEntry, writeNewMetadata,
+  revalidateDirectory, sameIdentity, samePath, unlinkEntry, writeNewMetadata,
   type Directory, type NativeHold,
 } from './ntfs-filesystem.ts';
 import {
@@ -200,6 +200,8 @@ async function buildFresh(root: Directory, generations: Directory, source: GitIn
       await provisionRuntime({ source: sourceDirectory, cache: root, generation, base, layout: source.layout }, signal, spawn);
     } else {
       const files = await inventoryGitFiles(source.root, () => signal.throwIfAborted());
+      revalidateDirectory(sourceDirectory);
+      revalidateDirectory(base);
       await linkFreshTree({ sourceRoot: source.root, baseRoot: base.path, files }, () => signal.throwIfAborted());
     }
     signal.throwIfAborted();

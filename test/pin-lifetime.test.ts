@@ -9,7 +9,7 @@ import { purgeRuntimeCache } from '../src/runtime/runtime-cache.ts';
 import { anchorPaths } from '../src/runtime/git-installation.ts';
 import {
   admitDirectory, claimDirectory, createSetupLease, isBusy, NativeHold, openExclusiveMetadata,
-  pathExists, pinDirectory, removeTree, requireActiveLease,
+  pathExists, pinDirectory, removeTree, requireActiveLease, unlinkEntry,
 } from '../src/runtime/ntfs-filesystem.ts';
 
 const signal = () => new AbortController().signal;
@@ -161,31 +161,32 @@ await test('interrupted arbitrary-order GC leaves anchors intact but a delayed r
   const second = await fixture.prepare(true), current = await fixture.current();
   await first.release(); await second.release();
   const oldPath = join(fixture.cache, 'generations', old.generationId);
-  const originalRead = NativeHold.prototype.readJson, originalPath = NativeHold.prototype.canonicalPath;
+  const originalRead = NativeHold.prototype.readJson;
   let delayed = true, interrupted = false;
   // Deliver the snapshot a reader obtained before B was published, then perform
   // real collector sharing/deletion before that reader opens its provisional pin.
   t.mock.method(NativeHold.prototype, 'readJson', function (this: NativeHold, maxBytes: number) {
     const value = originalRead.call(this, maxBytes);
-    if (delayed && this.path === join(fixture.cache, 'current.json')) { delayed = false; return old; }
-    return value;
-  });
-  t.mock.method(NativeHold.prototype, 'canonicalPath', function (this: NativeHold) {
-    const path = originalPath.call(this);
-    if (!interrupted && path === oldPath) {
+    if (delayed && this.path === join(fixture.cache, 'current.json')) {
+      delayed = false;
+      const lock = createSetupLease(admitDirectory(fixture.cache), '.writer-lock');
+      try {
+        const claim = claimDirectory(admitDirectory(oldPath));
+        try { unlinkEntry(admitDirectory(join(oldPath, 'base/usr/lib/perl')), 'module.pm'); }
+        finally { claim.close(); }
+      } finally { lock.close(); }
       interrupted = true;
-      const directory = admitDirectory(oldPath), claim = claimDirectory(directory);
-      try { unlinkSync(join(oldPath, 'base/usr/lib/perl/module.pm')); }
-      finally { claim.close(); }
+      return old;
     }
-    return path;
+    return value;
   });
   const pin = await fixture.prepare();
   assert.equal(interrupted, true);
+  assert.equal(pathExists(join(oldPath, 'base/usr/lib/perl/module.pm')), false, 'the interrupted collector must actually remove non-anchor payload');
   assert.ok(Object.values(anchorPaths('ucrt64')).every(path => pathExists(join(oldPath, 'base', path))));
   const use = await pin.lease(scope(fixture.workspace), signal());
-  assert.equal(use.baseRoot, join(fixture.cache, 'generations', current.generationId, 'base'));
-  await use.release(); await pin.release();
+  try { assert.equal(use.baseRoot, join(fixture.cache, 'generations', current.generationId, 'base')); }
+  finally { await use.release(); await pin.release(); }
 });
 
 await test('interrupted purge unpublishes before payload removal and remains retryable', nativeOnly, async t => {

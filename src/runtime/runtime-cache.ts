@@ -259,34 +259,38 @@ export async function purgeRuntimeCache(cacheDirectory: string): Promise<void> {
   if (!root) return;
   const lock = await acquireWriterLock(root, new AbortController().signal);
   const claims: Array<{ directory: Directory; hold: NativeHold }> = [];
+  let rootHold: NativeHold | undefined;
   try {
-    revalidateRoot(root);
-    const generations = pathExists(join(root.path, 'generations')) ? ordinaryChildDirectory(root, 'generations') : undefined;
-    if (generations) {
-      for (const name of children(generations)) {
-        const directory = ordinaryChildDirectory(generations, name);
-        if (directory) claims.push({ directory, hold: claimDirectory(directory) });
+    try {
+      revalidateRoot(root);
+      rootHold = claimDirectory(root);
+      const generations = pathExists(join(root.path, 'generations')) ? ordinaryChildDirectory(root, 'generations') : undefined;
+      if (generations) {
+        for (const name of children(generations)) {
+          const directory = ordinaryChildDirectory(generations, name);
+          if (directory) claims.push({ directory, hold: claimDirectory(directory) });
+        }
       }
+      for (const { directory } of claims) unlinkEntry(directory, 'plan.json');
+      removeTree(root, 'current.json');
+      if (generations) {
+        for (const { directory, hold } of claims) {
+          removeDirectoryTree(directory);
+          hold.close();
+        }
+        for (const name of children(generations)) {
+          if (ordinaryChildDirectory(generations, name)) throw new Error(`Generation appeared after purge preflight: ${name}`);
+          unlinkEntry(generations, name);
+        }
+        removeEmptyDirectory(generations);
+      }
+      for (const name of children(root)) if (name !== markerName && name !== '.writer-lock') removeTree(root, name);
+      unlinkEntry(root, markerName);
+    } finally {
+      closePurgeHolds([...claims.map(claim => claim.hold), lock]);
     }
-    for (const { directory } of claims) unlinkEntry(directory, 'plan.json');
-    removeTree(root, 'current.json');
-    if (generations) {
-      for (const { directory, hold } of claims) {
-        removeDirectoryTree(directory);
-        hold.close();
-      }
-      for (const name of children(generations)) {
-        if (ordinaryChildDirectory(generations, name)) throw new Error(`Generation appeared after purge preflight: ${name}`);
-        unlinkEntry(generations, name);
-      }
-      removeEmptyDirectory(generations);
-    }
-    for (const name of children(root)) if (name !== markerName && name !== '.writer-lock') removeTree(root, name);
-    unlinkEntry(root, markerName);
-  } finally {
-    closePurgeHolds([...claims.map(claim => claim.hold), lock]);
-  }
-  removeEmptyDirectory(root);
+    removeEmptyDirectory(root);
+  } finally { rootHold?.close(); }
 }
 
 function closePurgeHolds(holds: readonly NativeHold[]): void {

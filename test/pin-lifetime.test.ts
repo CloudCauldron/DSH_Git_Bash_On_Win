@@ -34,6 +34,27 @@ await test('native pin and collector exclusion works in both acquisition orders'
   const later = pinDirectory(generation); later.close();
 });
 
+await test('purge preflight preserves a blocked root and succeeds after its blocker closes', nativeOnly, async t => {
+  const fixture = await runtimeFixture(t), sourceFile = join(fixture.source, 'usr/lib/perl/module.pm');
+  const links = fs.statSync(sourceFile).nlink;
+  const prepared = await fixture.prepare();
+  await prepared.release();
+  const selected = await fixture.current(), markerPath = join(fixture.cache, '.owner.json');
+  const marker = await readFile(markerPath);
+  const payload = join(fixture.cache, 'generations', selected.generationId, 'base/usr/lib/perl/module.pm');
+  const blocker = pinDirectory(admitDirectory(fixture.cache));
+  try {
+    await assert.rejects(purgeRuntimeCache(fixture.cache), isBusy);
+    assert.deepEqual(await readFile(markerPath), marker);
+    assert.deepEqual(await fixture.current(), selected);
+    assert.ok(pathExists(payload));
+    assert.equal(fs.statSync(sourceFile).nlink, links + 1);
+  } finally { blocker.close(); }
+  await purgeRuntimeCache(fixture.cache);
+  assert.equal(pathExists(fixture.cache), false);
+  assert.equal(fs.statSync(sourceFile).nlink, links);
+});
+
 await test('purge preflight finds a pin in any generation before deleting controls or payload', nativeOnly, async t => {
   const fixture = await runtimeFixture(t), first = await fixture.prepare();
   const old = await fixture.current();

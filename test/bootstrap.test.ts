@@ -372,9 +372,13 @@ await test('checkout install, offline recovery and removal preserve shared Shell
   assert.equal(realpathSync(profileRequire.resolve('dsh-git-bash-on-win/client')), join(packageRoot, 'lib', 'client.js'));
   // Exercise DSH's real profile resolver: adding standalone dependencies must
   // not split the host's Cordis service or native Shell schema identities.
+  const sourceFile = join(fixture.source, 'usr/bin/bash.exe');
+  const before = { bytes: readFileSync(sourceFile), links: statSync(sourceFile).nlink,
+    acl: execFileSync('icacls.exe', [sourceFile], { encoding: 'utf8' }) };
   const identityEntry = join(fixture.directory, 'profile-identity.mjs');
   await writeFile(identityEntry, `
     import assert from 'node:assert/strict';
+    import { existsSync } from 'node:fs';
     import { createRequire } from 'node:module';
     import { join } from 'node:path';
     import { pathToFileURL } from 'node:url';
@@ -399,8 +403,10 @@ await test('checkout install, offline recovery and removal preserve shared Shell
       assert.equal(Object.getPrototypeOf(Executor), SandboxBashExecutor);
       await ctx.plugin(Loader, { baseUrl: pathToFileURL(join(dir, 'package.json')).href });
       const layer = profile.layers.find(layer => layer.packageName === 'dsh-git-bash-on-win');
+      const shellConfig = profile.patches.find(row => row.id === 'pwsh-sandbox').config;
+      assert.ok(shellConfig.gitBashPath);
       await ctx.loader.root.update([
-        { name: '@deepseek-ai/dsh-pwsh-sandbox', ...layer.patches.find(row => row.id === 'pwsh-sandbox') },
+        { name: '@deepseek-ai/dsh-pwsh-sandbox', ...layer.patches.find(row => row.id === 'pwsh-sandbox'), config: shellConfig },
         ...layer.patches.flatMap(row => row.insert ?? []),
       ]);
       await ctx.loader.await();
@@ -423,18 +429,43 @@ await test('checkout install, offline recovery and removal preserve shared Shell
       assert.equal(response.status, 200);
       const messages = lang => require('dsh-git-bash-on-win/locale/' + lang + '.json').messages;
       assert.deepEqual(await response.json(), { ok: true, dictionaries: { zh: messages('zh'), en: messages('en') } });
+      const rebuild = (method = 'POST', peer = ctx.connection.browserPeer) =>
+        routes.fetch(new Request('http://localhost/api/git-bash-on-win/rebuild', { method }), peer);
+      assert.equal((await rebuild()).status, 404, 'only a live executor owns the rebuild route');
+      const services = ctx.plugin(scope => {
+        scope.provide('sandbox', {});
+        scope.provide('sandboxPolicy', { defaultMode: 'read-only' });
+        scope.provide('subprocess', { spawn() { throw new Error('Local fixture linking requires no subprocess.'); } });
+      });
+      await services;
+      await ctx.loader.await();
+      assert.equal((await rebuild('GET')).status, 404);
+      assert.equal((await rebuild('POST', { principal: { kind: 'other' } })).status, 403);
+      assert.equal(existsSync(join(dir, '.git-bash-on-win')), false, 'discovery and dictionary reads leave the runtime cold');
+      const first = rebuild();
+      const busy = await rebuild();
+      assert.equal(busy.ok, false);
+      assert.match(await busy.text(), /rebuilding is busy/);
+      assert.equal((await first).status, 204);
+      await services.dispose();
+      await ctx.loader.await();
+      assert.equal((await rebuild()).status, 404, 'disposing the executor releases the route');
+      assert.equal((await get()).status, 200, 'dictionary reads are independent of the executor');
       await profileScope.dispose();
       assert.equal((await get()).status, 404, 'the injection scope releases the route');
       for (const [name, field] of Object.entries(SandboxBashExecutor.Config.dict)) assert.equal(Executor.Config.dict[name], field);
     } finally { await ctx.fiber.dispose(); }
   `);
-  success(await run([process.execPath, identityEntry, profile, home, runtime.manifest]));
   const cache = join(profile, '.git-bash-on-win');
-  assert.equal(pathExists(cache), false, 'discovery and dictionary reads leave the runtime cold');
+  const purge = () => run([process.execPath, join(packageRoot, 'lib/purge-runtime-cache.js'), cache]);
+  try {
+    success(await run([process.execPath, identityEntry, profile, home, runtime.manifest]));
+    const published = JSON.parse(readFileSync(join(cache, 'current.json'), 'utf8')) as { sourceRoot: string };
+    assert.equal(published.sourceRoot, fixture.source);
+    assert.ok(statSync(sourceFile).nlink > before.links);
+  } finally { success(await purge()); }
+  assert.equal(statSync(sourceFile).nlink, before.links);
   assert.deepEqual(parse(readFileSync(patchPath, 'utf8')), patches);
-  const sourceFile = join(fixture.source, 'usr/bin/bash.exe');
-  const before = { bytes: readFileSync(sourceFile), links: statSync(sourceFile).nlink,
-    acl: execFileSync('icacls.exe', [sourceFile], { encoding: 'utf8' }) };
   const prepare = () => fixture.prepare(false, new AbortController().signal, cache);
   // Standalone script imports must resolve with native profile autoInstallPeers:false.
   // No repository node_modules junction or custom module resolver hides omissions.
@@ -456,7 +487,6 @@ await test('checkout install, offline recovery and removal preserve shared Shell
   const current = readFileSync(join(cache, 'current.json'), 'utf8');
   success(await operation('add', checkout));
   assert.equal(readFileSync(join(cache, 'current.json'), 'utf8'), current, 'package installation retains the profile cache');
-  const purge = () => run([process.execPath, join(packageRoot, 'lib/purge-runtime-cache.js'), cache]);
   success(await purge());
   assert.equal(pathExists(cache), false);
   assert.deepEqual(parse(readFileSync(patchPath, 'utf8')), patches, 'offline rebuild retains the override and package');

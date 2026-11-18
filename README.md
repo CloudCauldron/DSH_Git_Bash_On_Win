@@ -140,11 +140,13 @@ purges it before removing the package. A live pin or unowned cache blocks remova
 Restart DSH unelevated after installation or bundle enable/disable changes.
 
 For a nonstandard Git installation, enter the path to `bin/bash.exe` or
-`usr/bin/bash.exe` on the plugin page and click **Save and link**. In this
-version the button saves the path. The next Bash command prepares the runtime
-on demand. Saving a blank field clears the profile override and restores the
-inherited path, or automatic discovery when no path is inherited. If DSH
-reports a configuration conflict, review the last confirmed path before retrying.
+`usr/bin/bash.exe` on the plugin page and click **Save and link**.
+The button saves any change, then asks the active executor to rebuild the hard
+links once. With the path unchanged, it goes straight to rebuilding. Saving a
+blank field clears the profile override and restores the inherited path, or
+automatic discovery when no path is inherited. If DSH reports a configuration
+conflict, review the last confirmed path before retrying. If linking fails
+after a successful save, the path stays saved. Click again to retry linking.
 Shared command timeouts and output limits remain on DSH's **Shell** page.
 
 The field belongs to the existing `pwsh-sandbox` row. A manual profile override
@@ -208,12 +210,13 @@ launcher crash; sibling subprocess consumers are unaffected. Failed range
 observation is reported at disposal and retains the existing pin reference until
 host-process exit, so an unconfirmed shutdown cannot authorize cache collection.
 
-`GitBashExecutor.rebuildRuntime()` is implemented as a backend operation, with no UI
-binding or workspace argument. It always prepares a fresh generation. A ready pin
-continues serving commands until successful guarded adoption; failed rebuilding
-preserves it. Without readiness, rebuilding cancels/drains unfinished preparation
-and becomes the shared readiness for new and displaced callers. Overlapping rebuild
-calls fail as busy. An unchanged failed selection is retained until explicit rebuild
+The active executor handles the owner-only `POST /api/git-bash-on-win/rebuild`
+by calling `GitBashExecutor.rebuildRuntime()` once. It uses its configured Git
+path and profile cache to prepare a fresh generation. A ready pin continues
+serving commands until the new generation is adopted. A failed rebuild of the
+same path preserves that pin. Without readiness, rebuilding cancels and drains
+unfinished preparation and becomes the shared readiness for new and displaced
+callers. Overlapping rebuild calls fail as busy. An unchanged failed selection is retained until explicit rebuild
 or selection/provider replacement. Caller cancellation stops only that caller's
 wait; disposal or observed selection changes cancel owned setup. An unresolved
 local resource-cleanup failure blocks replacement setup and is reported at disposal.

@@ -9,7 +9,7 @@ import type { ConfigFormSnapshot } from '@deepseek-ai/dsh-client-ui-settings/cli
 
 const require = createRequire(import.meta.url);
 
-await test('the path field preserves the first revision and only saves on explicit activation', async t => {
+await test('Save and link fences the path write and rebuilds once after confirmation or an unchanged path', async t => {
   type Snapshot = ConfigFormSnapshot<{ gitBashPath?: string }>;
   let state: Snapshot = { status: 'loading', value: undefined, revision: undefined, writable: false, user: {}, base: {} };
   const listeners = new Set<() => void>();
@@ -26,9 +26,12 @@ await test('the path field preserves the first revision and only saves on explic
   const ns = 'dsh-git-bash-on-win';
   const messages = (lang: string) => (require(ns + '/locale/' + lang + '.json') as { messages: Record<string, string> }).messages;
   const dictionaries = { zh: messages('zh'), en: messages('en') };
-  const fetch = t.mock.fn(async (url: string) => {
-    assert.equal(url, 'api/git-bash-on-win/locales');
-    return Response.json({ ok: true, dictionaries });
+  const rebuild = t.mock.fn(async () => new Response(null, { status: 204 }));
+  const fetch = t.mock.fn(async (url: string, options: RequestInit) => {
+    if (url === 'api/git-bash-on-win/locales') return Response.json({ ok: true, dictionaries });
+    assert.equal(url, 'api/git-bash-on-win/rebuild');
+    assert.deepEqual({ ...options }, { method: 'POST' });
+    return rebuild();
   });
   type PageProps = {
     shellForm: typeof form;
@@ -81,6 +84,7 @@ await test('the path field preserves the first revision and only saves on explic
   assert.deepEqual(button().children, [dictionaries.zh['action.saveLink']]);
   assert.equal(input().props.value, text);
   assert.equal(mutate.mock.callCount(), 0);
+  assert.equal(rebuild.mock.callCount(), 0);
 
   let confirm!: (accepted: boolean) => void;
   mutate.mock.mockImplementationOnce(() => new Promise(resolve => { confirm = resolve; }));
@@ -88,6 +92,7 @@ await test('the path field preserves the first revision and only saves on explic
   assert.equal(button().props.disabled, true);
   assert.equal(input().props.disabled, true);
   assert.deepEqual(structuredClone(mutate.mock.calls.map(call => call.arguments)), [[[{ op: 'set', path: ['gitBashPath'], value: text }], 3]]);
+  assert.equal(rebuild.mock.callCount(), 0, 'wait for Host acceptance');
   await act(async () => { publish({ revision: 5, value: {} }); confirm(false); });
   assert.equal(input().props.value, text);
   assert.ok(status().includes(dictionaries.zh['save.review']!.replace('{path}', dictionaries.zh['path.empty']!)));
@@ -99,18 +104,23 @@ await test('the path field preserves the first revision and only saves on explic
   assert.equal(mutate.mock.calls[1]!.arguments[1], 5);
   assert.ok(status().includes(dictionaries.en['save.failed']!.replace('{reason}', 'offline')));
 
+  assert.equal(rebuild.mock.callCount(), 0, 'refusal and save errors must not rebuild');
+
   await act(async () => { publish({ status: 'unavailable' }); });
   assert.equal(input().props.disabled, true);
   assert.equal(button().props.disabled, true);
   await act(async () => { publish({ status: 'ready', writable: false, value: { gitBashPath: 'inherited' } }); });
   assert.equal(input().props.disabled, true);
   assert.equal(button().props.disabled, true, 'this draft requires a write');
+  await act(async () => { click(); });
+  assert.equal(rebuild.mock.callCount(), 0);
   await act(async () => { renderer.unmount(); });
   assert.equal(listeners.size, 0);
   await act(async () => { renderer = create(page()); });
   assert.equal(input().props.value, 'inherited');
   assert.equal(button().props.disabled, false, 'no write required');
   await act(async () => { click(); publish({ writable: true, revision: 6 }); });
+  assert.equal(rebuild.mock.callCount(), 1, 'read-only settings allow rebuilding an unchanged path');
   await act(async () => { edit('   '); });
   await act(async () => { click(); });
   assert.equal(input().props.value, 'inherited');
@@ -122,5 +132,39 @@ await test('the path field preserves the first revision and only saves on explic
   assert.deepEqual(structuredClone(mutate.mock.calls[2]!.arguments), [[{ op: 'unset', path: ['gitBashPath'] }], 6]);
   await act(async () => { publish({ revision: 7, value: { gitBashPath: 'inherited' }, user: { timeoutMs: 500 } }); });
   assert.equal(input().props.value, 'inherited');
-  assert.equal(fetch.mock.callCount(), 1);
+  assert.equal(rebuild.mock.callCount(), 3, 'each allowed click rebuilt once');
+
+  await act(async () => { edit(text); });
+  mutate.mock.mockImplementationOnce(() => new Promise(resolve => { confirm = resolve; }));
+  let finish!: (response: Response) => void;
+  rebuild.mock.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+  await act(async () => { click(); click(); });
+  assert.equal(mutate.mock.callCount(), 4);
+  assert.equal(rebuild.mock.callCount(), 3);
+  await act(async () => {
+    publish({ revision: 8, value: { gitBashPath: text }, user: { gitBashPath: text, timeoutMs: 500 } });
+    confirm(true);
+  });
+  assert.equal(rebuild.mock.callCount(), 4);
+  assert.equal(input().props.disabled, true);
+  assert.equal(button().props.disabled, true);
+  await act(async () => { click(); });
+  assert.equal(rebuild.mock.callCount(), 4, 'the click lock covers the pending POST');
+  const reason = 'source busy <&>';
+  await act(async () => { finish(new Response(reason, { status: 500 })); });
+  assert.ok(status().includes(dictionaries.en['link.failedAfterSave']!.replace('{reason}', reason)));
+  assert.equal(input().props.value, text);
+  assert.equal(button().props.disabled, false);
+  await act(async () => { language = 'zh'; renderer.update(page()); });
+  assert.ok(status().includes(dictionaries.zh['link.failedAfterSave']!.replace('{reason}', reason)));
+  assert.equal(rebuild.mock.callCount(), 4);
+  rebuild.mock.mockImplementationOnce(async () => { throw new Error('offline'); });
+  await act(async () => { click(); });
+  assert.ok(status().includes(dictionaries.zh['link.failed']!.replace('{reason}', 'offline')));
+  assert.equal(rebuild.mock.callCount(), 5, 'disconnect does not retry the POST');
+  await act(async () => { click(); });
+  assert.ok(status().includes(dictionaries.zh['link.ok']!));
+  assert.equal(rebuild.mock.callCount(), 6);
+  assert.equal(mutate.mock.callCount(), 4, 'manual retries use the saved path without writing again');
+  assert.equal(fetch.mock.callCount(), 1 + rebuild.mock.callCount(), 'one dictionary read per activation');
 });

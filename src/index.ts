@@ -1,4 +1,5 @@
 import type { Context, Volatile } from '@deepseek-ai/cordis';
+import type {} from '@deepseek-ai/dsh-client-connection';
 import { Service } from '@deepseek-ai/cordis';
 import z from '@deepseek-ai/schemastery';
 import { SandboxBashExecutor } from '@deepseek-ai/dsh-bash-sandbox';
@@ -56,6 +57,19 @@ export default class GitBashExecutor extends SandboxBashExecutor {
     this.cacheDirectory = cacheDirectory;
     this.setupSpawn = ctx.subprocess.spawn.bind(ctx.subprocess);
     ctx.effect(() => () => this.disposeRuntime());
+    ctx.inject(['connection'], scope => {
+      scope.connection.fetch.register({
+        path: '/api/git-bash-on-win/rebuild', methods: ['POST'], requestBody: 'buffered',
+        fetch: async () => {
+          try {
+            await this.rebuildRuntime();
+            return new Response(null, { status: 204 });
+          } catch (error) {
+            return new Response(error instanceof Error ? error.message : String(error), { status: 500 });
+          }
+        },
+      });
+    });
   }
 
   private track<T>(operation: Promise<T>, owned = this.work): Promise<T> {

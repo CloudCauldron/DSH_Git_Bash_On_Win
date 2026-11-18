@@ -129,9 +129,9 @@ await test('the classic client registers dictionaries and the bundle slot after 
   type Registration = { id: string; factory(require: (name: string) => unknown): ClientPlugin };
   const load = t.mock.fn<(entry: Registration) => void>();
   const dictionaries = { zh: { 'path.label': 'Git Bash 路径' }, en: { 'path.label': 'Git Bash path' } };
-  const request = t.mock.fn(async (url: string, options: { cache: string }) => {
+  const request = t.mock.fn(async (url: string, options: RequestInit) => {
     assert.equal(url, 'api/git-bash-on-win/locales');
-    assert.deepEqual({ ...options }, { cache: 'no-store' });
+    assert.deepEqual({ ...options }, { cache: 'no-store', redirect: 'error' });
     return Response.json({ ok: true, dictionaries });
   });
   const client = require.resolve(ns + '/client');

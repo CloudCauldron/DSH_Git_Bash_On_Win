@@ -30,7 +30,7 @@ await test('Save and link fences the path write and rebuilds once after confirma
   const fetch = t.mock.fn(async (url: string, options: RequestInit) => {
     if (url === 'api/git-bash-on-win/locales') return Response.json({ ok: true, dictionaries });
     assert.equal(url, 'api/git-bash-on-win/rebuild');
-    assert.deepEqual({ ...options }, { method: 'POST' });
+    assert.deepEqual({ ...options }, { method: 'POST', redirect: 'error' });
     return rebuild();
   });
   type PageProps = {

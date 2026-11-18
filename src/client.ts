@@ -87,7 +87,7 @@ window.__ModuleLoader__.load({
           if (change && !await savePath(change, text, draft ? draft.revision : latest.revision)) return;
           setDraft(undefined);
           try {
-            const response = await fetch('api/git-bash-on-win/rebuild', { method: 'POST' });
+            const response = await fetch('api/git-bash-on-win/rebuild', { method: 'POST', redirect: 'error' });
             if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
             setFeedback({ key: 'link.ok' });
           } catch (error) {
@@ -132,7 +132,7 @@ window.__ModuleLoader__.load({
     return {
       inject: ['slots', 'configForms', 'locale'],
       async apply(ctx: ClientContext) {
-        const response = await fetch('api/git-bash-on-win/locales', { cache: 'no-store' });
+        const response = await fetch('api/git-bash-on-win/locales', { cache: 'no-store', redirect: 'error' });
         if (ctx.fiber.uid === null) return;
         if (!response.ok) throw new Error(`Git Bash locales: HTTP ${response.status}`);
         const data = await response.json() as { ok?: boolean; dictionaries?: { zh?: unknown; en?: unknown } } | null;

@@ -8,11 +8,9 @@ execution and strict offline cache purge. In DSH Web, open the sidebar, choose
 this README. The **Git Bash path** field and **Save and link** button appear
 below it. Keep the current path and click the button to rebuild its hard links.
 
-The approved [roadmap](docs/backend-20261117-refactor-roadmap.md),
-[contract baseline](docs/backend-20261117-contract-baseline.md) and
-[design decisions](docs/backend-20261117-design-decisions.md) govern the implementation.
-The [Phase 6 verification record](docs/backend-20261117-phase6-verification.md)
-records supported-system results and remaining manual consent checks.
+The approved backend roadmap, contract baseline and design decisions in `docs/`
+govern the implementation. The Phase 6 verification record lists supported-system
+results and remaining manual consent checks.
 The local `.deprecated/` archive is reference material, excluded from maintained
 source, tooling, tests, build output and packages. No archived runtime is launched.
 
@@ -33,8 +31,8 @@ the regenerated JavaScript and declarations with the source change.
 also cover `scripts/` and `test/`; `pnpm test` rebuilds and runs maintained
 `node --test` cases. The TypeScript 7 compiler uses the `@typescript/native`
 alias; TypeScript 6 supplies the API required by typescript-eslint.
-The [supervisor benchmark](docs/supervisor-benchmark.md) reports Windows command
-latency, launcher memory and CPU measurements, with steps to reproduce them.
+The supervisor benchmark in `docs/` reports Windows command latency, launcher
+memory and CPU measurements, with steps to reproduce them.
 Public DSH dependencies, including `@deepseek-ai/dsh-atomic-write`, are pinned.
 Standalone launcher, broker, helper and cleanup imports are installed as explicit
 dependencies, including their runtime peer requirements. Host-facing peer

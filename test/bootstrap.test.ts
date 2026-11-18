@@ -519,7 +519,7 @@ await test('checkout install, offline recovery and removal preserve shared Shell
   assert.ok(recovery.endsWith("/package.json'"), 'the command includes the DSH installation anchor');
   const git = discoverGitInstallation(process.env.DSH_TEST_GIT_BASH);
   try {
-    success(await run([join(git.root, 'bin/bash.exe'), '--noprofile', '--norc', '-c', recovery]));
+    success(await run([join(git.root, 'bin/bash.exe'), '--noprofile', '--norc', '-c', 'PATH=/usr/bin\n' + recovery]));
     assert.equal(statSync(join(cache, 'current.json')).isFile(), true);
   } finally { success(await purge()); }
   assert.equal(statSync(sourceFile).nlink, before.links);

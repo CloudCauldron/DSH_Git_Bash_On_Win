@@ -56,6 +56,18 @@ await test('successive native path reads retain exact Unicode and shorter string
   assert.deepEqual([first, second], [longer, fixture.cache]);
 });
 
+await test('cancelling a contended writer preserves the reason used to retire shared preparation', nativeOnly, async t => {
+  const f = await runtimeFixture(t);
+  const root = admitDirectory(f.directory), controller = new AbortController();
+  const owner = await acquireWriterLock(root, controller.signal);
+  try {
+    const reason = new Error('selection superseded');
+    const waiting = acquireWriterLock(root, controller.signal);
+    controller.abort(reason);
+    await assert.rejects(waiting, error => error === reason);
+  } finally { owner.close(); }
+});
+
 await test('an unsafe writer-lock object is refused without a contention wait or target cleanup', nativeOnly, async t => {
   const fixture = await runtimeFixture(t), pin = await fixture.prepare();
   await pin.release();

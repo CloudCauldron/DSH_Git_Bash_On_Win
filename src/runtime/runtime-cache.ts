@@ -136,7 +136,8 @@ async function tryWarm(root: Directory, source: GitInstallation, signal: AbortSi
     const generation = admitChildDirectory(generations, record.generationId);
     hold = pinDirectory(generation);
     if (currentRecord(root)?.generationId !== record.generationId) return undefined;
-    if (!samePath(record.sourceRoot, source.root) || record.layout !== source.layout) return undefined;
+    if (!samePath(record.sourceRoot, source.root)) return undefined;
+    if (record.layout !== source.layout) return 'sourceChanged';
     const base = admitBase(generation, record.layout);
     const origin = await readAnchors(source.root, source.layout).catch(error => {
       if (!isMissing(error)) throw error;

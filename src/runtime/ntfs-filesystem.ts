@@ -335,7 +335,8 @@ export async function acquireWriterLock(directory: Directory, signal: AbortSigna
       // A sharing conflict is waitable; an unsafe lock object is not.
       try { openOrdinaryFile(directory, '.writer-lock').close(); }
       catch (inspection) { if (!isMissing(inspection)) throw inspection; }
-      await delay(25, undefined, { signal });
+      // Timers wrap the abort reason. Preserve it so retirement is distinguishable from a setup failure.
+      await delay(25, undefined, { signal }).catch(error => { signal.throwIfAborted(); throw error; });
     }
   }
 }

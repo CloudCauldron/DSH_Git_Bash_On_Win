@@ -158,10 +158,10 @@ export default class GitBashExecutor extends SandboxBashExecutor {
 
   private confirmElevation(source: string, changed: boolean, signal: AbortSignal): Promise<void> {
     this.observeSelection();
-    const args = [fileURLToPath(new URL('./link-runtime-cache.js', import.meta.url)), dirname(this.cacheDirectory), join(source, 'usr/bin/bash.exe')];
+    const args = [process.execPath, fileURLToPath(new URL('./link-runtime-cache.js', import.meta.url)), dirname(this.cacheDirectory), join(source, 'usr/bin/bash.exe')];
     if (this.installAnchor) args.push(this.installAnchor);
     // Print literal arguments for Windows Git Bash, including paths with quotes or shell metacharacters.
-    const command = 'node ' + args.map(arg => "'" + arg.replaceAll('\\', '/').replaceAll("'", "'\\''") + "'").join(' ');
+    const command = args.map(arg => "'" + arg.replaceAll('\\', '/').replaceAll("'", "'\\''") + "'").join(' ');
     return this.feedback.confirm(changed, new LocalizedError('error.confirmationUnavailable', { command }), signal);
   }
 

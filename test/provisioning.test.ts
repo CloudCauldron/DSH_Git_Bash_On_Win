@@ -110,6 +110,19 @@ await test('automatic consent releases the writer and re-admits another writerâ€
   } finally { restore(); }
 });
 
+await test('a layout change within the selected Git installation is reported as a source change', nativeOnly, async t => {
+  const f = await runtimeFixture(t, 'mingw64');
+  await (await f.prepare()).release();
+  await fsp.rename(join(f.source, 'mingw64'), join(f.source, 'ucrt64'));
+  const restore = denyProbe(t);
+  try {
+    const cancel = new Error('test cancelled confirmation');
+    await assert.rejects(prepareRuntime({ ...f.request, elevation: async (source, changed) => {
+      assert.equal(source, f.source); assert.equal(changed, true); throw cancel;
+    } }, signal()), error => error === cancel);
+  } finally { restore(); }
+});
+
 await test('probe denial joins helper work and keeps its setup lease through final admission', nativeOnly, async t => {
   const fixture = await runtimeFixture(t), restore = denyProbe(t);
   const linked = deferred<void>(), range = deferred<boolean>();

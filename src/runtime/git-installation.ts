@@ -59,9 +59,7 @@ export function discoverGitInstallation(setting?: string): GitInstallation {
       if (hasSourceFile(root, `${layout}/bin/git.exe`)) return { root: root.path, layout };
     }
   }
-  throw new LocalizedError('error.gitNotFound',
-    { setting: 'gitBashPath', bin: 'bin/bash.exe', usrBin: 'usr/bin/bash.exe' },
-    { fallback: 'Supported Git for Windows was not found. Set gitBashPath to its absolute bin/bash.exe or usr/bin/bash.exe path.' });
+  throw new LocalizedError('error.gitNotFound', { bin: 'bin/bash.exe', usrBin: 'usr/bin/bash.exe' });
 }
 
 function hasSourceFile(root: Directory, path: string): boolean {

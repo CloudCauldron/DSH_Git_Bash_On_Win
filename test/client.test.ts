@@ -135,9 +135,9 @@ await test('Save and link fences the path write and rebuilds once after confirma
   assert.equal(rebuild.mock.callCount(), 0, 'wait for Host acceptance');
   await act(async () => { publish({ revision: 5, value: {} }); confirm(false); });
   assert.equal(input().props.value, text);
-  checkModal('save.review', translate('save.reviewDetail', { path: translate('path.empty') }));
+  checkModal('save.review', '最近保存的路径为空');
   await act(async () => { language = 'en'; renderer.update(page()); });
-  checkModal('save.review', translate('save.reviewDetail', { path: translate('path.empty') }));
+  checkModal('save.review', 'The last saved path is empty.');
   await closeModal();
   mutate.mock.mockImplementationOnce(async () => { throw new Error('offline'); });
   await act(async () => { click(); });
@@ -251,5 +251,13 @@ await test('Save and link fences the path write and rebuilds once after confirma
   await act(async () => { click(); });
   checkModal('link.failed', translate(elevated.key, elevated.params) + diagnostic, ['1', 'null', diagnostic], diagnostic);
   await closeModal();
+  for (const blank of ['', ' \t ']) {
+    await act(async () => { publish({ value: { gitBashPath: blank } }); });
+    await act(async () => { edit('another path'); });
+    mutate.mock.mockImplementationOnce(async () => false);
+    await act(async () => { click(); });
+    checkModal('save.review', '最近保存的路径为空');
+    await closeModal();
+  }
   assert.equal(fetch.mock.callCount(), 1 + rebuild.mock.callCount(), 'one dictionary read per activation');
 });

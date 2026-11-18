@@ -7,7 +7,6 @@
   "messages": {
     "form.unavailable": "配置不可用",
 
-    "path.empty": "未设置",
     "path.label": "Git Bash 路径",
     "path.placeholder": "留空则自动查找 Git Bash 路径",
 
@@ -15,7 +14,8 @@
 
     "save.failed": "路径保存失败",
     "save.review": "未保存",
-    "save.reviewDetail": "最近确认的路径为 {path}，请核对后重试。",
+    "save.reviewDetail": "最近保存的路径为 {path}，请核对后重试。",
+    "save.reviewEmpty": "最近保存的路径为空",
 
     "link.failed": "硬链接建立失败",
     "link.failedAfterSave": "路径已保存，但硬链接建立失败",
@@ -62,7 +62,7 @@
     "error.staleRebuild": "本次 Git Bash 运行时重建已失效。",
 
     "error.duplicateRelativePath": "Git 相对文件路径重复：{path}。",
-    "error.gitNotFound": "未找到受支持的 Git for Windows。请将 {setting} 设置为 {bin} 或 {usrBin} 的绝对路径。",
+    "error.gitNotFound": "未找到受支持的 Git for Windows。请将 Git Bash 路径设置为 {bin} 或 {usrBin} 的绝对路径。",
     "error.invalidRelativePath": "Git 相对文件路径无效：{path}。",
     "error.unsupportedRuntimeEntry": "不支持此 Git 运行时条目：{path}。",
 

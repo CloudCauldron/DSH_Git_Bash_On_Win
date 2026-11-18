@@ -4,9 +4,20 @@ import { writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { test } from 'node:test';
-import { chromium, type Page } from 'playwright-core';
+import { chromium, type Locator, type Page } from 'playwright-core';
 import { installedDsh } from '../scripts/installed-dsh.ts';
 import { localSpawn, runtimeFixture } from './fixtures.ts';
+
+function diagnosticSpacing(dialog: Locator) {
+  return dialog.locator('pre > code').evaluate(code => {
+    const pre = code.parentElement!, body = pre.parentElement!;
+    return {
+      nativeGap: getComputedStyle(body).marginBlockStart,
+      beforePre: pre.getBoundingClientRect().top - body.getBoundingClientRect().top,
+      beforeCode: code.getBoundingClientRect().top - pre.getBoundingClientRect().top,
+    };
+  });
+}
 
 async function openPlugin(page: Page, url: string) {
   await page.addLocatorHandler(page.getByRole('button', { name: /^(继续|Continuer)$/ }), button => button.click());
@@ -75,12 +86,13 @@ await test('installed DSH presents link failures and conflicts in native dialogs
       const response = await failed;
       assert.equal(response.status(), 500);
       const { error, localized } = await response.json();
-      assert.equal(localized.key, 'error.gitNotFound');
+      assert.deepEqual(localized, { key: 'error.gitNotFound', params: { bin: 'bin/bash.exe', usrBin: 'usr/bin/bash.exe' } });
+      assert.doesNotMatch(error, /gitBashPath/);
       const modal = first.getByRole('dialog', { name: '路径已保存，但硬链接建立失败', exact: true });
       await modal.waitFor();
       assert.equal(await modal.getAttribute('aria-modal'), 'true');
-      assert.ok((await modal.innerText()).includes('未找到受支持的 Git for Windows'));
-      assert.deepEqual(await modal.locator('code').allTextContents(), ['gitBashPath', 'bin/bash.exe', 'usr/bin/bash.exe']);
+      assert.equal(await modal.locator('p').textContent(), '未找到受支持的 Git for Windows。请将 Git Bash 路径设置为 bin/bash.exe 或 usr/bin/bash.exe 的绝对路径。');
+      assert.deepEqual(await modal.locator('code').allTextContents(), ['bin/bash.exe', 'usr/bin/bash.exe']);
       assert.equal(await modal.getByText(error, { exact: true }).count(), 0);
       assert.equal(await modal.evaluate(el => el.parentElement?.parentElement === document.body), true);
       assert.equal(await first.locator('[data-plugin-config]').getByText(error).count(), 0);
@@ -114,10 +126,21 @@ await test('installed DSH presents link failures and conflicts in native dialogs
       const conflict = first.getByRole('dialog', { name: '未保存', exact: true });
       await conflict.waitFor();
       assert.deepEqual(await conflict.locator('code').allTextContents(), [valid]);
-      assert.equal(await conflict.locator('p').innerText(), `最近确认的路径为 ${valid}，请核对后重试。`);
+      assert.equal(await conflict.locator('p').innerText(), `最近保存的路径为 ${valid}，请核对后重试。`);
       await conflict.getByRole('button', { name: '关闭' }).click();
       assert.equal(await input.inputValue(), 'an unsubmitted draft');
       assert.equal(rebuilds, 2, 'a refused save must not rebuild');
+      // Let the second tab clear the override without rebuilding against the system Git installation.
+      await second.route('**/api/git-bash-on-win/rebuild', route => route.fulfill({ status: 204 }), { times: 1 });
+      await otherInput.fill('');
+      await second.getByRole('button', { name: '保存并链接', exact: true }).click();
+      await toast.waitFor();
+      await button.click();
+      await conflict.waitFor();
+      assert.equal(await conflict.locator('p').innerText(), '最近保存的路径为空');
+      assert.equal(await conflict.locator('code').count(), 0);
+      assert.equal(rebuilds, 2);
+
       const french = await browser.browser()!.newContext({ locale: 'fr-FR' });
       try {
         const page = await french.newPage();
@@ -128,8 +151,8 @@ await test('installed DSH presents link failures and conflicts in native dialogs
         await save.click();
         const dialog = page.getByRole('dialog', { name: 'Path saved, but hard link creation failed' });
         await dialog.waitFor();
-        assert.ok((await dialog.innerText()).includes('Could not find a supported Git for Windows installation.'));
-        assert.deepEqual(await dialog.locator('code').allTextContents(), ['gitBashPath', 'bin/bash.exe', 'usr/bin/bash.exe']);
+        assert.equal(await dialog.locator('p').textContent(), 'Supported Git for Windows was not found. In the Git Bash path field, enter the absolute path to bin/bash.exe or usr/bin/bash.exe.');
+        assert.deepEqual(await dialog.locator('code').allTextContents(), ['bin/bash.exe', 'usr/bin/bash.exe']);
         await page.keyboard.press('Escape');
 
         const diagnostic = 'ENOENT: "C:/Git/bin/bash.exe"\n<original> & {path}';
@@ -140,6 +163,18 @@ await test('installed DSH presents link failures and conflicts in native dialogs
         const raw = page.getByRole('dialog', { name: 'Could not create hard links', exact: true });
         await raw.waitFor();
         assert.equal(await raw.locator('pre > code').textContent(), diagnostic);
+        assert.equal(await raw.locator('p').count(), 0);
+        assert.deepEqual(await diagnosticSpacing(raw), { nativeGap: '20px', beforePre: 0, beforeCode: 0 });
+        await page.keyboard.press('Escape');
+
+        await page.route('**/api/git-bash-on-win/rebuild', route => route.fulfill({
+          status: 500, json: { error: diagnostic, localized: { key: 'error.rebuildBusy', diagnostic } },
+        }), { times: 1 });
+        await save.click();
+        await raw.waitFor();
+        assert.ok(await raw.locator('p').textContent());
+        assert.equal(await raw.locator('pre > code').textContent(), diagnostic);
+        assert.deepEqual(await diagnosticSpacing(raw), { nativeGap: '20px', beforePre: 0, beforeCode: 0 });
       } finally { await french.close(); }
     } finally { await browser.close(); }
   } finally {

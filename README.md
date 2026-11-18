@@ -144,7 +144,7 @@ The button saves any change, then asks the active executor to rebuild the hard
 links once. With the path unchanged, it goes straight to rebuilding. Saving a
 blank field clears the profile override and restores the inherited path, or
 automatic discovery when no path is inherited. If DSH reports a configuration
-conflict, review the last confirmed path before retrying. If linking fails
+conflict, review the last saved path before retrying. If linking fails
 after a successful save, the path stays saved. Click again to retry linking.
 Shared command timeouts and output limits remain on DSH's **Shell** page.
 

@@ -7,7 +7,6 @@
   "messages": {
     "form.unavailable": "Settings unavailable",
 
-    "path.empty": "Unset",
     "path.label": "Git Bash path",
     "path.placeholder": "Leave blank to find Git Bash automatically",
 
@@ -15,7 +14,8 @@
 
     "save.failed": "Could not save the path",
     "save.review": "Changes were not saved",
-    "save.reviewDetail": "Last confirmed path: {path}. Review it and try again.",
+    "save.reviewDetail": "Last saved path: {path}. Review it and try again.",
+    "save.reviewEmpty": "The last saved path is empty.",
 
     "link.failed": "Could not create hard links",
     "link.failedAfterSave": "Path saved, but hard link creation failed",
@@ -62,7 +62,7 @@
     "error.staleRebuild": "Stale Git Bash runtime rebuild.",
 
     "error.duplicateRelativePath": "Duplicate Git relative file path: {path}",
-    "error.gitNotFound": "Could not find a supported Git for Windows installation. Set {setting} to the absolute path to {bin} or {usrBin}.",
+    "error.gitNotFound": "Supported Git for Windows was not found. In the Git Bash path field, enter the absolute path to {bin} or {usrBin}.",
     "error.invalidRelativePath": "Invalid Git relative file path: {path}",
     "error.unsupportedRuntimeEntry": "Unsupported Git runtime entry: {path}",
 

@@ -177,8 +177,7 @@ window.__ModuleLoader__.load({
           let description: import('react').ReactNode;
           let diagnostic: string | undefined;
           if (notice.key === 'save.review') {
-            description = notice.path ? withCode(t('save.reviewDetail'), { path: notice.path })
-              : t('save.reviewDetail', { path: t('path.empty') });
+            description = notice.path?.trim() ? withCode(t('save.reviewDetail'), { path: notice.path }) : t('save.reviewEmpty');
           } else if (!notice.reason) {
             description = t('form.unavailable');
           } else {
@@ -189,9 +188,10 @@ window.__ModuleLoader__.load({
               diagnostic = localized.diagnostic || undefined;
             } else diagnostic = error;
           }
-          return React.createElement(Modal, { open: true, title: t(notice.key), description, closeLabel: t('close'), onClose: dismiss },
-            diagnostic !== undefined ? React.createElement('pre', { style: { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', margin: 0 } },
-              React.createElement('code', null, diagnostic)) : undefined);
+          const h = React.createElement;
+          return h(Modal, { open: true, title: t(notice.key), description, closeLabel: t('close'), onClose: dismiss },
+            diagnostic !== undefined ? h('pre', { style: { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', margin: 0, padding: 0 } },
+              h('code', { style: { display: 'block', margin: 0, padding: 0 } }, diagnostic)) : undefined);
         }
 
         ctx.slots.inject('shell.overlay', () => ctx.slots.register({

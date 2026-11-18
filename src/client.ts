@@ -176,7 +176,7 @@ window.__ModuleLoader__.load({
         const notify = (message: Feedback) => notices.set({ ...message, id: ++sequence });
 
         // Mount the browser projection once per plugin lifetime. The executor may start after this settings page.
-        let projection: Promise<unknown> | undefined;
+        let projection: Promise<void> | undefined;
         async function mountFeedback(signal: AbortSignal) {
           const reply = await fetch(feedbackUrl, { signal, cache: 'no-store', redirect: 'error' });
           if (!reply.ok) throw new Error('Git Bash feedback: HTTP ' + reply.status);
@@ -189,6 +189,7 @@ window.__ModuleLoader__.load({
           const local = React.useSyncExternalStore(notices.subscribe, notices.getSnapshot);
           const [automatic, setAutomatic] = React.useState<RebuildNotice>({});
           const [submitted, setSubmitted] = React.useState<string>();
+          const watching = React.useRef(false);
           React.useEffect(() => {
             const controller = new AbortController();
             let retry: ReturnType<typeof setTimeout>;
@@ -198,11 +199,13 @@ window.__ModuleLoader__.load({
                 if (controller.signal.aborted) return;
                 for await (const snapshot of ctx.get('remote.gitBashFeedback').watch(controller.signal)) {
                   if (controller.signal.aborted) return;
+                  watching.current = true;
                   setAutomatic(snapshot);
                   if (snapshot.success) notify({ key: 'link.ok' });
                 }
               } catch { /* The next subscription receives the pending confirmation and undismissed failure. */ }
               if (!controller.signal.aborted) {
+                watching.current = false;
                 setAutomatic(previous => ({ failure: previous.failure }));
                 retry = setTimeout(() => { void connect(); }, 1500);
               }
@@ -238,9 +241,11 @@ window.__ModuleLoader__.load({
           if (!notice) return null;
           const dismiss = () => {
             if (failure) {
-              setAutomatic(previous => previous.failure?.id === failure.id ? { ...previous, failure: undefined } : previous);
-              // A lost acknowledgement is replayed on reconnect. A withdrawn host cannot lock the local dialog.
-              void answer('dismiss', failure.id).catch(() => {});
+              const close = () => setAutomatic(previous => previous.failure?.id === failure.id ? { ...previous, failure: undefined } : previous);
+              if (!watching.current) { close(); return; }
+              void answer('dismiss', failure.id).then(response => {
+                if (response.ok || response.status === 404 || response.status === 409) close();
+              }, () => {}); // Keep the close action available while the host still owns the failure.
             }
             else if (notices.getSnapshot() === local) notices.set(null);
           };

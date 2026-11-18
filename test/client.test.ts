@@ -4,6 +4,8 @@ import { createRequire } from 'node:module';
 import { test } from 'node:test';
 import { Script } from 'node:vm';
 import React from 'react';
+import { Context } from '@deepseek-ai/cordis';
+import { RebuildFeedback } from '../src/rebuild-feedback.ts';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 import type { ConfigFormSnapshot } from '@deepseek-ai/dsh-client-ui-settings/client';
 
@@ -26,12 +28,16 @@ await test('Save and link fences the path write and rebuilds once after confirma
   const ns = 'dsh-git-bash-on-win';
   const messages = (lang: string) => (require(ns + '/locale/' + lang + '.json') as { messages: Record<string, string> }).messages;
   const dictionaries = { zh: messages('zh'), en: messages('en') };
+  const host = new Context();
+  t.after(() => host.fiber.dispose());
+  const feedback = new RebuildFeedback(host);
+  const owner = host.extend({ invocation: { peer: { principal: { kind: 'owner' }, interactions: 'answer' } } });
+  const dismiss = t.mock.fn((url: string) => feedback.handle(new Request('http://localhost/' + url, { method: 'POST' })));
   const rebuild = t.mock.fn(async () => new Response(null, { status: 204 }));
   const fetch = t.mock.fn(async (url: string, options: RequestInit) => {
     if (url === 'api/git-bash-on-win/locales') return Response.json({ ok: true, dictionaries });
-    if (url === 'api/git-bash-on-win/feedback') return new Promise<Response>((_, reject) => {
-      options.signal!.addEventListener('abort', () => reject(options.signal!.reason), { once: true });
-    });
+    if (url === 'api/git-bash-on-win/feedback') return feedback.handle(new Request('http://localhost/' + url));
+    if (url.startsWith('api/git-bash-on-win/feedback?action=dismiss')) return dismiss(url);
     assert.equal(url, 'api/git-bash-on-win/rebuild');
     assert.deepEqual({ ...options }, { method: 'POST', redirect: 'error' });
     return rebuild();
@@ -57,6 +63,7 @@ await test('Save and link fences the path write and rebuilds once after confirma
     };
   }
   const applyContext = {
+    remote: { async $mount() {} }, get: () => owner.get('gitBashFeedback'),
     fiber: { uid: 1 }, effect: (setup: () => unknown) => setup(),
     locale: { register() {} }, configForms: { get: () => form },
     slots: {
@@ -274,5 +281,16 @@ await test('Save and link fences the path write and rebuilds once after confirma
     checkModal('save.review', '最近保存的路径为空');
     await closeModal();
   }
+  await act(async () => { feedback.failed(new Error('first')); feedback.failed(new Error('second')); });
+  checkModal('link.failed', translate('error.unknown') + 'first', ['first'], 'first');
+  dismiss.mock.mockImplementationOnce(() => new Response(null, { status: 503 }));
+  await closeModal();
+  checkModal('link.failed', translate('error.unknown') + 'first', ['first'], 'first');
+  await closeModal();
+  checkModal('link.failed', translate('error.unknown') + 'second', ['second'], 'second');
+  await closeModal();
+  assert.equal(renderer.root.findAllByType(Modal).length, 0);
+  assert.equal(dismiss.mock.callCount(), 3);
+  assert.equal(fetch.mock.calls.filter(call => call.arguments[0].endsWith('/feedback')).length, 1, 'one stream contract across overlay remounts');
   assert.equal(fetch.mock.calls.filter(call => call.arguments[0].endsWith('/locales')).length, 1, 'one dictionary read per activation');
 });

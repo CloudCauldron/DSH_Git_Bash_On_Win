@@ -178,7 +178,7 @@ the named profile enables this copy of the plugin. It reuses an already valid
 runtime in that profile's private cache. Git and the profile
 cache must be on the same NTFS volume.
 
-`pnpm test:browser` exercises the confirmation and failure dialogs across two
+`pnpm test:browser` exercises the confirmation and failure dialogs across three
 tabs using a disposable Git fixture. To verify Windows consent as well, run
 `DSH_GIT_BASH_UAC_TEST=deny pnpm test:browser` and choose **No**, then run
 `DSH_GIT_BASH_UAC_TEST=approve pnpm test:browser` and choose **Yes**.

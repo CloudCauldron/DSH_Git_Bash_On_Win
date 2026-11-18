@@ -239,14 +239,10 @@ await test('installed DSH presents link failures and conflicts in native dialogs
       const previous = (await fixture.current()).generationId;
       await writeFile(join(fixture.source, 'etc/profile'), 'updated Git installation');
       await writeFile(gate, '');
-      // The installed host's separate plugin hot-reload EventSource also consumes one HTTP/1 connection per tab.
-      // Isolate this plugin's connection use while mounting the real native overlay in six tabs.
-      const extra = await Promise.all(Array.from({ length: 4 }, async () => {
-        const page = await browser.newPage();
-        await page.route('**/plugins/events*', route => route.fulfill({ status: 204 }));
-        await page.goto(url);
-        return page;
-      }));
+      // DSH already holds a hot-reload HTTP/1 stream in each tab. A second streaming GET per tab
+      // exhausts Chromium's same-origin pool here, blocking the third settings page and the consent POST.
+      const third = await browser.newPage();
+      await openPlugin(third, url);
       const priorFailure = second.getByRole('dialog', { name: '硬链接建立失败', exact: true });
       if (manual !== 'approve') {
         await second.route('**/api/git-bash-on-win/rebuild', route => route.fulfill({ status: 500, json: { error: 'prior manual error' } }), { times: 1 });
@@ -256,7 +252,7 @@ await test('installed DSH presents link failures and conflicts in native dialogs
       const pending = runShell();
       const consent = first.getByRole('dialog', { name: 'Git Bash', exact: true });
       const other = second.getByRole('dialog', { name: 'Git Bash', exact: true });
-      await Promise.race([Promise.all([consent, other, ...extra.map(page => page.getByRole('dialog', { name: 'Git Bash', exact: true }))].map(modal => modal.waitFor())),
+      await Promise.race([Promise.all([consent, other, third.getByRole('dialog', { name: 'Git Bash', exact: true })].map(modal => modal.waitFor())),
         pending.then(result => { throw new Error('Shell settled before confirmation: ' + JSON.stringify(result)); })]);
       assert.equal(await consent.locator('p').innerText(), 'Git Bash 原文件发生变化，需要获取管理员权限以重新链接。');
       assert.equal(await consent.getByRole('button', { name: '关闭' }).isDisabled(), true);
@@ -273,7 +269,7 @@ await test('installed DSH presents link failures and conflicts in native dialogs
       assert.equal(receipt.status(), 204);
       assert.equal(await second.evaluate(async url => (await fetch(url, { method: 'POST' })).status, receipt.url()), 409);
       await Promise.all([consent.waitFor({ state: 'hidden' }), other.waitFor({ state: 'hidden' })]);
-      await Promise.all(extra.map(page => page.close()));
+      await third.close();
       const result = await pending;
       assert.equal(await readFile(attempts, 'utf8'), 'plan\n');
       if (manual === 'approve') {

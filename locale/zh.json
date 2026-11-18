@@ -21,6 +21,8 @@
     "link.failedAfterSave": "路径已保存，但硬链接建立失败",
     "link.ok": "已建立硬链接",
 
+    "error.unknown": "未知错误。",
+
     "error.dshManifestPath": "{variable} 必须是 {manifest} 的绝对路径。",
     "error.dshNotInstalled": "未找到已安装的 DSH。请将 {variable} 设为其 {manifest} 的绝对路径。",
     "error.dshVersion": "需要 {packageName} {version}。升级前请核对此安装的兼容性。",

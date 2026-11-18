@@ -21,6 +21,8 @@
     "link.failedAfterSave": "Path saved, but hard link creation failed",
     "link.ok": "Hard links created",
 
+    "error.unknown": "Unknown error.",
+
     "error.dshManifestPath": "{variable} must be an absolute {manifest} path.",
     "error.dshNotInstalled": "No installed DSH found; set {variable} to its absolute {manifest} path.",
     "error.dshVersion": "Expected {packageName} {version}; review compatibility before using this installation.",

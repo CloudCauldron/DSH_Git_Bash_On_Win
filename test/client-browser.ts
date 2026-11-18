@@ -8,15 +8,15 @@ import { chromium, type Locator, type Page } from 'playwright-core';
 import { installedDsh } from '../scripts/installed-dsh.ts';
 import { localSpawn, runtimeFixture } from './fixtures.ts';
 
-function diagnosticSpacing(dialog: Locator) {
-  return dialog.locator('pre > code').evaluate(code => {
-    const pre = code.parentElement!, body = pre.parentElement!;
-    return {
-      nativeGap: getComputedStyle(body).marginBlockStart,
-      beforePre: pre.getBoundingClientRect().top - body.getBoundingClientRect().top,
-      beforeCode: code.getBoundingClientRect().top - pre.getBoundingClientRect().top,
-    };
-  });
+async function checkDiagnostic(dialog: Locator, explanation: string, diagnostic: string) {
+  const description = dialog.locator('p'), code = description.locator('code').last();
+  assert.equal(await description.textContent(), explanation + diagnostic);
+  assert.equal(await code.textContent(), diagnostic);
+  assert.deepEqual(await code.evaluate(el => {
+    const style = getComputedStyle(el);
+    return [style.display, style.marginTop, style.whiteSpace, style.fontSize];
+  }), ['block', '4px', 'pre-wrap', '12px']);
+  assert.equal(await dialog.locator('pre').count(), 0);
 }
 
 async function openPlugin(page: Page, url: string) {
@@ -162,9 +162,7 @@ await test('installed DSH presents link failures and conflicts in native dialogs
         await save.click();
         const raw = page.getByRole('dialog', { name: 'Could not create hard links', exact: true });
         await raw.waitFor();
-        assert.equal(await raw.locator('pre > code').textContent(), diagnostic);
-        assert.equal(await raw.locator('p').count(), 0);
-        assert.deepEqual(await diagnosticSpacing(raw), { nativeGap: '20px', beforePre: 0, beforeCode: 0 });
+        await checkDiagnostic(raw, 'Unknown error.', diagnostic);
         await page.keyboard.press('Escape');
 
         await page.route('**/api/git-bash-on-win/rebuild', route => route.fulfill({
@@ -172,9 +170,7 @@ await test('installed DSH presents link failures and conflicts in native dialogs
         }), { times: 1 });
         await save.click();
         await raw.waitFor();
-        assert.ok(await raw.locator('p').textContent());
-        assert.equal(await raw.locator('pre > code').textContent(), diagnostic);
-        assert.deepEqual(await diagnosticSpacing(raw), { nativeGap: '20px', beforePre: 0, beforeCode: 0 });
+        await checkDiagnostic(raw, 'Git Bash hard links are being rebuilt. Try again when the rebuild finishes.', diagnostic);
       } finally { await french.close(); }
     } finally { await browser.close(); }
   } finally {

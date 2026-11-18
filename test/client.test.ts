@@ -76,7 +76,7 @@ await test('Save and link fences the path write and rebuilds once after confirma
   let language: keyof typeof dictionaries = 'en';
   const useShellForm = <T,>(select: (s: Snapshot) => T) => select(React.useSyncExternalStore(form.subscribe, form.getSnapshot));
   const translate: PageProps['t'] = (key, params) => key === 'close' ? (language === 'en' ? 'Close' : '关闭')
-    : dictionaries[language][key]!.replace(/\{(\w+)\}/g, (match, name: string) => params?.[name] ?? match);
+    : (dictionaries[language][key] ?? key).replace(/\{(\w+)\}/g, (match, name: string) => params?.[name] ?? match);
   const page = () => React.createElement(React.Fragment, null,
     React.createElement(Page, { ...injected, shellForm: form, useShellForm, t: translate }),
     React.createElement(Overlay, { t: translate }),
@@ -95,7 +95,11 @@ await test('Save and link fences the path write and rebuilds once after confirma
     assert.equal(modal.props.title, translate(key));
     assert.equal(textOf(modal), description);
     assert.deepEqual(modal.findAllByType('code').map(textOf), code);
-    assert.deepEqual(modal.findAllByType('pre').map(pre => textOf(pre.findByType('code'))), raw === undefined ? [] : [raw]);
+    assert.equal(modal.props.children, undefined, 'feedback belongs in the description');
+    assert.equal(modal.findAllByType('pre').length, 0);
+    const blocks = modal.findAllByType('code').filter(node => node.props.style?.display === 'block');
+    assert.deepEqual(blocks.map(textOf), raw === undefined ? [] : [raw]);
+    for (const block of blocks) assert.equal(block.props.style.marginTop, 4);
     assert.equal(modal.props.closeLabel, translate('close'));
     assert.equal(renderer.root.findAllByType(Toast).length, 0);
     assert.equal(renderer.root.findByType(Page).findAllByType(Modal).length, 0);
@@ -143,7 +147,7 @@ await test('Save and link fences the path write and rebuilds once after confirma
   await act(async () => { click(); });
   assert.equal(input().props.value, text);
   assert.equal(mutate.mock.calls[1]!.arguments[1], 5);
-  checkModal('save.failed', 'offline', ['offline'], 'offline');
+  checkModal('save.failed', translate('error.unknown') + 'offline', ['offline'], 'offline');
   await closeModal();
 
   assert.equal(rebuild.mock.callCount(), 0, 'refusal and save errors must not rebuild');
@@ -209,7 +213,7 @@ await test('Save and link fences the path write and rebuilds once after confirma
   assert.equal(rebuild.mock.callCount(), 4);
   rebuild.mock.mockImplementationOnce(async () => { throw new Error('offline'); });
   await act(async () => { click(); });
-  checkModal('link.failed', 'offline', ['offline'], 'offline');
+  checkModal('link.failed', translate('error.unknown') + 'offline', ['offline'], 'offline');
   await closeModal();
   assert.equal(rebuild.mock.callCount(), 5, 'disconnect does not retry the POST');
   await act(async () => { click(); });
@@ -233,7 +237,7 @@ await test('Save and link fences the path write and rebuilds once after confirma
   mutate.mock.mockImplementationOnce(async () => { throw new Error('offline'); });
   await act(async () => { click(); });
   assert.equal(mutate.mock.calls.at(-1)!.arguments[1], 8, 'an unavailable recovery snapshot preserves the draft fence');
-  checkModal('save.failed', 'offline', ['offline'], 'offline');
+  checkModal('save.failed', translate('error.unknown') + 'offline', ['offline'], 'offline');
   await closeModal();
   await act(async () => { publish({ revision: 11, value: { gitBashPath: 'Host path' } }); });
   mutate.mock.mockImplementationOnce(async () => false);
@@ -250,6 +254,12 @@ await test('Save and link fences the path write and rebuilds once after confirma
   await act(async () => { edit('Host path'); });
   await act(async () => { click(); });
   checkModal('link.failed', translate(elevated.key, elevated.params) + diagnostic, ['1', 'null', diagnostic], diagnostic);
+  await closeModal();
+  rebuild.mock.mockImplementationOnce(async () => Response.json({
+    error: diagnostic, localized: { key: 'error.unrecognizedInThisClient' },
+  }, { status: 500 }));
+  await act(async () => { click(); });
+  checkModal('link.failed', '未知错误。' + diagnostic, [diagnostic], diagnostic);
   await closeModal();
   for (const blank of ['', ' \t ']) {
     await act(async () => { publish({ value: { gitBashPath: blank } }); });

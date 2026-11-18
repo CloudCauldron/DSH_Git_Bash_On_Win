@@ -68,6 +68,7 @@ export async function runtimeFixture(t: TestContext, layout: GitLayout = 'ucrt64
     else await writeFile(join(source, file), `fixture ${file}\n`);
   }
   const request: RuntimePreparation = {
+    elevation: 'manual',
     cacheDirectory: cache, gitBashPath: join(source, 'usr/bin/bash.exe'),
     spawn: () => { throw new Error('This fixture must never start a subprocess or open UAC.'); },
   };
@@ -161,7 +162,7 @@ export async function executionFixture(t: TestContext) {
   };
   ctx.provide('profileContext', { dir: directory });
   ctx.provide('sandboxPolicy', { defaultMode: 'read-only', resolve: () => ({ mode: 'read-only', workspaceRoot: workspace }) });
-  const request: RuntimePreparation = { cacheDirectory: cache, gitBashPath: join(source, 'usr/bin/bash.exe'), spawn: ctx.subprocess.spawn.bind(ctx.subprocess) };
+  const request: RuntimePreparation = { cacheDirectory: cache, gitBashPath: join(source, 'usr/bin/bash.exe'), elevation: 'manual', spawn: ctx.subprocess.spawn.bind(ctx.subprocess) };
   return { ctx, directory, source, workspace, cache, installed, request,
     async prepare() { const pin = await prepareRuntime(request, new AbortController().signal); pins.add(pin); return pin; },
   };

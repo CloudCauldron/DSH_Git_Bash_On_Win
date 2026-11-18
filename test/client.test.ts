@@ -29,6 +29,9 @@ await test('Save and link fences the path write and rebuilds once after confirma
   const rebuild = t.mock.fn(async () => new Response(null, { status: 204 }));
   const fetch = t.mock.fn(async (url: string, options: RequestInit) => {
     if (url === 'api/git-bash-on-win/locales') return Response.json({ ok: true, dictionaries });
+    if (url === 'api/git-bash-on-win/feedback') return new Promise<Response>((_, reject) => {
+      options.signal!.addEventListener('abort', () => reject(options.signal!.reason), { once: true });
+    });
     assert.equal(url, 'api/git-bash-on-win/rebuild');
     assert.deepEqual({ ...options }, { method: 'POST', redirect: 'error' });
     return rebuild();
@@ -66,7 +69,9 @@ await test('Save and link fences the path write and rebuilds once after confirma
   };
   const load = t.mock.fn<(entry: { factory(require: (name: string) => unknown): { apply(ctx: unknown): Promise<void> } }) => void>();
   const client = require.resolve(ns + '/client');
-  new Script(readFileSync(client, 'utf8'), { filename: client }).runInNewContext({ window: { __ModuleLoader__: { load } }, fetch, Error });
+  new Script(readFileSync(client, 'utf8'), { filename: client }).runInNewContext({
+    window: { __ModuleLoader__: { load } }, fetch, Error, AbortController, clearTimeout, setTimeout,
+  });
   await load.mock.calls[0]!.arguments[0].factory(name => {
     if (name === 'react') return React;
     if (name === '@deepseek-ai/dsh-client-store') return { createSnapshotStore };
@@ -269,5 +274,5 @@ await test('Save and link fences the path write and rebuilds once after confirma
     checkModal('save.review', '最近保存的路径为空');
     await closeModal();
   }
-  assert.equal(fetch.mock.callCount(), 1 + rebuild.mock.callCount(), 'one dictionary read per activation');
+  assert.equal(fetch.mock.calls.filter(call => call.arguments[0].endsWith('/locales')).length, 1, 'one dictionary read per activation');
 });

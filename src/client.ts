@@ -15,7 +15,7 @@ window.__ModuleLoader__.load({
       Input: import('react').ComponentType<import('react').ComponentProps<'input'>>;
       Button: import('react').ComponentType<import('react').ComponentProps<'button'>>;
       Modal: import('react').ComponentType<{ open: boolean; title: string; description?: import('react').ReactNode;
-        closeLabel: string; onClose(): void }>;
+        closeLabel: string; onClose(): void; className?: string; footer?: import('react').ReactNode }>;
       Toast: import('react').ComponentType<{ text: string; onDone(): void }>;
     };
 
@@ -24,6 +24,8 @@ window.__ModuleLoader__.load({
     type ShellForm = import('@deepseek-ai/dsh-client-ui-settings/client').ConfigForm<ShellSettings>;
     type Snapshot = ReturnType<ShellForm['getSnapshot']>;
     type Failure = { error: string; localized?: import('./localized-error.ts').LocalizedMessage };
+    type RebuildNotice = import('./rebuild-feedback.ts').RebuildNotice;
+    const feedbackUrl = 'api/git-bash-on-win/feedback';
     type Feedback = { key: 'link.ok' } | { key: 'save.review'; path?: string }
       | { key: 'save.failed'; reason?: Failure } | { key: 'link.failed' | 'link.failedAfterSave'; reason: Failure };
     interface LocalizedProps { t(key: string, params?: Record<string, string>): string }
@@ -130,6 +132,26 @@ window.__ModuleLoader__.load({
       return { error: text || `HTTP ${response.status}` };
     }
 
+    async function followFeedback(signal: AbortSignal, receive: (notice: RebuildNotice) => void) {
+      const response = await fetch(feedbackUrl, { signal, cache: 'no-store', redirect: 'error' });
+      if (!response.ok || !response.body) return;
+      const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+      let partial = '';
+      try {
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done || signal.aborted) break;
+          const lines = (partial + value).split('\n');
+          partial = lines.pop()!;
+          for (const line of lines) receive(JSON.parse(line) as RebuildNotice);
+        }
+      } finally { await reader.cancel(); }
+    }
+
+    function answer(action: 'confirm' | 'dismiss', id: string) {
+      return fetch(feedbackUrl + '?action=' + action + '&id=' + encodeURIComponent(id), { method: 'POST', redirect: 'error' });
+    }
+
     // Split the translated template before inserting values so even a path containing braces stays literal.
     function withCode(template: string, params?: Record<string, string>) {
       if (!params) return template;
@@ -168,9 +190,60 @@ window.__ModuleLoader__.load({
         const notify = (message: Feedback) => notices.set({ ...message, id: ++sequence });
 
         function FeedbackOverlay({ t }: LocalizedProps) {
-          const notice = React.useSyncExternalStore(notices.subscribe, notices.getSnapshot);
+          const local = React.useSyncExternalStore(notices.subscribe, notices.getSnapshot);
+          const [automatic, setAutomatic] = React.useState<RebuildNotice>({});
+          const [submitted, setSubmitted] = React.useState<string>();
+          React.useEffect(() => {
+            const controller = new AbortController();
+            let retry: ReturnType<typeof setTimeout>;
+            const connect = async () => {
+              try {
+                await followFeedback(controller.signal, snapshot => {
+                  setAutomatic(snapshot);
+                  if (snapshot.success) notify({ key: 'link.ok' });
+                });
+              } catch { /* The next subscription receives the pending confirmation and undismissed failure. */ }
+              if (!controller.signal.aborted) {
+                setAutomatic(previous => ({ failure: previous.failure }));
+                retry = setTimeout(() => { void connect(); }, 1500);
+              }
+            };
+            void connect();
+            return () => { controller.abort(); clearTimeout(retry); };
+          }, []);
+          // Send consent only after React has committed the closed dialog.
+          React.useEffect(() => {
+            if (!submitted) return;
+            void answer('confirm', submitted).then(response => {
+              if (!response.ok && response.status !== 409) setSubmitted(undefined);
+            }, () => setSubmitted(undefined));
+          }, [submitted]);
+          const confirmation = automatic.confirmation;
+          const open = confirmation && confirmation.id !== submitted;
+          React.useLayoutEffect(() => {
+            if (open) {
+              const close = document.querySelector<HTMLButtonElement>('.dsh-git-bash-confirm button[aria-label]');
+              if (close) close.disabled = true;
+            }
+          }, [open, confirmation?.id]);
+          if (open) {
+            return React.createElement(Modal, { open: true, className: 'dsh-git-bash-confirm', title: 'Git Bash',
+              description: t(confirmation.sourceChanged ? 'link.confirmChanged' : 'link.confirmSetup'),
+              closeLabel: t('close'), onClose() {},
+              footer: React.createElement(Button, { type: 'button', autoFocus: true,
+                onClick: () => setSubmitted(confirmation.id) }, t('action.confirm')) });
+          }
+          const failure = automatic.failure;
+          const notice = failure ? { key: 'link.failed' as const, ...failure } : local;
           if (!notice) return null;
-          const dismiss = () => { if (notices.getSnapshot() === notice) notices.set(null); };
+          const dismiss = () => {
+            if (failure) {
+              setAutomatic(previous => previous.failure?.id === failure.id ? { ...previous, failure: undefined } : previous);
+              // A lost acknowledgement is replayed on reconnect. A withdrawn host cannot lock the local dialog.
+              void answer('dismiss', failure.id).catch(() => {});
+            }
+            else if (notices.getSnapshot() === local) notices.set(null);
+          };
           if (notice.key === 'link.ok') {
             return React.createElement(Toast, { key: notice.id, text: t(notice.key), onDone: dismiss });
           }

@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { writeFile } from 'node:fs/promises';
+import { access, readFile, stat, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
+import { pathToFileURL } from 'node:url';
 import { test } from 'node:test';
 import { chromium, type Locator, type Page } from 'playwright-core';
 import { installedDsh } from '../scripts/installed-dsh.ts';
 import { localSpawn, runtimeFixture } from './fixtures.ts';
+import { purgeRuntimeCache } from '../src/runtime/runtime-cache.ts';
 
 async function checkDiagnostic(dialog: Locator, explanation: string, diagnostic: string) {
   const description = dialog.locator('p'), code = description.locator('code').last();
@@ -33,6 +35,7 @@ await test('installed DSH presents link failures and conflicts in native dialogs
   const spawn = await localSpawn(t);
   assert.ok(spawn);
   const fixture = await runtimeFixture(t, 'ucrt64', join('home', 'profiles', 'web', '.git-bash-on-win'));
+  const valid = fixture.request.gitBashPath!, originalLinks = (await stat(valid)).nlink;
   const home = join(fixture.directory, 'home'), profile = join(home, 'profiles/web');
   const env = { ...process.env, DSH_HOME: home, DSH_TELEMETRY_DISABLED: '1',
     TMP: fixture.directory, TEMP: fixture.directory, TMPDIR: fixture.directory };
@@ -44,8 +47,49 @@ await test('installed DSH presents link failures and conflicts in native dialogs
   const repo = resolve(import.meta.dirname, '..');
   execFileSync(process.execPath, [join(repo, 'scripts/plugin.ts'), pnpm, 'web', 'add', 'file:' + repo.replaceAll('\\', '/')], { cwd, env });
 
-  const host = spawn({ argv: [process.execPath, cli, 'web', '--no-open', '--host', '127.0.0.1', '--port', '0'],
-    cwd, env, graceMs: 500, signal: AbortSignal.timeout(120_000),
+  const gate = join(home, 'deny-probe'), attempts = join(home, 'elevation-attempts'), manual = process.env.DSH_GIT_BASH_UAC_TEST;
+  const realConsent = manual === 'approve' || manual === 'deny';
+  const preload = join(home, 'fixture-preload.mjs'), driver = join(profile, 'fixture-command.mjs');
+  // Scope fault injection to this host and the owned fixture. Default browser runs can never open UAC.
+  await writeFile(preload, `
+    import fs from 'node:fs';
+    import { basename, toNamespacedPath } from 'node:path';
+    import { syncBuiltinESMExports } from 'node:module';
+    const original = fs.linkSync, write = fs.writeFileSync;
+    fs.linkSync = (source, target) => {
+      if (source === toNamespacedPath(${JSON.stringify(join(fixture.source, 'usr/bin/bash.exe'))}) && basename(target) === '.probe' && fs.existsSync(${JSON.stringify(gate)}))
+        throw Object.assign(Error('fixture probe'), { code: 'EPERM' });
+      return original(source, target);
+    };
+    fs.writeFileSync = (path, ...args) => {
+      if (typeof path === 'string' && basename(path) === 'plan.json' && path.startsWith(toNamespacedPath(${JSON.stringify(fixture.cache)}))) {
+        write(${JSON.stringify(attempts)}, 'plan\\n', { flag: 'a' });
+        if (!${realConsent}) throw Error('fixture plan creation failed');
+      }
+      return write(path, ...args);
+    };
+    syncBuiltinESMExports();
+  `);
+  // A normal shell request with an overlapping fixture workspace exercises preparation
+  // but cannot execute the fixture's text-only bash.exe after a successful rebuild.
+  await writeFile(driver, `
+    export const inject = ['connection', 'shell'];
+    export function apply(ctx) {
+      ctx.connection.fetch.register({ path: '/api/fixture-command', methods: ['POST'], requestBody: 'buffered',
+        async fetch() {
+          try {
+            const ex = await ctx.shell.execute(ctx.shell.resolve({ command: 'true', sandboxPolicy: {
+              mode: 'read-only', workspaceRoot: ${JSON.stringify(fixture.source)} } }));
+            return Response.json(await ex.result());
+          } catch (error) { return Response.json({ error: error.message }); }
+        } });
+    }
+  `);
+  const patch = join(home, 'fixture-patch.json');
+  await writeFile(patch, JSON.stringify([{ insert: [{ id: 'fixture-command', name: pathToFileURL(driver).href }] }]));
+  const host = spawn({ argv: [process.execPath, '--import', pathToFileURL(preload).href, cli, 'web', '--patch', patch,
+    '--no-open', '--host', '127.0.0.1', '--port', '0'],
+    cwd, env, graceMs: 500, signal: AbortSignal.timeout(realConsent ? 300_000 : 120_000),
     stdio: { stdin: 'ignore', stdout: 'pipe', stderr: { maxBytes: 32_768 } } });
   try {
     const output = createInterface({ input: host.stdout! });
@@ -113,7 +157,6 @@ await test('installed DSH presents link failures and conflicts in native dialogs
       const otherInput = await openPlugin(second, url);
       await otherInput.click();
       assert.equal(await otherInput.inputValue(), missing);
-      const valid = join(fixture.source, 'usr/bin/bash.exe');
       await otherInput.fill(valid);
       await second.getByRole('button', { name: '保存并链接', exact: true }).click();
       const toast = second.getByRole('alert').filter({ hasText: '已建立硬链接' });
@@ -172,9 +215,83 @@ await test('installed DSH presents link failures and conflicts in native dialogs
         await raw.waitFor();
         await checkDiagnostic(raw, 'Git Bash hard links are being rebuilt. Try again when the rebuild finishes.', diagnostic);
       } finally { await french.close(); }
+
+      const field = await openPlugin(second, url);
+      const saveSelection = async (path: string) => {
+        await second.route('**/api/git-bash-on-win/rebuild', route => route.fulfill({ status: 204 }), { times: 1 });
+        await field.fill(path);
+        const saved = second.waitForResponse(res => new URL(res.url()).pathname === '/api/git-bash-on-win/rebuild');
+        await second.getByRole('button', { name: '保存并链接', exact: true }).click();
+        await saved;
+        await toast.waitFor();
+      };
+      await saveSelection(join(cwd, 'another-missing', 'bin', 'bash.exe'));
+      await first.goto(url);
+      const runShell = () => first.evaluate(async () => (await fetch('api/fixture-command', { method: 'POST' })).json() as Promise<{ error: string }>);
+      const failedAutomatically = first.getByRole('dialog', { name: '硬链接建立失败', exact: true });
+      assert.match((await runShell()).error, /Git for Windows/);
+      await failedAutomatically.waitFor();
+      await failedAutomatically.getByRole('button', { name: '关闭' }).click();
+      await failedAutomatically.waitFor({ state: 'hidden' });
+
+      // Save the fixture selection without an explicit rebuild. Force a real source-stamp mismatch.
+      await saveSelection(valid);
+      const previous = (await fixture.current()).generationId;
+      await writeFile(join(fixture.source, 'etc/profile'), 'updated Git installation');
+      await writeFile(gate, '');
+      const pending = runShell();
+      const consent = first.getByRole('dialog', { name: 'Git Bash', exact: true });
+      const other = second.getByRole('dialog', { name: 'Git Bash', exact: true });
+      await Promise.race([Promise.all([consent.waitFor(), other.waitFor()]),
+        pending.then(result => { throw new Error('Shell settled before confirmation: ' + JSON.stringify(result)); })]);
+      assert.equal(await consent.locator('p').innerText(), 'Git Bash 原文件发生变化，需要获取管理员权限以重新链接。');
+      assert.equal(await consent.getByRole('button', { name: '关闭' }).isDisabled(), true);
+      await first.keyboard.press('Escape');
+      await first.mouse.click(2, 2);
+      assert.equal(await consent.isVisible(), true);
+      await assert.rejects(access(attempts), { code: 'ENOENT' });
+      const confirm = consent.getByRole('button', { name: '确认' });
+      await confirm.focus();
+      console.log(realConsent ? 'Windows UAC: please ' + manual + ' the fixture linker prompt now.' : 'Testing confirmed linking failure');
+      const confirmed = first.waitForResponse(res => new URL(res.url()).searchParams.get('action') === 'confirm');
+      await first.keyboard.press('Enter');
+      const receipt = await confirmed;
+      assert.equal(receipt.status(), 204);
+      assert.equal(await second.evaluate(async url => (await fetch(url, { method: 'POST' })).status, receipt.url()), 409);
+      await Promise.all([consent.waitFor({ state: 'hidden' }), other.waitFor({ state: 'hidden' })]);
+      const result = await pending;
+      assert.equal(await readFile(attempts, 'utf8'), 'plan\n');
+      if (manual === 'approve') {
+        assert.match(result.error, /overlap/i);
+        assert.notEqual((await fixture.current()).generationId, previous);
+        await first.getByRole('alert').filter({ hasText: '已建立硬链接' }).waitFor();
+      } else {
+        const reason = realConsent ? /ShellExecuteExW failed \(Win32 1223\)/ : /fixture plan creation failed/;
+        assert.match(result.error, reason);
+        assert.equal((await fixture.current()).generationId, previous);
+        await failedAutomatically.waitFor();
+        assert.match(await failedAutomatically.innerText(), reason);
+        await first.reload();
+        await failedAutomatically.waitFor();
+        await failedAutomatically.getByRole('button', { name: '关闭' }).click();
+        await failedAutomatically.waitFor({ state: 'hidden' });
+      }
+      await unlink(gate);
+      if (manual !== 'approve') {
+        // A new selection retries the failed preparation with ordinary permissions.
+        await saveSelection(valid.replaceAll('\\', '/'));
+        await toast.waitFor({ state: 'detached' });
+        const rebuilt = first.getByRole('alert').filter({ hasText: '已建立硬链接' });
+        const [shell] = await Promise.all([runShell(), rebuilt.waitFor()]);
+        assert.match(shell.error, /overlap/i);
+        assert.equal(await consent.count(), 0);
+        assert.equal(await readFile(attempts, 'utf8'), 'plan\n');
+      }
     } finally { await browser.close(); }
   } finally {
     host.terminate();
     assert.equal(await host.waitForExit(AbortSignal.timeout(10_000)), true);
+    await purgeRuntimeCache(fixture.cache);
+    assert.equal((await stat(valid)).nlink, originalLinks);
   }
 });

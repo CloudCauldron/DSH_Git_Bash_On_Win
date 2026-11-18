@@ -380,7 +380,7 @@ await test('a competing process can finish root ownership before the losing mkdi
       const program = `
         const [module, cacheDirectory, gitBashPath] = process.argv.slice(1);
         const { prepareRuntime } = await import(module);
-        const pin = await prepareRuntime({ cacheDirectory, gitBashPath,
+        const pin = await prepareRuntime({ cacheDirectory, gitBashPath, elevation: 'manual',
           spawn() { throw new Error('Unexpected subprocess'); } }, new AbortController().signal);
         await pin.release();
       `;

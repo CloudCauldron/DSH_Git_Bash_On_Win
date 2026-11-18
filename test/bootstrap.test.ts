@@ -22,6 +22,7 @@ import * as BashTool from '../src/tool.ts';
 import { findInstalledDshManifest, installedDsh, SUPPORTED_DSH } from '../scripts/installed-dsh.ts';
 import { localSpawn, runtimeFixture, temporaryDirectory, readAclRecords } from './fixtures.ts';
 import { pathExists } from '../src/runtime/ntfs-filesystem.ts';
+import { discoverGitInstallation } from '../src/runtime/git-installation.ts';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const require = createRequire(import.meta.url);
@@ -476,6 +477,18 @@ await test('checkout install, offline recovery and removal preserve shared Shell
       assert.equal(probed(), false);
       assert.equal(rebuilds.mock.callCount(), 0);
       assert.equal(readFileSync(patchFile, 'utf8'), beforeRead);
+      const feedbackUrl = 'http://localhost/api/git-bash-on-win/feedback';
+      for (const method of ['GET', 'POST']) assert.equal((await routes.fetch(new Request(feedbackUrl, { method }),
+        { principal: { kind: 'other' } })).status, 403);
+      const denied = mock.method(fs, 'linkSync', () => { throw Object.assign(new Error('fixture probe denial'), { code: 'EPERM' }); });
+      syncBuiltinESMExports();
+      try {
+        await assert.rejects(ctx.shell.execute(ctx.shell.resolve({ command: 'true', sandboxPolicy: { mode: 'read-only', workspaceRoot: home } })), error => {
+          assert.equal(error.localized.key, 'error.confirmationUnavailable');
+          fs.writeFileSync(join(home, 'recovery-command'), error.localized.params.command);
+          return true;
+        });
+      } finally { denied.mock.restore(); syncBuiltinESMExports(); }
       const first = rebuild();
       const busy = await rebuild();
       assert.equal(busy.ok, false);
@@ -502,6 +515,13 @@ await test('checkout install, offline recovery and removal preserve shared Shell
   } finally { success(await purge()); }
   assert.equal(statSync(sourceFile).nlink, before.links);
   assert.deepEqual(parse(readFileSync(patchPath, 'utf8')), patches);
+  const recovery = readFileSync(join(home, 'recovery-command'), 'utf8');
+  const git = discoverGitInstallation(process.env.DSH_TEST_GIT_BASH);
+  try {
+    success(await run([join(git.root, 'bin/bash.exe'), '--noprofile', '--norc', '-c', recovery]));
+    assert.equal(statSync(join(cache, 'current.json')).isFile(), true);
+  } finally { success(await purge()); }
+  assert.equal(statSync(sourceFile).nlink, before.links);
   const prepare = () => fixture.prepare(false, new AbortController().signal, cache);
   // Standalone script imports must resolve with native profile autoInstallPeers:false.
   // No repository node_modules junction or custom module resolver hides omissions.

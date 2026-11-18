@@ -148,6 +148,40 @@ conflict, review the last saved path before retrying. If linking fails
 after a successful save, the path stays saved. Click again to retry linking.
 Shared command timeouts and output limits remain on DSH's **Shell** page.
 
+On the first Bash command, DSH checks the cached runtime. If it needs new
+links, it tries one link with your normal permissions. A successful automatic
+rebuild shows **Hard links created**. If the probe requires administrator
+permission, the DSH window shows a confirmation dialog before Windows opens
+UAC. The dialog identifies a detected change to Git's source files, or explains
+that permission is needed for setup or cache recovery. Select **Confirm** to
+continue. **Save and link** already requests the rebuild explicitly and proceeds
+directly to UAC when needed. Only the fixed linker runs elevated.
+
+An automatic rebuild failure appears in the **Could not create hard links**
+dialog, including when you are in chat. An undismissed failure is available to
+a reconnected window while the executor is running. Shell commands keep their
+own timeouts. If a command times out before confirmation, retry the command
+after linking succeeds.
+
+If no interactive DSH window is available, including in `dsh headless`, a
+probe that requires elevation stops and prints a command for **Windows Git
+Bash**. Run the printed command from an ordinary terminal and retry the task
+in a new DSH process. It invokes the installed package for the affected
+profile and selected Git installation.
+
+```bash
+node '<installed package>/lib/link-runtime-cache.js' '<absolute DSH profile directory>' '<absolute path to bash.exe>'
+```
+
+The command checks that this plugin is enabled in the named profile and uses
+its private cache. It reuses an already valid runtime. Git and the profile
+cache must be on the same NTFS volume.
+
+`pnpm test:browser` exercises the confirmation and failure dialogs across two
+tabs using a disposable Git fixture. To verify Windows consent as well, run
+`DSH_GIT_BASH_UAC_TEST=deny pnpm test:browser` and choose **No**, then run
+`DSH_GIT_BASH_UAC_TEST=approve pnpm test:browser` and choose **Yes**.
+
 The field belongs to the existing `pwsh-sandbox` row. A manual profile override
 can look like:
 

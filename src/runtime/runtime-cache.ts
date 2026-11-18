@@ -24,8 +24,10 @@ export interface RuntimePreparation {
   readonly spawn: Subprocess['spawn'];
   readonly gitBashPath?: string;
   readonly rebuild?: boolean;
+  readonly elevation: 'manual' | ((sourceRoot: string, sourceChanged: boolean) => Promise<void>);
 }
 export interface GenerationPin {
+  readonly freshlyBuilt: boolean;
   lease(scope: Pick<SandboxExecutionPolicy, 'mode' | 'workspaceRoot' | 'sessionId'>, signal: AbortSignal): Promise<RuntimeUse>;
   release(): Promise<void>;
 }
@@ -124,10 +126,11 @@ function admitBase(generation: Directory, layout: GitLayout): Directory {
 }
 
 /** One optimistic attempt; the second selector read is required even with a pin. */
-async function tryWarm(root: Directory, source: GitInstallation, signal: AbortSignal): Promise<GenerationPin | undefined> {
+async function tryWarm(root: Directory, source: GitInstallation, signal: AbortSignal): Promise<GenerationPin | 'sourceChanged' | undefined> {
   const record = currentRecord(root);
   if (!record) return undefined;
   let hold: NativeHold | undefined;
+  let sourceChanged = false;
   try {
     const generations = admitChildDirectory(root, 'generations');
     const generation = admitChildDirectory(generations, record.generationId);
@@ -135,20 +138,42 @@ async function tryWarm(root: Directory, source: GitInstallation, signal: AbortSi
     if (currentRecord(root)?.generationId !== record.generationId) return undefined;
     if (!samePath(record.sourceRoot, source.root) || record.layout !== source.layout) return undefined;
     const base = admitBase(generation, record.layout);
-    const origin = await readAnchors(source.root, source.layout), target = await readAnchors(base.path, record.layout);
-    if (!sameAnchors(origin, record.anchors) || !sameAnchors(target, record.anchors)) return undefined;
+    const origin = await readAnchors(source.root, source.layout).catch(error => {
+      if (!isMissing(error)) throw error;
+      // A saved source anchor has disappeared. A missing cache link alone has a different explanation.
+      return undefined;
+    });
+    sourceChanged = !origin || !sameAnchors(origin, record.anchors);
+    const target = await readAnchors(base.path, record.layout);
+    if (sourceChanged) return 'sourceChanged';
+    if (!sameAnchors(target, record.anchors)) return undefined;
     signal.throwIfAborted();
-    const pin = new RuntimePin(root, generation, base, record, hold);
+    const pin = new RuntimePin(root, generation, base, record, hold, false);
     hold = undefined;
     return pin;
   } catch (error) {
     if (!isMissing(error) && !isBusy(error)) throw error;
-    return undefined;
+    return sourceChanged ? 'sourceChanged' : undefined;
   } finally { hold?.close(); }
 }
 
-/** The writer retains ownership through linking, final capture and commit. */
+interface ElevationRequest { source: Directory; layout: GitLayout; sourceChanged: boolean }
+
 export async function prepareRuntime(request: RuntimePreparation, signal: AbortSignal): Promise<GenerationPin> {
+  let approved: ElevationRequest | undefined;
+  for (;;) {
+    const result = await preparePass(request, signal, approved);
+    if (!('source' in result)) return result;
+    // preparePass has released the writer and discarded its probe generation.
+    signal.throwIfAborted();
+    if (typeof request.elevation !== 'function') throw new LocalizedError('error.confirmationRequired');
+    await request.elevation(result.source.path, result.sourceChanged);
+    approved = result;
+  }
+}
+
+/** Re-admit the current selection after consent, including a cache built by another instance. */
+async function preparePass(request: RuntimePreparation, signal: AbortSignal, approved?: ElevationRequest): Promise<GenerationPin | ElevationRequest> {
   signal.throwIfAborted();
   const source = discoverGitInstallation(request.gitBashPath);
   const sourceDirectory = admitDirectory(source.root);
@@ -166,19 +191,23 @@ export async function prepareRuntime(request: RuntimePreparation, signal: AbortS
   }
   if (!request.rebuild) {
     const warm = await tryWarm(root, source, signal);
-    if (warm) return warm;
+    if (warm && warm !== 'sourceChanged') return warm;
   }
   const lock = await acquireWriterLock(root, signal);
   let pin: GenerationPin | undefined;
   try {
     revalidateRoot(root);
-    if (!request.rebuild) {
-      pin = await tryWarm(root, source, signal);
-      if (pin) return pin;
+    const warm = request.rebuild ? undefined : await tryWarm(root, source, signal);
+    if (warm && warm !== 'sourceChanged') {
+      pin = warm;
+    } else {
+      const generations = ensureDirectory(root, 'generations');
+      collectUnused(generations, currentRecord(root)?.generationId);
+      const authorized = request.elevation === 'manual' || !!approved && approved.layout === source.layout
+        && samePath(approved.source.path, source.root) && sameIdentity(approved.source, sourceDirectory);
+      pin = await buildFresh(root, generations, source, sourceDirectory, signal, request.spawn, authorized);
+      if (!pin) return { source: sourceDirectory, layout: source.layout, sourceChanged: warm === 'sourceChanged' };
     }
-    const generations = ensureDirectory(root, 'generations');
-    collectUnused(generations, currentRecord(root)?.generationId);
-    pin = await buildFresh(root, generations, source, signal, request.spawn);
     return pin;
   } finally { await closePreparationLock(lock, pin); }
 }
@@ -192,18 +221,20 @@ async function closePreparationLock(lock: NativeHold, pin: GenerationPin | undef
   }
 }
 
-async function buildFresh(root: Directory, generations: Directory, source: GitInstallation, signal: AbortSignal, spawn: Subprocess['spawn']): Promise<GenerationPin> {
+async function buildFresh(root: Directory, generations: Directory, source: GitInstallation, sourceDirectory: Directory,
+  signal: AbortSignal, spawn: Subprocess['spawn'], authorized: boolean): Promise<GenerationPin | undefined> {
   signal.throwIfAborted();
   const id = randomUUID().replaceAll('-', ''), generation = createDirectory(generations, id);
   let hold: NativeHold | undefined;
   let published = false;
   try {
-    const sourceDirectory = admitDirectory(source.root);
+    revalidateDirectory(sourceDirectory);
     const sourceBin = admitChildDirectory(admitChildDirectory(sourceDirectory, 'usr'), 'bin');
     let elevated = false;
     try { createHardlink(sourceBin, 'bash.exe', generation, '.probe'); }
     catch (error) {
       if (!(error as { linkPermissionDenied?: boolean }).linkPermissionDenied) throw error;
+      if (!authorized) return undefined;
       elevated = true;
     }
     if (!elevated) unlinkEntry(generation, '.probe');
@@ -236,7 +267,7 @@ async function buildFresh(root: Directory, generations: Directory, source: GitIn
     // return its published pin even if aborted; the executor guards adoption.
     await writeFileAtomic(join(root.path, 'current.json'), `${JSON.stringify(record)}\n`, { mode: 0o600, dirMode: 0o700 });
     published = true;
-    const pin = new RuntimePin(root, generation, base, record, hold);
+    const pin = new RuntimePin(root, generation, base, record, hold, true);
     hold = undefined;
     return pin;
   } finally {
@@ -331,7 +362,9 @@ class RuntimePin implements GenerationPin {
   private readonly instance = randomUUID();
   private readonly views = new Map<string, Promise<string>>();
 
-  constructor(root: Directory, generation: Directory, base: Directory, record: CurrentRuntime, hold: NativeHold) {
+  readonly freshlyBuilt: boolean;
+  constructor(root: Directory, generation: Directory, base: Directory, record: CurrentRuntime, hold: NativeHold, freshlyBuilt: boolean) {
+    this.freshlyBuilt = freshlyBuilt;
     this.root = root; this.generation = generation; this.base = base; this.record = record; this.hold = hold;
   }
 

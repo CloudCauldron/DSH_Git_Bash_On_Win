@@ -20,6 +20,8 @@ import GitBashExecutor from '../src/index.ts';
 import { buildRuntimeEnvironment } from '../src/runtime/git-installation.ts';
 import { admitDirectory, claimDirectory, createDirectory, createJunction, isBusy, NativeHold, pathExists } from '../src/runtime/ntfs-filesystem.ts';
 import { purgeRuntimeCache } from '../src/runtime/runtime-cache.ts';
+import type { RebuildNotice } from '../src/rebuild-feedback.ts';
+import type { ConnectionFetchRoute } from '@deepseek-ai/dsh-client-connection';
 import { executionFixture, nativeOnly, runtimeFixture } from './fixtures.ts';
 
 function deferred<T>() {
@@ -153,6 +155,78 @@ await test('caller cancellation and native timeout abandon waits without cancell
   const execution = await active;
   assert.equal(f.spawned.length, 1);
   f.spawned[0]!.finish(); await execution.done;
+});
+
+async function feedbackClient(ctx: Context) {
+  let route!: ConnectionFetchRoute;
+  ctx.provide('connection', { fetch: { register(row: ConnectionFetchRoute) {
+    if (row.path.endsWith('/feedback')) route = row;
+  } } });
+  await ctx.loader.await();
+  const url = 'http://localhost' + route.path;
+  const subscribe = async () => {
+    const response = await route.fetch(new Request(url));
+    const reader = response.body!.getReader();
+    return { close: () => reader.cancel(), next: async () => JSON.parse(new TextDecoder().decode((await reader.read()).value)) as RebuildNotice };
+  };
+  return { subscribe, answer: (action: string, id: string) =>
+    route.fetch(new Request(url + '?action=' + action + '&id=' + id, { method: 'POST' })) };
+}
+
+await test('losing the last owner cancels automatic consent and late confirmations cannot open UAC', nativeOnly, async t => {
+  const f = await executorFixture(t), ui = await feedbackClient(f.ctx);
+  const first = await ui.subscribe(), second = await ui.subscribe();
+  await Promise.all([first.next(), second.next()]);
+  const original = fs.linkSync;
+  const denied = t.mock.method(fs, 'linkSync', (source: fs.PathLike, target: fs.PathLike) => {
+    if (basename(String(target)) === '.probe') throw Object.assign(Error('fixture denial'), { code: 'EPERM' });
+    original(source, target);
+  });
+  syncBuiltinESMExports();
+  try {
+    const shell = f.run(), sibling = f.run();
+    const a = (await first.next()).confirmation!, b = (await second.next()).confirmation!;
+    assert.deepEqual(a, b); assert.equal(a.sourceChanged, false);
+    await first.close();
+    const rejected = Promise.all([shell, sibling].map(call => assert.rejects(call, /Windows Git Bash/)));
+    await second.close();
+    await rejected;
+    assert.equal((await ui.answer('confirm', a.id)).status, 409);
+    const back = await ui.subscribe();
+    const snapshot = await back.next();
+    assert.equal(snapshot.confirmation, undefined);
+    assert.match(snapshot.failure!.reason.error, /link-runtime-cache\.js/);
+    await back.close();
+  } finally { denied.mock.restore(); syncBuiltinESMExports(); }
+});
+
+await test('automatic publication failure after a shell deadline stays visible until an owner dismisses it', nativeOnly, async t => {
+  const f = await executorFixture(t), ui = await feedbackClient(f.ctx);
+  const client = await ui.subscribe();
+  assert.equal((await client.next()).failure, undefined);
+  const hold = f.holdInventory();
+  const expired = f.run({ timeoutMs: 50, onExpiry: 'kill' });
+  await hold.entered;
+  assert.equal((await (await expired).result()).timedOut, true);
+  const original = fsp.rename;
+  const fault = t.mock.method(fsp, 'rename', async (from: fs.PathLike, to: fs.PathLike) => {
+    if (basename(String(to)) === 'current.json') throw new Error('fixture publication failed');
+    return original(from, to);
+  });
+  syncBuiltinESMExports();
+  try {
+    hold.resume();
+    const failure = (await client.next()).failure!;
+    assert.equal(failure.reason.error, 'fixture publication failed');
+    await client.close();
+    const other = await ui.subscribe();
+    try {
+      assert.deepEqual((await other.next()).failure, failure);
+      assert.equal((await ui.answer('dismiss', failure.id)).status, 204);
+      assert.equal((await other.next()).failure, undefined);
+      assert.equal(f.spawned.length, 0);
+    } finally { await other.close(); }
+  } finally { fault.mock.restore(); syncBuiltinESMExports(); }
 });
 
 await test('rebuild supersedes unfinished initialization and becomes shared readiness before awaiting its drain', nativeOnly, async t => {
@@ -372,7 +446,7 @@ await test('a rejected broker outcome with an empty range permits explicit rebui
   const logged: unknown[][] = [];
   const log = t.mock.method(f.providerContext.logger, 'error', (...args: unknown[]) => { logged.push(args); });
   try {
-    await assert.rejects(f.run(), error => error === failure);
+    await assert.rejects(f.executor.rebuildRuntime(), error => error === failure);
     assert.equal(f.spawned.length, 0);
     assert.equal(pathExists(join(f.cache, 'current.json')), false);
     mock.mock.restore(); syncBuiltinESMExports();
@@ -402,7 +476,7 @@ await test('an already rejected broker shutdown remains a local resource failure
   const logged: unknown[][] = [];
   const log = t.mock.method(f.providerContext.logger, 'error', (...args: unknown[]) => { logged.push(args); });
   try {
-    await assert.rejects(f.run(), AggregateError);
+    await assert.rejects(f.executor.rebuildRuntime(), AggregateError);
     await assert.rejects(f.executor.rebuildRuntime(), AggregateError);
     assert.equal(launches, 1, 'failed local shutdown must block another setup');
     assert.equal(pathExists(join(f.cache, 'current.json')), false);

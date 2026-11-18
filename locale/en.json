@@ -11,6 +11,7 @@
     "path.placeholder": "Leave blank to find Git Bash automatically",
 
     "action.saveLink": "Save and link",
+    "action.confirm": "Confirm",
 
     "save.failed": "Could not save the path",
     "save.review": "Changes were not saved",
@@ -20,6 +21,8 @@
     "link.failed": "Could not create hard links",
     "link.failedAfterSave": "Path saved, but hard link creation failed",
     "link.ok": "Hard links created",
+    "link.confirmChanged": "The Git Bash source files have changed. Administrator permission is required to recreate the hard links.",
+    "link.confirmSetup": "Administrator permission is required to create the Git Bash links.",
 
     "error.unknown": "Unknown error.",
 
@@ -35,6 +38,7 @@
     "error.pluginUsage": "Usage: {command}",
     "error.purgeIncomplete": "Runtime cleanup and uninstallation are incomplete.",
     "error.purgeUsage": "Usage: {command}",
+    "error.linkProfile": "This DSH profile must have this copy of the Git Bash plugin installed and enabled: {path}",
     "error.removalBlocked": "Runtime cleanup is incomplete; package removal was not started. Close every DSH instance using this profile and resolve the reported obstruction before retrying.",
 
     "error.customizedModule": "Cannot adapt the customized {id} module; the shell was not replaced.",
@@ -60,6 +64,8 @@
     "error.providerCleanupFailed": "Git Bash provider failed to release owned resources.",
     "error.providerStopping": "The Git Bash provider is stopping.",
     "error.rebuildBusy": "Git Bash hard links are being rebuilt. Try again when the rebuild finishes.",
+    "error.confirmationRequired": "An explicit link request or interactive confirmation is required before elevation.",
+    "error.confirmationUnavailable": "Administrator permission is required, but there is no interactive DSH window to confirm. Run this command in Windows Git Bash, then retry in a new DSH process: {command}",
     "error.stalePreparation": "Stale Git Bash runtime preparation.",
     "error.staleRebuild": "Stale Git Bash runtime rebuild.",
 

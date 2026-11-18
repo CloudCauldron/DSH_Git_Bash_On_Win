@@ -10,6 +10,7 @@ export default class GitBashExecutor extends SandboxBashExecutor {
     static Config: typeof SandboxBashExecutor.Config;
     readonly config: Config;
     private readonly cacheDirectory;
+    private readonly feedback;
     private readonly setupSpawn;
     private slot?;
     private rebuildOp?;
@@ -22,9 +23,10 @@ export default class GitBashExecutor extends SandboxBashExecutor {
     private track;
     private ownCleanup;
     private retire;
-    /** Observation, not Loader events or string equality alone, detaches old work. */
+    /** Detach obsolete work before it can request consent, launch a broker, or serve a command. */
     private observeSelection;
     private createSlot;
+    private confirmElevation;
     private current;
     private acquireUse;
     protected executeArgv(spec: ShellExecSpec, argvOrPrepare: readonly string[] | ((signal: AbortSignal) => Promise<readonly string[]>), onStarted?: (execution: ShellExecution) => void): Promise<ShellExecution>;

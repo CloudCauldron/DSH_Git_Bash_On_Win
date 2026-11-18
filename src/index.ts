@@ -6,11 +6,12 @@ import { SandboxBashExecutor } from '@deepseek-ai/dsh-bash-sandbox';
 import type { Config as BashConfig } from '@deepseek-ai/dsh-bash-local';
 import type { ShellExecSpec, ShellExecution } from '@deepseek-ai/dsh-shell';
 import type Subprocess from '@deepseek-ai/dsh-subprocess';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { hasRuntimeCleanupFailure, prepareRuntime, type GenerationPin, type RuntimeUse } from './runtime/runtime-cache.ts';
 import { commandReceiver } from './adapter.ts';
 import { LocalizedAggregateError, LocalizedError } from './localized-error.ts';
+import { describeFailure, RebuildFeedback } from './rebuild-feedback.ts';
 
 export interface Config extends BashConfig { gitBashPath: Volatile<string | undefined> }
 
@@ -40,6 +41,7 @@ export default class GitBashExecutor extends SandboxBashExecutor {
 
   declare readonly config: Config;
   private readonly cacheDirectory: string;
+  private readonly feedback = new RebuildFeedback();
   private readonly setupSpawn: Subprocess['spawn'];
   private slot?: PreparationSlot;
   private rebuildOp?: PreparationSlot;
@@ -57,8 +59,17 @@ export default class GitBashExecutor extends SandboxBashExecutor {
     super(ctx, config);
     this.cacheDirectory = cacheDirectory;
     this.setupSpawn = ctx.subprocess.spawn.bind(ctx.subprocess);
+    ctx.on('loader/volatile-update', () => { if (this.slot && !this.slot.pin) this.observeSelection(); });
     ctx.effect(() => () => this.disposeRuntime());
     ctx.inject(['connection'], scope => {
+      scope.effect(() => () => this.feedback.disconnect());
+      scope.connection.fetch.register({
+        path: '/api/git-bash-on-win/feedback', methods: ['GET', 'POST'], requestBody: 'buffered',
+        fetch: async request => {
+          if (request.method === 'POST') this.observeSelection();
+          return this.feedback.handle(request);
+        },
+      });
       scope.connection.fetch.register({
         path: '/api/git-bash-on-win/rebuild', methods: ['POST'], requestBody: 'buffered',
         fetch: async () => {
@@ -66,8 +77,7 @@ export default class GitBashExecutor extends SandboxBashExecutor {
             await this.rebuildRuntime();
             return new Response(null, { status: 204 });
           } catch (error) {
-            return Response.json({ error: error instanceof Error ? error.message : String(error),
-              localized: error instanceof LocalizedError || error instanceof LocalizedAggregateError ? error.localized : undefined }, { status: 500 });
+            return Response.json(describeFailure(error), { status: 500 });
           }
         },
       });
@@ -97,7 +107,7 @@ export default class GitBashExecutor extends SandboxBashExecutor {
     }), this.cleanup);
   }
 
-  /** Observation, not Loader events or string equality alone, detaches old work. */
+  /** Detach obsolete work before it can request consent, launch a broker, or serve a command. */
   private observeSelection(): string | undefined {
     const selection = this.config.gitBashPath.get();
     const obsolete = new Set<PreparationSlot>();
@@ -119,7 +129,9 @@ export default class GitBashExecutor extends SandboxBashExecutor {
         this.observeSelection();
         controller.signal.throwIfAborted();
         this.stopping.signal.throwIfAborted();
-        const pin = await prepareRuntime({ cacheDirectory: this.cacheDirectory, gitBashPath: selection, rebuild, spawn: this.setupSpawn }, controller.signal).catch(error => {
+        const pin = await prepareRuntime({ cacheDirectory: this.cacheDirectory, gitBashPath: selection, rebuild, spawn: this.setupSpawn,
+          elevation: rebuild ? 'manual' : (source, changed) => this.confirmElevation(source, changed, controller.signal),
+        }, controller.signal).catch(error => {
           if (hasRuntimeCleanupFailure(error)) this.cleanupErrors.push(error);
           throw error;
         });
@@ -129,11 +141,23 @@ export default class GitBashExecutor extends SandboxBashExecutor {
           this.stopping.signal.throwIfAborted();
           if (slot !== (rebuild ? this.rebuildOp : this.slot)) throw new LocalizedError('error.stalePreparation');
           slot.pin = pin;
+          if (!rebuild && pin.freshlyBuilt) this.feedback.succeeded();
           return pin;
         } catch (error) { await this.ownCleanup(pin.release()); throw error; }
+      }).catch(error => {
+        if (!rebuild && error !== controller.signal.reason) this.feedback.failed(error);
+        throw error;
       })),
     };
     return slot;
+  }
+
+  private confirmElevation(source: string, changed: boolean, signal: AbortSignal): Promise<void> {
+    this.observeSelection();
+    const args = [fileURLToPath(new URL('./link-runtime-cache.js', import.meta.url)), dirname(this.cacheDirectory), join(source, 'usr/bin/bash.exe')];
+    // Print literal arguments for Windows Git Bash, including paths with quotes or shell metacharacters.
+    const command = 'node ' + args.map(arg => "'" + arg.replaceAll('\\', '/').replaceAll("'", "'\\''") + "'").join(' ');
+    return this.feedback.confirm(changed, new LocalizedError('error.confirmationUnavailable', { command }), signal);
   }
 
   private current(slot: PreparationSlot, signal: AbortSignal): boolean {

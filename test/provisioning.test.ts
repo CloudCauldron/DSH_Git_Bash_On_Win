@@ -73,6 +73,38 @@ await test('local probe is removed before inventory and creates no elevation con
   finally { mock.mock.restore(); syncBuiltinESMExports(); }
 });
 
+await test('automatic consent releases the writer and re-admits another writer’s publication', nativeOnly, async t => {
+  const f = await runtimeFixture(t);
+  let restore = denyProbe(t), confirmations = 0;
+  const request = { ...f.request, elevation: async (source: string, changed: boolean) => {
+    assert.equal(source, f.source);
+    assert.equal(changed, [false, true, false, true][confirmations++]);
+    assert.equal(pathExists(join(f.cache, '.writer-lock')), false);
+    assert.ok(readdirSync(join(f.cache, 'generations')).every(id => !pathExists(join(f.cache, 'generations', id, 'plan.json'))));
+    restore();
+    if (confirmations === 4) await fsp.writeFile(join(f.source, 'etc/profile'), 'reinstalled profile');
+    const other = await f.prepare();
+    assert.equal(other.freshlyBuilt, true);
+    await other.release();
+  } };
+  try {
+    const first = await prepareRuntime(request, signal());
+    assert.equal(first.freshlyBuilt, false); await first.release();
+    await fsp.writeFile(join(f.source, 'etc/profile'), 'updated source');
+    restore = denyProbe(t);
+    const second = await prepareRuntime(request, signal());
+    assert.equal(second.freshlyBuilt, false); await second.release();
+    const { generationId } = await f.current();
+    for (const missing of [join(f.cache, 'generations', generationId, 'base/etc/profile'), join(f.source, 'etc/profile')]) {
+      await fsp.unlink(missing);
+      restore = denyProbe(t);
+      const recovered = await prepareRuntime(request, signal());
+      assert.equal(recovered.freshlyBuilt, false); await recovered.release();
+    }
+    assert.equal(confirmations, 4);
+  } finally { restore(); }
+});
+
 await test('probe denial joins helper work and keeps its setup lease through final admission', nativeOnly, async t => {
   const fixture = await runtimeFixture(t), restore = denyProbe(t);
   const linked = deferred<void>(), range = deferred<boolean>();

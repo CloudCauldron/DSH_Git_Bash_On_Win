@@ -1,4 +1,4 @@
-# **DSH Windows Git Bash**
+# **DSH Git Bash on Windows**
 
 <span style="margin-left:2em;">&#8203;</span>为 **[DeepSeek Harness (DSH)](https://github.com/deepseek-ai/deepseek-harness)** 在 Windows x64 下提供 Git Bash 执行能力的扩展插件。
 

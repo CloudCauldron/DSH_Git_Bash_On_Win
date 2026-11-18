@@ -3,6 +3,7 @@ import { realpath } from 'node:fs/promises';
 import { dirname, isAbsolute, join, parse, relative, resolve, sep, toNamespacedPath } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { closeHandleChecked, extendWin32ProcessBindings, isNullPtr, throwLastError, Win32Error, type NativePtr } from '@deepseek-ai/dsh-win32-process';
+import { LocalizedError } from '../localized-error.ts';
 
 export interface FileIdentity { readonly volumeSerial: string; readonly fileId: string }
 export interface Directory extends FileIdentity { readonly path: string }
@@ -118,7 +119,9 @@ export class NativeHold {
   requireNtfs(): void {
     const data = Buffer.alloc(64);
     if (!api().volume(this.handle, null, 0, null, null, null, data, 32)) throwLastError(api(), 'GetVolumeInformationByHandleW', this.path);
-    if (data.toString('utf16le').split('\0')[0] !== 'NTFS') throw new Error(`NTFS is required: ${this.path}`);
+    if (data.toString('utf16le').split('\0')[0] !== 'NTFS') {
+      throw new LocalizedError(`NTFS is required: ${this.path}`, { key: 'error.ntfsRequired', params: { path: this.path } });
+    }
   }
 
   readJson(maxBytes: number): unknown {
@@ -148,7 +151,9 @@ function open(path: string, access = 0, sharing = SHARE_ALL, disposition = OPEN_
 }
 
 function requireKind(info: FileInformation, kind: 'file' | 'directory', path: string): void {
-  if (info.attributes & ATTR_REPARSE) throw new Error(`Refusing reparse point: ${path}`);
+  if (info.attributes & ATTR_REPARSE) {
+    throw new LocalizedError(`Refusing reparse point: ${path}`, { key: 'error.reparsePoint', params: { path } });
+  }
   if (!!(info.attributes & ATTR_DIRECTORY) !== (kind === 'directory')) throw new Error(`Expected ordinary ${kind}: ${path}`);
 }
 
@@ -265,7 +270,9 @@ export function openOrdinaryFile(parent: Directory, name: string, writable = fal
     const info = hold.information();
     requireKind(info, 'file', path);
     if (info.volumeSerial !== parent.volumeSerial) throw new Error(`Volume boundary changed: ${path}`);
-    if (writable && (info.attributes & ATTR_READONLY)) throw new Error(`Refusing read-only source hardlink: ${path}`);
+    if (writable && (info.attributes & ATTR_READONLY)) {
+      throw new LocalizedError(`Refusing read-only source hardlink: ${path}`, { key: 'error.readOnlySource', params: { path } });
+    }
     return hold;
   } catch (error) { hold.close(); throw error; }
 }

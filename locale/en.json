@@ -15,6 +15,15 @@
     "path.empty": "Unset",
     "save.failed": "Could not save the path",
     "link.failed": "Could not create hard links",
-    "link.failedAfterSave": "Path saved, but hard link creation failed"
+    "link.failedAfterSave": "Path saved, but hard link creation failed",
+    "error.gitNotFound": "Could not find a supported Git for Windows installation. Set {setting} to the absolute path to {bin} or {usrBin}.",
+    "error.rebuildBusy": "Git Bash hard links are being rebuilt. Try again when the rebuild finishes.",
+    "error.sameVolume": "The Git installation and the runtime cache must be on the same NTFS volume.",
+    "error.cacheOverlap": "The Git installation and the runtime cache cannot use the same directory or contain one another.",
+    "error.ntfsRequired": "The path {path} must be on an NTFS volume.",
+    "error.reparsePoint": "The path {path} is a reparse point and cannot be used to create hard links.",
+    "error.readOnlySource": "The source file {path} is read-only and cannot be hard-linked.",
+    "error.cacheOwner": "Could not verify that the cache directory {path} belongs to this plugin.",
+    "error.elevatedSetup": "Elevated hard link creation failed. Exit code: {exit}. Signal: {signal}."
   }
 }

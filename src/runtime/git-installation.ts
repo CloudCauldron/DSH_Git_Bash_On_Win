@@ -6,6 +6,7 @@ import {
   admitChildDirectory, admitDirectory, createDirectory, createHardlink, isMissing,
   openOrdinaryFile, ordinaryFileExists, pathExists, sameIdentity, type Directory, type FileIdentity,
 } from './ntfs-filesystem.ts';
+import { LocalizedError } from '../localized-error.ts';
 
 export type GitLayout = 'ucrt64' | 'mingw64';
 export interface GitInstallation { readonly root: string; readonly layout: GitLayout }
@@ -58,7 +59,9 @@ export function discoverGitInstallation(setting?: string): GitInstallation {
       if (hasSourceFile(root, `${layout}/bin/git.exe`)) return { root: root.path, layout };
     }
   }
-  throw new Error('Supported Git for Windows was not found. Set gitBashPath to its absolute bin/bash.exe or usr/bin/bash.exe path.');
+  throw new LocalizedError('Supported Git for Windows was not found. Set gitBashPath to its absolute bin/bash.exe or usr/bin/bash.exe path.', {
+    key: 'error.gitNotFound', params: { setting: 'gitBashPath', bin: 'bin/bash.exe', usrBin: 'usr/bin/bash.exe' },
+  });
 }
 
 function hasSourceFile(root: Directory, path: string): boolean {
@@ -127,7 +130,9 @@ export async function inventoryGitFiles(sourceRoot: string, checkActive: () => v
       const entries = await batch(names.slice(offset, offset + 32), checkActive, async name => ({ name, stat: await lstat(join(directory.path, name)) }));
       for (const { name, stat } of entries) {
         const child = `${path}/${name}`;
-        if (stat.isSymbolicLink()) throw new Error(`Refusing source reparse point: ${child}`);
+        if (stat.isSymbolicLink()) {
+          throw new LocalizedError(`Refusing source reparse point: ${child}`, { key: 'error.reparsePoint', params: { path: child } });
+        }
         if (stat.isDirectory()) pending.push({ path: child, directory: admitChildDirectory(directory, name) });
         else if (stat.isFile()) files.push(child);
         else throw new Error(`Unsupported Git runtime entry: ${child}`);
@@ -143,7 +148,9 @@ export async function linkFreshTree(tree: FreshLinkTree, checkActive: () => void
   checkActive();
   validateFiles(tree.files);
   const source = admitDirectory(tree.sourceRoot), base = admitDirectory(tree.baseRoot);
-  if (source.volumeSerial !== base.volumeSerial) throw new Error('Git and runtime base must share an NTFS volume.');
+  if (source.volumeSerial !== base.volumeSerial) {
+    throw new LocalizedError('Git and runtime base must share an NTFS volume.', { key: 'error.sameVolume' });
+  }
   const parents = new Set<string>();
   for (const file of tree.files) for (let parent = posix.dirname(file); parent !== '.'; parent = posix.dirname(parent)) parents.add(parent);
   const targets = new Map<string, Directory>([['.', base]]), sources = new Map<string, Directory>();

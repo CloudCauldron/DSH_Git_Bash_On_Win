@@ -9,6 +9,7 @@ import {
   absolutePath, admitChildDirectory, admitDirectory, children, createSetupLease,
   overlaps, requireActiveLease, sameIdentity, samePath, writeNewMetadata, type Directory, type FileIdentity,
 } from '../runtime/ntfs-filesystem.ts';
+import { LocalizedError } from '../localized-error.ts';
 
 export interface ProvisioningAttempt {
   readonly source: Directory;
@@ -125,7 +126,9 @@ export async function provisionRuntime<T>(attempt: ProvisioningAttempt, signal: 
     const successfulExit = child.done.then(outcome => {
       if (outcome.exitCode !== 0 || outcome.signal !== null) {
         const diagnostic = child.collected.stderr?.readFrom(0).text ?? '';
-        throw new Error(`Elevated setup failed (exit ${outcome.exitCode}, signal ${outcome.signal}). ${diagnostic}`);
+        throw new LocalizedError(`Elevated setup failed (exit ${outcome.exitCode}, signal ${outcome.signal}). ${diagnostic}`, {
+          key: 'error.elevatedSetup', params: { exit: String(outcome.exitCode), signal: String(outcome.signal) }, diagnostic,
+        });
       }
     });
     const result = await Promise.race([Promise.all([successfulExit, child.waitForExit()]), cancelled]);

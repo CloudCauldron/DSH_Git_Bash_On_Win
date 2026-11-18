@@ -10,6 +10,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { hasRuntimeCleanupFailure, prepareRuntime, type GenerationPin, type RuntimeUse } from './runtime/runtime-cache.ts';
 import { commandReceiver } from './adapter.ts';
+import { LocalizedError } from './localized-error.ts';
 
 export interface Config extends BashConfig { gitBashPath: Volatile<string | undefined> }
 
@@ -65,7 +66,8 @@ export default class GitBashExecutor extends SandboxBashExecutor {
             await this.rebuildRuntime();
             return new Response(null, { status: 204 });
           } catch (error) {
-            return new Response(error instanceof Error ? error.message : String(error), { status: 500 });
+            return Response.json({ error: error instanceof Error ? error.message : String(error),
+              localized: error instanceof LocalizedError ? error.localized : undefined }, { status: 500 });
           }
         },
       });
@@ -229,7 +231,7 @@ export default class GitBashExecutor extends SandboxBashExecutor {
   async rebuildRuntime(): Promise<void> {
     this.stopping.signal.throwIfAborted();
     const selection = this.observeSelection();
-    if (this.rebuildOp) throw new Error('Git Bash runtime rebuilding is busy.');
+    if (this.rebuildOp) throw new LocalizedError('Git Bash runtime rebuilding is busy.', { key: 'error.rebuildBusy' });
     if (this.slot && !this.slot.pin) {
       const previous = this.slot; this.slot = undefined;
       void this.retire(previous);

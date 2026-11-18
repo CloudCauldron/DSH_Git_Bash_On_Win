@@ -9,12 +9,12 @@ import { installedDsh } from '../scripts/installed-dsh.ts';
 import { localSpawn, runtimeFixture } from './fixtures.ts';
 
 async function openPlugin(page: Page, url: string) {
-  await page.addLocatorHandler(page.getByRole('button', { name: '继续', exact: true }), button => button.click());
-  await page.addLocatorHandler(page.getByRole('dialog', { name: '开始使用' }), dialog => dialog.getByRole('button').first().click());
+  await page.addLocatorHandler(page.getByRole('button', { name: /^(继续|Continuer)$/ }), button => button.click());
+  await page.addLocatorHandler(page.getByRole('dialog', { name: /^(开始使用|Commencez)$/ }), dialog => dialog.getByRole('button').first().click());
   await page.goto(url);
-  await page.getByRole('button', { name: '插件', exact: true }).click();
-  await page.locator('[data-plugin-package="dsh-git-bash-on-win"]').getByRole('button', { name: /Windows Git Bash/ }).first().click();
-  return page.getByRole('textbox', { name: 'Git Bash 路径' });
+  await page.getByRole('button', { name: /^(插件|Plugins)$/ }).click();
+  await page.locator('[data-plugin-package="dsh-git-bash-on-win"]').getByRole('button', { name: /Windows Git Bash|Git Bash on Windows/ }).first().click();
+  return page.getByRole('textbox', { name: /^(Git Bash 路径|Git Bash path)$/ });
 }
 
 await test('installed DSH presents link failures and conflicts in native dialogs and success in a native toast', async t => {
@@ -52,20 +52,38 @@ await test('installed DSH presents link failures and conflicts in native dialogs
       first.on('request', req => { if (req.method() === 'POST' && new URL(req.url()).pathname === '/api/git-bash-on-win/rebuild') rebuilds++; });
       const input = await openPlugin(first, url);
       const button = first.getByRole('button', { name: '保存并链接', exact: true });
+      const measure = () => input.evaluate(el => {
+        const field = el.parentElement!, row = field.parentElement!;
+        const bounds = row.parentElement!.getBoundingClientRect(), box = field.getBoundingClientRect();
+        const button = row.querySelector('button')!.getBoundingClientRect();
+        return { left: box.left - bounds.left, right: bounds.right - button.right, gap: button.left - box.right,
+          input: box.width, button: button.width, sameRow: box.top < button.bottom && button.top < box.bottom };
+      });
+      const viewport = first.viewportSize()!;
+      const wide = await measure();
+      await first.setViewportSize({ ...viewport, width: 720 });
+      const narrow = await measure();
+      for (const row of [wide, narrow]) {
+        assert.ok(Math.abs(row.left) < 1 && Math.abs(row.right) < 1 && row.gap > 0 && row.sameRow);
+      }
+      assert.ok(narrow.input < wide.input && narrow.button === wide.button);
+      await first.setViewportSize(viewport);
       const missing = join(cwd, 'missing', 'bin', 'bash.exe');
       await input.fill(missing);
       const failed = first.waitForResponse(res => new URL(res.url()).pathname === '/api/git-bash-on-win/rebuild');
       await button.click();
       const response = await failed;
       assert.equal(response.status(), 500);
-      const reason = await response.text();
-      assert.match(reason, /Git for Windows was not found/);
+      const { error, localized } = await response.json();
+      assert.equal(localized.key, 'error.gitNotFound');
       const modal = first.getByRole('dialog', { name: '路径已保存，但硬链接建立失败', exact: true });
       await modal.waitFor();
       assert.equal(await modal.getAttribute('aria-modal'), 'true');
-      assert.equal(await modal.getByText(reason, { exact: true }).count(), 1);
+      assert.ok((await modal.innerText()).includes('未找到受支持的 Git for Windows'));
+      assert.deepEqual(await modal.locator('code').allTextContents(), ['gitBashPath', 'bin/bash.exe', 'usr/bin/bash.exe']);
+      assert.equal(await modal.getByText(error, { exact: true }).count(), 0);
       assert.equal(await modal.evaluate(el => el.parentElement?.parentElement === document.body), true);
-      assert.equal(await first.locator('[data-plugin-config]').getByText(reason).count(), 0);
+      assert.equal(await first.locator('[data-plugin-config]').getByText(error).count(), 0);
       await modal.getByRole('button', { name: '关闭' }).click();
       await modal.waitFor({ state: 'detached' });
       assert.equal(await input.inputValue(), missing);
@@ -86,19 +104,43 @@ await test('installed DSH presents link failures and conflicts in native dialogs
       const valid = join(fixture.source, 'usr/bin/bash.exe');
       await otherInput.fill(valid);
       await second.getByRole('button', { name: '保存并链接', exact: true }).click();
-      const toast = second.getByRole('alert').filter({ hasText: '硬链接已建立' });
+      const toast = second.getByRole('alert').filter({ hasText: '已建立硬链接' });
       await toast.waitFor();
       assert.equal(await toast.evaluate(el => el.parentElement === document.body), true);
-      assert.equal(await toast.innerText(), '硬链接已建立');
+      assert.equal(await toast.innerText(), '已建立硬链接');
       await toast.waitFor({ state: 'detached' });
 
       await button.click();
       const conflict = first.getByRole('dialog', { name: '未保存', exact: true });
       await conflict.waitFor();
-      assert.ok((await conflict.innerText()).includes(valid));
+      assert.deepEqual(await conflict.locator('code').allTextContents(), [valid]);
+      assert.equal(await conflict.locator('p').innerText(), `最近确认的路径为 ${valid}，请核对后重试。`);
       await conflict.getByRole('button', { name: '关闭' }).click();
       assert.equal(await input.inputValue(), 'an unsubmitted draft');
       assert.equal(rebuilds, 2, 'a refused save must not rebuild');
+      const french = await browser.browser()!.newContext({ locale: 'fr-FR' });
+      try {
+        const page = await french.newPage();
+        const path = await openPlugin(page, url);
+        assert.equal(await page.locator('html').getAttribute('lang'), 'fr');
+        await path.fill(missing);
+        const save = page.getByRole('button', { name: 'Save and link', exact: true });
+        await save.click();
+        const dialog = page.getByRole('dialog', { name: 'Path saved, but hard link creation failed' });
+        await dialog.waitFor();
+        assert.ok((await dialog.innerText()).includes('Could not find a supported Git for Windows installation.'));
+        assert.deepEqual(await dialog.locator('code').allTextContents(), ['gitBashPath', 'bin/bash.exe', 'usr/bin/bash.exe']);
+        await page.keyboard.press('Escape');
+
+        const diagnostic = 'ENOENT: "C:/Git/bin/bash.exe"\n<original> & {path}';
+        await page.route('**/api/git-bash-on-win/rebuild', route => route.fulfill({
+          status: 500, json: { error: diagnostic },
+        }), { times: 1 });
+        await save.click();
+        const raw = page.getByRole('dialog', { name: 'Could not create hard links', exact: true });
+        await raw.waitFor();
+        assert.equal(await raw.locator('pre > code').textContent(), diagnostic);
+      } finally { await french.close(); }
     } finally { await browser.close(); }
   } finally {
     host.terminate();

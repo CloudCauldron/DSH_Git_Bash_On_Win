@@ -466,7 +466,7 @@ await test('checkout install, offline recovery and removal preserve shared Shell
       const first = rebuild();
       const busy = await rebuild();
       assert.equal(busy.ok, false);
-      assert.match(await busy.text(), /rebuilding is busy/);
+      assert.deepEqual(await busy.json(), { error: 'Git Bash runtime rebuilding is busy.', localized: { key: 'error.rebuildBusy' } });
       assert.equal((await first).status, 204);
       assert.equal(probed(), true, 'explicit rebuild exercises the observed Git probe');
       assert.equal(rebuilds.mock.callCount(), 2);

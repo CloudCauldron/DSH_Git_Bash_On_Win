@@ -8,13 +8,22 @@
     "path.label": "Git Bash 路径",
     "path.placeholder": "留空则自动查找 Git Bash 路径",
     "action.saveLink": "保存并链接",
-    "link.ok": "硬链接已建立",
+    "link.ok": "已建立硬链接",
     "form.unavailable": "配置不可用",
     "save.review": "未保存",
-    "save.reviewDetail": "Host 最近确认的路径为「{path}」，请核对后重试。",
+    "save.reviewDetail": "最近确认的路径为 {path}，请核对后重试。",
     "path.empty": "未设置",
     "save.failed": "路径保存失败",
     "link.failed": "硬链接建立失败",
-    "link.failedAfterSave": "路径已保存，但硬链接建立失败"
+    "link.failedAfterSave": "路径已保存，但硬链接建立失败",
+    "error.gitNotFound": "未找到受支持的 Git for Windows。请将 {setting} 设置为 {bin} 或 {usrBin} 的绝对路径。",
+    "error.rebuildBusy": "正在重建 Git Bash 硬链接，请稍后重试。",
+    "error.sameVolume": "Git 安装目录与运行时缓存必须位于同一个 NTFS 卷上。",
+    "error.cacheOverlap": "Git 安装目录与运行时缓存目录不能相同，也不能互相包含。",
+    "error.ntfsRequired": "路径 {path} 必须位于 NTFS 卷上。",
+    "error.reparsePoint": "路径 {path} 是重解析点，无法用于建立硬链接。",
+    "error.readOnlySource": "源文件 {path} 为只读，无法为其建立硬链接。",
+    "error.cacheOwner": "无法确认缓存目录 {path} 归此插件所有。",
+    "error.elevatedSetup": "提权建立硬链接失败。退出码为 {exit}，信号为 {signal}。"
   }
 }

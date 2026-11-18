@@ -14,7 +14,8 @@ window.__ModuleLoader__.load({
     const { Input, Button, Modal, Toast } = require('@deepseek-ai/dsh-client-ui-primitives') as {
       Input: import('react').ComponentType<import('react').ComponentProps<'input'>>;
       Button: import('react').ComponentType<import('react').ComponentProps<'button'>>;
-      Modal: import('react').ComponentType<{ open: boolean; title: string; description: string; closeLabel: string; onClose(): void }>;
+      Modal: import('react').ComponentType<{ open: boolean; title: string; description?: import('react').ReactNode;
+        children?: import('react').ReactNode; closeLabel: string; onClose(): void }>;
       Toast: import('react').ComponentType<{ text: string; onDone(): void }>;
     };
 
@@ -22,8 +23,9 @@ window.__ModuleLoader__.load({
     type ShellSettings = { gitBashPath?: string };
     type ShellForm = import('@deepseek-ai/dsh-client-ui-settings/client').ConfigForm<ShellSettings>;
     type Snapshot = ReturnType<ShellForm['getSnapshot']>;
+    type Failure = { error: string; localized?: import('./localized-error.ts').LocalizedMessage };
     type Feedback = { key: 'link.ok' } | { key: 'save.review'; path?: string }
-      | { key: 'save.failed'; reason?: string } | { key: 'link.failed' | 'link.failedAfterSave'; reason: string };
+      | { key: 'save.failed'; reason?: Failure } | { key: 'link.failed' | 'link.failedAfterSave'; reason: Failure };
     interface LocalizedProps { t(key: string, params?: Record<string, string>): string }
     interface PageProps extends LocalizedProps {
       notify(message: Feedback): void;
@@ -69,7 +71,7 @@ window.__ModuleLoader__.load({
           }
         } catch (error) {
           setDraft({ text, revision });
-          notify({ key: 'save.failed', reason: error instanceof Error ? error.message : String(error) });
+          notify({ key: 'save.failed', reason: { error: error instanceof Error ? error.message : String(error) } });
         }
         return false;
       }
@@ -86,12 +88,13 @@ window.__ModuleLoader__.load({
           if (change && !latest.writable) return;
           if (change && !await savePath(change, text, draft ? draft.revision : latest.revision)) return;
           setDraft(undefined);
+          const failureKey = change ? 'link.failedAfterSave' : 'link.failed';
           try {
             const response = await fetch('api/git-bash-on-win/rebuild', { method: 'POST', redirect: 'error' });
-            if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
-            notify({ key: 'link.ok' });
+            if (response.ok) notify({ key: 'link.ok' });
+            else notify({ key: failureKey, reason: await readFailure(response) });
           } catch (error) {
-            notify({ key: change ? 'link.failedAfterSave' : 'link.failed', reason: error instanceof Error ? error.message : String(error) });
+            notify({ key: failureKey, reason: { error: error instanceof Error ? error.message : String(error) } });
           }
         } finally {
           locked.current = false;
@@ -102,7 +105,7 @@ window.__ModuleLoader__.load({
       const h = React.createElement;
       return h('div', null,
         h('label', { htmlFor: inputId }, t('path.label')),
-        h('div', { style: { display: 'flex', alignItems: 'center', gap: '0.5rem' } },
+        h('div', { style: { display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) max-content', alignItems: 'center', gap: '0.5rem' } },
           h(Input, { id: inputId, value, placeholder: t('path.placeholder'), disabled: disabled || !snapshot.writable,
             onChange(event) {
               const text = event.currentTarget.value;
@@ -114,6 +117,27 @@ window.__ModuleLoader__.load({
           }, t('action.saveLink')),
         ),
       );
+    }
+
+    async function readFailure(response: Response): Promise<Failure> {
+      const text = await response.text();
+      if (response.headers.get('content-type')?.includes('application/json')) {
+        try {
+          const failure = JSON.parse(text) as Failure | null;
+          if (typeof failure?.error === 'string') return failure;
+        } catch { /* Keep the original response if the host or proxy sent invalid JSON. */ }
+      }
+      return { error: text || `HTTP ${response.status}` };
+    }
+
+    // Split the translated template before inserting values so even a path containing braces stays literal.
+    function withCode(template: string, params?: Record<string, string>) {
+      if (!params) return template;
+      return template.split(/(\{\w+\})/g).map((part, index) => {
+        const name = part.slice(1, -1);
+        return part.startsWith('{') && Object.hasOwn(params, name)
+          ? React.createElement('code', { key: index, style: { overflowWrap: 'anywhere' } }, params[name]) : part;
+      });
     }
 
     function isDictionary(value: unknown): value is Messages {
@@ -133,9 +157,8 @@ window.__ModuleLoader__.load({
         if (data?.ok !== true || !isDictionary(zh) || !isDictionary(en)) {
           throw new Error('Invalid Git Bash locale dictionaries.');
         }
-        for (const [lang, messages] of Object.entries({ zh, en })) {
-          ctx.effect(() => ctx.locale.register(ns, lang, messages));
-        }
+        ctx.effect(() => ctx.locale.register(ns, 'zh', zh));
+        ctx.effect(() => ctx.locale.register(ns, 'en', en));
         const notices = createSnapshotStore<(Feedback & { id: number }) | null>(null);
         let sequence = 0;
         const notify = (message: Feedback) => notices.set({ ...message, id: ++sequence });
@@ -147,10 +170,24 @@ window.__ModuleLoader__.load({
           if (notice.key === 'link.ok') {
             return React.createElement(Toast, { key: notice.id, text: t(notice.key), onDone: dismiss });
           }
-          const description = notice.key === 'save.review'
-            ? t('save.reviewDetail', { path: notice.path || t('path.empty') })
-            : notice.reason ?? t('form.unavailable');
-          return React.createElement(Modal, { open: true, title: t(notice.key), description, closeLabel: t('close'), onClose: dismiss });
+          let description: import('react').ReactNode;
+          let diagnostic: string | undefined;
+          if (notice.key === 'save.review') {
+            description = notice.path ? withCode(t('save.reviewDetail'), { path: notice.path })
+              : t('save.reviewDetail', { path: t('path.empty') });
+          } else if (!notice.reason) {
+            description = t('form.unavailable');
+          } else {
+            const { localized, error } = notice.reason;
+            const template = localized && t(localized.key);
+            if (localized && template && template !== localized.key) {
+              description = withCode(template, localized.params);
+              diagnostic = localized.diagnostic || undefined;
+            } else diagnostic = error;
+          }
+          return React.createElement(Modal, { open: true, title: t(notice.key), description, closeLabel: t('close'), onClose: dismiss },
+            diagnostic !== undefined ? React.createElement('pre', { style: { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', margin: 0 } },
+              React.createElement('code', null, diagnostic)) : undefined);
         }
 
         ctx.slots.inject('shell.overlay', () => ctx.slots.register({

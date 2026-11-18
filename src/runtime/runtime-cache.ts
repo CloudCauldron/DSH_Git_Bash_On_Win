@@ -17,6 +17,7 @@ import {
   anchorNames, captureAnchors, discoverGitInstallation, inventoryGitFiles, linkFreshTree,
   readAnchors, sameAnchors, type AnchorStamps, type GitInstallation, type GitLayout,
 } from './git-installation.ts';
+import { LocalizedError } from '../localized-error.ts';
 
 export interface RuntimePreparation {
   readonly cacheDirectory: string;
@@ -87,7 +88,9 @@ function admitRoot(path: string, create: boolean): Directory | undefined {
   }
   const root = admitDirectory(path);
   const marker = (markerSchema as (value: unknown) => ReturnType<typeof markerSchema>)(readMetadata(root, markerName, 256 * 1024));
-  if (!samePath(absolutePath(marker.rootPath), root.path) || !sameIdentity(marker, root)) throw new Error(`Unrecognized cache ownership: ${path}`);
+  if (!samePath(absolutePath(marker.rootPath), root.path) || !sameIdentity(marker, root)) {
+    throw new LocalizedError(`Unrecognized cache ownership: ${path}`, { key: 'error.cacheOwner', params: { path } });
+  }
   return root;
 }
 
@@ -152,11 +155,15 @@ export async function prepareRuntime(request: RuntimePreparation, signal: AbortS
   const requestedPath = absolutePath(request.cacheDirectory);
   // Resolve an existing parent before creating anything, including short-name aliases.
   const parent = admitDirectory(dirname(requestedPath)), cachePath = join(parent.path, basename(requestedPath));
-  if (overlaps(cachePath, source.root)) throw new Error('Git source and cache paths must not overlap.');
-  if (parent.volumeSerial !== sourceDirectory.volumeSerial) throw new Error('Git and cache must share an NTFS volume.');
+  if (overlaps(cachePath, source.root)) throw new LocalizedError('Git source and cache paths must not overlap.', { key: 'error.cacheOverlap' });
+  if (parent.volumeSerial !== sourceDirectory.volumeSerial) {
+    throw new LocalizedError('Git and cache must share an NTFS volume.', { key: 'error.sameVolume' });
+  }
   const root = admitRoot(cachePath, true)!;
-  if (overlaps(root.path, source.root)) throw new Error('Git source and cache paths must not overlap.');
-  if (root.volumeSerial !== sourceDirectory.volumeSerial) throw new Error('Git and cache must share an NTFS volume.');
+  if (overlaps(root.path, source.root)) throw new LocalizedError('Git source and cache paths must not overlap.', { key: 'error.cacheOverlap' });
+  if (root.volumeSerial !== sourceDirectory.volumeSerial) {
+    throw new LocalizedError('Git and cache must share an NTFS volume.', { key: 'error.sameVolume' });
+  }
   if (!request.rebuild) {
     const warm = await tryWarm(root, source, signal);
     if (warm) return warm;

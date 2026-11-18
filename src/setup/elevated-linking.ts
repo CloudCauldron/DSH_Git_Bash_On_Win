@@ -9,7 +9,7 @@ import {
   absolutePath, admitChildDirectory, admitDirectory, children, createSetupLease,
   overlaps, requireActiveLease, sameIdentity, samePath, writeNewMetadata, type Directory, type FileIdentity,
 } from '../runtime/ntfs-filesystem.ts';
-import { LocalizedError } from '../localized-error.ts';
+import { LocalizedAggregateError, LocalizedError } from '../localized-error.ts';
 
 export interface ProvisioningAttempt {
   readonly source: Directory;
@@ -49,7 +49,7 @@ export function decodeElevationPlan(value: unknown): ElevationPlan {
 export function planGeneration(planPath: string): Directory {
   planPath = absolutePath(planPath);
   if (basename(planPath) !== 'plan.json' || !/^[a-f0-9]{32}$/.test(basename(dirname(planPath)))
-    || basename(dirname(dirname(planPath))) !== 'generations') throw new Error('Expected a generation plan.json path.');
+    || basename(dirname(dirname(planPath))) !== 'generations') throw new LocalizedError('error.generationPlanRequired', { file: 'plan.json' });
   return admitDirectory(dirname(planPath));
 }
 
@@ -58,22 +58,22 @@ export function admitElevationPlan(plan: ElevationPlan, openedGeneration: Direct
   const source = admitDirectory(plan.sourceRoot, plan.identities.source);
   const cache = admitDirectory(plan.cacheRoot, plan.identities.cache);
   if (!samePath(source.path, plan.sourceRoot) || !samePath(cache.path, plan.cacheRoot)
-    || overlaps(source.path, cache.path) || source.volumeSerial !== cache.volumeSerial) throw new Error('Invalid setup source/cache boundary.');
+    || overlaps(source.path, cache.path) || source.volumeSerial !== cache.volumeSerial) throw new LocalizedError('error.invalidSetupBoundary');
   const generation = admitChildDirectory(admitChildDirectory(cache, 'generations'), plan.generationId, plan.identities.generation);
-  if (!samePath(generation.path, openedGeneration.path) || !sameIdentity(generation, openedGeneration)) throw new Error('Plan is outside its expected generation.');
+  if (!samePath(generation.path, openedGeneration.path) || !sameIdentity(generation, openedGeneration)) throw new LocalizedError('error.planOutsideGeneration');
   const base = admitChildDirectory(generation, 'base', plan.identities.base);
-  if (!samePath(base.path, absolutePath(plan.baseRoot))) throw new Error('Plan base must be exactly the generation base.');
+  if (!samePath(base.path, absolutePath(plan.baseRoot))) throw new LocalizedError('error.unexpectedPlanBase');
   requireActiveLease(generation, plan.identities.lease);
-  if (children(base).length) throw new Error('Elevated setup requires an empty base.');
+  if (children(base).length) throw new LocalizedError('error.nonemptyElevatedBase');
   const selected = discoverGitInstallation(join(source.path, 'usr/bin/bash.exe'));
-  if (!samePath(selected.root, source.path) || selected.layout !== plan.layout) throw new Error('Source layout disagrees with the setup plan.');
+  if (!samePath(selected.root, source.path) || selected.layout !== plan.layout) throw new LocalizedError('error.sourcePlanMismatch');
   return { source, cache, generation, base, layout: plan.layout };
 }
 
 const brokerGraceMs = 250;
 
 /** Local broker shutdown failed; ordinary setup rejection does not imply this. */
-export class ProvisioningCleanupError extends AggregateError {}
+export class ProvisioningCleanupError extends LocalizedAggregateError {}
 
 /** A rejected observation is not a join. DSH retains the managed range throughout. */
 async function stopBroker(broker: SubprocessHandle): Promise<void> {
@@ -84,8 +84,8 @@ async function stopBroker(broker: SubprocessHandle): Promise<void> {
   if (!exited) { try { broker.terminate(); } catch (error) { errors.push(error); } }
   const settled = await Promise.allSettled([broker.done.catch(() => {}), broker.waitForExit()]);
   for (const result of settled) if (result.status === 'rejected') errors.push(result.reason);
-  if (settled[1]?.status === 'fulfilled' && !settled[1].value) errors.push(new Error('Setup broker range did not settle.'));
-  if (errors.length) throw new ProvisioningCleanupError(errors, 'Failed to settle the setup broker.');
+  if (settled[1]?.status === 'fulfilled' && !settled[1].value) errors.push(new LocalizedError('error.brokerRangeUnsettled'));
+  if (errors.length) throw new ProvisioningCleanupError(errors, 'error.brokerCleanupFailed');
 }
 
 /** Keep the setup lease through the caller's synchronous final admission. */
@@ -126,14 +126,14 @@ export async function provisionRuntime<T>(attempt: ProvisioningAttempt, signal: 
     const successfulExit = child.done.then(outcome => {
       if (outcome.exitCode !== 0 || outcome.signal !== null) {
         const diagnostic = child.collected.stderr?.readFrom(0).text ?? '';
-        throw new LocalizedError(`Elevated setup failed (exit ${outcome.exitCode}, signal ${outcome.signal}). ${diagnostic}`, {
-          key: 'error.elevatedSetup', params: { exit: String(outcome.exitCode), signal: String(outcome.signal) }, diagnostic,
-        });
+        throw new LocalizedError('error.elevatedSetup',
+          { exit: String(outcome.exitCode), signal: String(outcome.signal) },
+          { fallback: `Elevated setup failed (exit ${outcome.exitCode}, signal ${outcome.signal}). ${diagnostic}`, diagnostic });
       }
     });
     const result = await Promise.race([Promise.all([successfulExit, child.waitForExit()]), cancelled]);
     signal.throwIfAborted();
-    if (!result || !result[1]) throw new Error('Setup broker range did not settle.');
+    if (!result || !result[1]) throw new LocalizedError('error.brokerRangeUnsettled');
     joined = true;
     validated = validate();
   } catch (error) { errors.push(error); }
@@ -144,7 +144,7 @@ export async function provisionRuntime<T>(attempt: ProvisioningAttempt, signal: 
   if (broker && !joined) { try { await stopBroker(broker); } catch (error) { errors.push(error); } }
   signal.removeEventListener('abort', revoke);
   if (errors.length === 1) throw errors[0];
-  if (errors.length) throw new AggregateError(errors, 'Elevated setup or its local cleanup failed.');
+  if (errors.length) throw new LocalizedAggregateError(errors, 'error.elevatedCleanupFailed');
   signal.throwIfAborted();
   return validated;
 }

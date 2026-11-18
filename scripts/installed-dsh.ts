@@ -2,6 +2,7 @@ import { existsSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { isAbsolute, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { LocalizedError } from '../src/localized-error.ts';
 
 export const SUPPORTED_DSH = '0.2.2-rc.2';
 
@@ -18,20 +19,20 @@ export function findInstalledDshManifest(): string | undefined {
       if (existsSync(candidate)) found.add(realpathSync(candidate));
     }
   }
-  if (found.size > 1) throw new Error(`Found ${found.size} DSH installations; select one with DSH_PACKAGE_JSON.`);
+  if (found.size > 1) throw new LocalizedError('error.multipleDshInstallations', { variable: 'DSH_PACKAGE_JSON', count: String(found.size) });
   return [...found][0];
 }
 
 /** Use the CLI's own dependency graph, with no private native implementation imports. */
 export function installedDsh(manifest?: string) {
-  if (process.platform !== 'win32' || process.arch !== 'x64') throw new Error('Installed DSH tooling requires native Windows x64 Node.');
+  if (process.platform !== 'win32' || process.arch !== 'x64') throw new LocalizedError('error.toolingPlatform');
   manifest ??= findInstalledDshManifest();
-  if (!manifest) throw new Error('No installed DSH found; set DSH_PACKAGE_JSON to its absolute package.json path.');
-  if (!isAbsolute(manifest)) throw new Error('DSH_PACKAGE_JSON must be an absolute package.json path.');
+  if (!manifest) throw new LocalizedError('error.dshNotInstalled', { variable: 'DSH_PACKAGE_JSON', manifest: 'package.json' });
+  if (!isAbsolute(manifest)) throw new LocalizedError('error.dshManifestPath', { variable: 'DSH_PACKAGE_JSON', manifest: 'package.json' });
   manifest = realpathSync(manifest);
   const metadata = JSON.parse(readFileSync(manifest, 'utf8')) as { name?: unknown; version?: unknown };
   if (metadata.name !== '@deepseek-ai/dsh' || metadata.version !== SUPPORTED_DSH) {
-    throw new Error(`Expected @deepseek-ai/dsh ${SUPPORTED_DSH}; review compatibility before using this installation.`);
+    throw new LocalizedError('error.dshVersion', { packageName: '@deepseek-ai/dsh', version: SUPPORTED_DSH });
   }
   const cliRequire = createRequire(manifest);
   const baseRequire = createRequire(cliRequire.resolve('@deepseek-ai/dsh-base'));

@@ -150,12 +150,16 @@ window.__ModuleLoader__.load({
       async apply(ctx: ClientContext) {
         const response = await fetch('api/git-bash-on-win/locales', { cache: 'no-store', redirect: 'error' });
         if (ctx.fiber.uid === null) return;
-        if (!response.ok) throw new Error(`Git Bash locales: HTTP ${response.status}`);
+        if (!response.ok) {
+          throw Object.assign(new Error(`Git Bash locales: HTTP ${response.status}`), {
+            localized: { key: 'error.localeHttp', params: { status: String(response.status) } },
+          });
+        }
         const data = await response.json() as { ok?: boolean; dictionaries?: { zh?: unknown; en?: unknown } } | null;
         if (ctx.fiber.uid === null) return;
         const { zh, en } = data?.dictionaries ?? {};
         if (data?.ok !== true || !isDictionary(zh) || !isDictionary(en)) {
-          throw new Error('Invalid Git Bash locale dictionaries.');
+          throw Object.assign(new Error('Invalid Git Bash locale dictionaries.'), { localized: { key: 'error.invalidLocaleDictionaries' } });
         }
         ctx.effect(() => ctx.locale.register(ns, 'zh', zh));
         ctx.effect(() => ctx.locale.register(ns, 'en', en));

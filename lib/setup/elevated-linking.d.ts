@@ -1,6 +1,7 @@
 import type Subprocess from '@deepseek-ai/dsh-subprocess';
 import { type GitLayout } from '../runtime/git-installation.ts';
 import { type Directory, type FileIdentity } from '../runtime/ntfs-filesystem.ts';
+import { LocalizedAggregateError } from '../localized-error.ts';
 export interface ProvisioningAttempt {
     readonly source: Directory;
     readonly cache: Directory;
@@ -25,7 +26,7 @@ export declare function planGeneration(planPath: string): Directory;
 /** Independently bind the input to existing objects before any privileged mutation. */
 export declare function admitElevationPlan(plan: ElevationPlan, openedGeneration: Directory): ProvisioningAttempt;
 /** Local broker shutdown failed; ordinary setup rejection does not imply this. */
-export declare class ProvisioningCleanupError extends AggregateError {
+export declare class ProvisioningCleanupError extends LocalizedAggregateError {
 }
 /** Keep the setup lease through the caller's synchronous final admission. */
 export declare function provisionRuntime<T>(attempt: ProvisioningAttempt, signal: AbortSignal, spawn: Subprocess['spawn'], validate: () => T): Promise<T>;

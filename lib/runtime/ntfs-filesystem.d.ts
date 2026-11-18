@@ -1,4 +1,5 @@
 import { type NativePtr } from '@deepseek-ai/dsh-win32-process';
+import { LocalizedAggregateError, LocalizedError } from '../localized-error.ts';
 export interface FileIdentity {
     readonly volumeSerial: string;
     readonly fileId: string;
@@ -15,10 +16,10 @@ interface FileInformation extends FileIdentity {
 export declare function requireWindows(): void;
 export declare function isMissing(error: unknown): boolean;
 export declare function isBusy(error: unknown): boolean;
-export declare class InvalidMetadataError extends Error {
+export declare class InvalidMetadataError extends LocalizedError {
 }
 /** The new name was created, but neither admission nor its rollback completed. */
-export declare class DirectoryRollbackError extends AggregateError {
+export declare class DirectoryRollbackError extends LocalizedAggregateError {
 }
 export declare function hasCloseFailure(error: unknown): boolean;
 /** Resource failures must never disappear inside best-effort artifact cleanup. */

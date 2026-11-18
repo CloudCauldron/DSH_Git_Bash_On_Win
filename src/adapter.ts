@@ -3,6 +3,7 @@ import type {} from '@deepseek-ai/dsh-client-connection';
 import type { Context } from '@deepseek-ai/cordis';
 import type { Entry } from '@deepseek-ai/cordis-plugin-loader';
 import type { SubprocessSpawnSpec } from '@deepseek-ai/dsh-subprocess';
+import { LocalizedError } from './localized-error.ts';
 
 /** The pinned native Shell waits for target done, not managed-range settlement.
  * Shadow only this invocation's lookup; the provider still owns all processes. */
@@ -13,7 +14,7 @@ export function commandReceiver<T extends object>(receiver: T, ctx: Context, onR
       const child = provider.spawn(spec);
       const join = async () => {
         try {
-          if (!await child.waitForExit()) throw new Error('DSH command range settlement was not confirmed.');
+          if (!await child.waitForExit()) throw new LocalizedError('error.commandRangeUnconfirmed');
         } catch (error) { onRangeFailure(error); throw error; }
       };
       return { ...child, done: child.done.then(
@@ -34,7 +35,9 @@ async function readMessages(language: 'zh' | 'en'): Promise<Record<string, strin
   const file = new URL(`../locale/${language}.json`, import.meta.url);
   const { messages } = JSON.parse(await readFile(file, 'utf8')) as { messages: Record<string, string> };
   if (!messages || typeof messages !== 'object' || Array.isArray(messages)
-    || !Object.values(messages).every(message => typeof message === 'string')) throw new Error('Invalid Git Bash locale dictionary.');
+    || !Object.values(messages).every(message => typeof message === 'string')) {
+    throw new LocalizedError('error.invalidLocaleDictionary', undefined, { fallback: 'Invalid Git Bash locale dictionary.' });
+  }
   return messages;
 }
 
@@ -67,7 +70,7 @@ export async function apply(ctx: Context): Promise<void> {
   for (const entry of ctx.loader.entries()) {
     const replacement = modules[entry.options.id];
     if (!replacement) continue;
-    if (entry.options.name !== replacement[0]) throw new Error(`Cannot adapt the customized ${entry.options.id} module; the shell was not replaced.`);
+    if (entry.options.name !== replacement[0]) throw new LocalizedError('error.customizedModule', { id: entry.options.id });
     // Finish an already-started import while the gate keeps its original
     // provider pending. Otherwise init() could reuse that import's namespace.
     await entry.refresh();
@@ -80,7 +83,7 @@ export async function apply(ctx: Context): Promise<void> {
     if (!entry.disabled) entry.fiber = entry.ctx.plugin(plugin, entry.options.config);
     entry.moduleNamespace = namespace;
   }
-  if (!changed.some(({ entry }) => entry.options.id === 'pwsh-sandbox')) throw new Error('The native pwsh-sandbox entry is required.');
+  if (!changed.some(({ entry }) => entry.options.id === 'pwsh-sandbox')) throw new LocalizedError('error.shellEntryRequired', { entry: 'pwsh-sandbox' });
   ctx.provide('gitBashAdapter', {});
   if (process.arch === 'x64') {
     ctx.inject(['profileContext', 'connection'], scope => {

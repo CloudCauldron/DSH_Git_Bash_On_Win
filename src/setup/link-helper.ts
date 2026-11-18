@@ -1,6 +1,7 @@
 import { inventoryGitFiles, linkFreshTree } from '../runtime/git-installation.ts';
 import { openExclusiveMetadata, requireActiveLease, revalidateDirectory } from '../runtime/ntfs-filesystem.ts';
 import { admitElevationPlan, decodeElevationPlan, planByteLimit, planGeneration } from './elevated-linking.ts';
+import { LocalizedError } from '../localized-error.ts';
 
 /** Fixed linker only: no process launch, ACL repair, plan rewrite or recursive cleanup. */
 export async function runLinkHelper(planPath: string): Promise<void> {
@@ -20,7 +21,7 @@ export async function runLinkHelper(planPath: string): Promise<void> {
 if (import.meta.main) {
   process.exitCode = 1;
   try {
-    if (process.argv.length !== 3) throw new Error('Expected one setup plan path.');
+    if (process.argv.length !== 3) throw new LocalizedError('error.setupPlanArgument');
     await runLinkHelper(process.argv[2]!);
     process.exitCode = 0;
   } catch (error) { console.error(String(error).slice(0, 8192)); }

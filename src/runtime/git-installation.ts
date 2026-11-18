@@ -59,9 +59,9 @@ export function discoverGitInstallation(setting?: string): GitInstallation {
       if (hasSourceFile(root, `${layout}/bin/git.exe`)) return { root: root.path, layout };
     }
   }
-  throw new LocalizedError('Supported Git for Windows was not found. Set gitBashPath to its absolute bin/bash.exe or usr/bin/bash.exe path.', {
-    key: 'error.gitNotFound', params: { setting: 'gitBashPath', bin: 'bin/bash.exe', usrBin: 'usr/bin/bash.exe' },
-  });
+  throw new LocalizedError('error.gitNotFound',
+    { setting: 'gitBashPath', bin: 'bin/bash.exe', usrBin: 'usr/bin/bash.exe' },
+    { fallback: 'Supported Git for Windows was not found. Set gitBashPath to its absolute bin/bash.exe or usr/bin/bash.exe path.' });
 }
 
 function hasSourceFile(root: Directory, path: string): boolean {
@@ -97,9 +97,9 @@ function validateFiles(files: readonly string[]): void {
   for (const path of files) {
     if (!path || path.length > 32767 || path.includes('\\') || path.startsWith('/') || posix.normalize(path) !== path
       || path.split('/').some(name => !name || name === '.' || name === '..' || /[:\0]/.test(name) || /[. ]$/.test(name))
-      || !selectionRoots.some(root => path.startsWith(`${root}/`)) || !selected(path)) throw new Error(`Invalid Git relative file path: ${path}`);
+      || !selectionRoots.some(root => path.startsWith(`${root}/`)) || !selected(path)) throw new LocalizedError('error.invalidRelativePath', { path });
     const key = path.toLowerCase();
-    if (seen.has(key)) throw new Error(`Duplicate Git relative file path: ${path}`);
+    if (seen.has(key)) throw new LocalizedError('error.duplicateRelativePath', { path });
     seen.add(key);
   }
 }
@@ -131,11 +131,11 @@ export async function inventoryGitFiles(sourceRoot: string, checkActive: () => v
       for (const { name, stat } of entries) {
         const child = `${path}/${name}`;
         if (stat.isSymbolicLink()) {
-          throw new LocalizedError(`Refusing source reparse point: ${child}`, { key: 'error.reparsePoint', params: { path: child } });
+          throw new LocalizedError('error.reparsePoint', { path: child }, { fallback: `Refusing source reparse point: ${child}` });
         }
         if (stat.isDirectory()) pending.push({ path: child, directory: admitChildDirectory(directory, name) });
         else if (stat.isFile()) files.push(child);
-        else throw new Error(`Unsupported Git runtime entry: ${child}`);
+        else throw new LocalizedError('error.unsupportedRuntimeEntry', { path: child });
       }
     }
   }
@@ -149,7 +149,7 @@ export async function linkFreshTree(tree: FreshLinkTree, checkActive: () => void
   validateFiles(tree.files);
   const source = admitDirectory(tree.sourceRoot), base = admitDirectory(tree.baseRoot);
   if (source.volumeSerial !== base.volumeSerial) {
-    throw new LocalizedError('Git and runtime base must share an NTFS volume.', { key: 'error.sameVolume' });
+    throw new LocalizedError('error.sameVolume', undefined, { fallback: 'Git and runtime base must share an NTFS volume.' });
   }
   const parents = new Set<string>();
   for (const file of tree.files) for (let parent = posix.dirname(file); parent !== '.'; parent = posix.dirname(parent)) parents.add(parent);
@@ -198,7 +198,7 @@ export function captureAnchors(sourceRoot: string, baseRoot: string, layout: Git
       const target = openOrdinaryFile(directoryAt(base, parent, bases), leaf, true);
       try {
         const saved = target.information();
-        if (!sameIdentity(origin.information(), saved)) throw new Error(`Source/base anchor identity mismatch: ${path}`);
+        if (!sameIdentity(origin.information(), saved)) throw new LocalizedError('error.anchorIdentityMismatch', { path });
         anchors[name] = stamp(saved);
       } finally { target.close(); }
     } finally { origin.close(); }

@@ -4,6 +4,7 @@ import koffi from 'koffi';
 import { closeHandleChecked, isNullPtr, loadWin32ProcessBindings, pollProcessExit, throwLastError, type NativePtr } from '@deepseek-ai/dsh-win32-process';
 import { readMetadata, requireActiveLease, requireWindows } from '../runtime/ntfs-filesystem.ts';
 import { decodeElevationPlan, planByteLimit, planGeneration } from './elevated-linking.ts';
+import { LocalizedError } from '../localized-error.ts';
 
 // DSH's equivalent quoteArg is not a public export. ShellExecuteEx takes a
 // Windows argument string, not shell syntax; preserve quotes and trailing '\\'.
@@ -20,7 +21,7 @@ export async function runElevationBroker(planPath: string): Promise<void> {
     lpParameters: 'str16', lpDirectory: 'str16', nShow: 'int', hInstApp: 'void *', lpIDList: 'void *',
     lpClass: 'str16', hkeyClass: 'void *', dwHotKey: 'uint32', hIcon: 'void *', hProcess: 'void *',
   });
-  if (info.size !== 112) throw new Error('Unsupported SHELLEXECUTEINFOW layout.');
+  if (info.size !== 112) throw new LocalizedError('error.unsupportedShellExecuteLayout', { type: 'SHELLEXECUTEINFOW' });
   const execute = koffi.load('shell32.dll').func('__stdcall', 'ShellExecuteExW', 'int', [koffi.inout(koffi.pointer(info))]) as (value: typeof request) => number;
   const ole = koffi.load('ole32.dll');
   const initialize = ole.func('__stdcall', 'CoInitializeEx', 'int32', ['void *', 'uint32']) as (reserved: null, flags: number) => number;
@@ -33,14 +34,14 @@ export async function runElevationBroker(planPath: string): Promise<void> {
   };
   console.error('dsh-git-bash: Administrator permission is needed only for private Git hardlinks. Git contents and ACLs stay unchanged; DSH commands remain unelevated.');
   const apartment = initialize(null, 6); // STA and disable OLE1 DDE, this thread only.
-  if (apartment < 0) throw new Error(`Cannot initialize setup COM: 0x${(apartment >>> 0).toString(16)}`);
+  if (apartment < 0) throw new LocalizedError('error.setupComFailed', { status: (apartment >>> 0).toString(16) });
   try {
     requireActiveLease(generation, plan.identities.lease);
     if (!execute(request)) throwLastError(api, 'ShellExecuteExW');
-    if (isNullPtr(request.hProcess)) throw new Error('Elevated setup returned no process handle.');
+    if (isNullPtr(request.hProcess)) throw new LocalizedError('error.missingElevatedProcess');
     let exit: number | undefined;
     while ((exit = pollProcessExit(api, request.hProcess)) === undefined) await delay(25);
-    if (exit !== 0) throw new Error(`Elevated link helper exited with code ${exit}.`);
+    if (exit !== 0) throw new LocalizedError('error.linkHelperExit', { code: String(exit) });
   } finally {
     try { if (!isNullPtr(request.hProcess)) closeHandleChecked(api, request.hProcess, 'elevated link helper'); }
     finally { uninitialize(); }
@@ -50,7 +51,7 @@ export async function runElevationBroker(planPath: string): Promise<void> {
 if (import.meta.main) {
   process.exitCode = 1;
   try {
-    if (process.argv.length !== 3) throw new Error('Expected one setup plan path.');
+    if (process.argv.length !== 3) throw new LocalizedError('error.setupPlanArgument');
     await runElevationBroker(process.argv[2]!);
     process.exitCode = 0;
   } catch (error) { console.error(String(error).slice(0, 8192)); }

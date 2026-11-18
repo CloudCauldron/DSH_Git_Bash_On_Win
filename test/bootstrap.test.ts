@@ -166,9 +166,17 @@ await test('the classic client registers dictionaries and the bundle slot after 
   };
 
   request.mock.mockImplementationOnce(async () => new Response(null, { status: 404 }));
-  await assert.rejects(plugin.apply(context), /HTTP 404/);
+  await assert.rejects(plugin.apply(context), error => {
+    const e = error as Error & { localized: unknown };
+    assert.match(e.message, /HTTP 404/);
+    assert.deepEqual(structuredClone(e.localized), { key: 'error.localeHttp', params: { status: '404' } });
+    return true;
+  });
   request.mock.mockImplementationOnce(async () => Response.json({ ok: true, dictionaries: { zh: {} } }));
-  await assert.rejects(plugin.apply(context), /locale dictionaries/);
+  await assert.rejects(plugin.apply(context), error => {
+    assert.deepEqual(structuredClone((error as { localized: unknown }).localized), { key: 'error.invalidLocaleDictionaries' });
+    return true;
+  });
   assert.equal(registerLocale.mock.callCount(), 0);
   assert.equal(register.mock.callCount(), 0);
   await plugin.apply(context);
@@ -231,7 +239,10 @@ await test('CLI identity validation rejects invalid selections without an instal
   const invalid = join(await temporaryDirectory(t), 'package.json');
   await writeFile(invalid, JSON.stringify({ name: '@deepseek-ai/dsh', version: '0.0.0' }));
   assert.throws(() => installedDsh(invalid), /Expected @deepseek-ai\/dsh/);
-  assert.throws(() => installedDsh('package.json'), /absolute/);
+  assert.throws(() => installedDsh('package.json'), {
+    message: 'DSH_PACKAGE_JSON must be an absolute package.json path.',
+    localized: { key: 'error.dshManifestPath', params: { variable: 'DSH_PACKAGE_JSON', manifest: 'package.json' } },
+  });
 });
 
 await test('maintained compiler graphs, lint and emitted public exports exclude historical inputs', async () => {
@@ -242,6 +253,7 @@ await test('maintained compiler graphs, lint and emitted public exports exclude 
     const parsed = ts.parseJsonConfigFileContent(raw.config, ts.sys, root);
     assert.deepEqual(parsed.errors, []);
     const program = ts.createProgram(parsed.fileNames, parsed.options);
+    const en = (require('dsh-git-bash-on-win/locale/en.json') as { messages: Record<string, string> }).messages;
     const local = program.getSourceFiles().map(file => relative(root, file.fileName).replaceAll('\\', '/'))
       .filter(file => !file.split('/').includes('node_modules'));
     assert.ok(local.length);
@@ -255,6 +267,7 @@ await test('maintained compiler graphs, lint and emitted public exports exclude 
     for (const source of program.getSourceFiles().filter(file => /^(src|scripts)\//.test(relative(root, file.fileName).replaceAll('\\', '/')))) {
       const visit = (node: ts.Node): void => {
         if (ts.isStringLiteralLike(node)) assert.doesNotMatch(node.text, /(?:^|[\\/])(?:\.deprecated|tmp|poc)(?:[\\/]|$)/, source.fileName);
+        if (ts.isStringLiteralLike(node) && /^error\.\w+$/.test(node.text)) assert.ok(Object.hasOwn(en, node.text), node.text);
         ts.forEachChild(node, visit);
       };
       visit(source);

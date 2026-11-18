@@ -17,7 +17,7 @@ import {
   anchorNames, captureAnchors, discoverGitInstallation, inventoryGitFiles, linkFreshTree,
   readAnchors, sameAnchors, type AnchorStamps, type GitInstallation, type GitLayout,
 } from './git-installation.ts';
-import { LocalizedError } from '../localized-error.ts';
+import { LocalizedAggregateError, LocalizedError } from '../localized-error.ts';
 
 export interface RuntimePreparation {
   readonly cacheDirectory: string;
@@ -89,14 +89,14 @@ function admitRoot(path: string, create: boolean): Directory | undefined {
   const root = admitDirectory(path);
   const marker = (markerSchema as (value: unknown) => ReturnType<typeof markerSchema>)(readMetadata(root, markerName, 256 * 1024));
   if (!samePath(absolutePath(marker.rootPath), root.path) || !sameIdentity(marker, root)) {
-    throw new LocalizedError(`Unrecognized cache ownership: ${path}`, { key: 'error.cacheOwner', params: { path } });
+    throw new LocalizedError('error.cacheOwner', { path }, { fallback: `Unrecognized cache ownership: ${path}` });
   }
   return root;
 }
 
 function revalidateRoot(root: Directory): void {
   const admitted = admitRoot(root.path, false);
-  if (!admitted || !sameIdentity(admitted, root)) throw new Error(`Cache ownership changed: ${root.path}`);
+  if (!admitted || !sameIdentity(admitted, root)) throw new LocalizedError('error.cacheOwnershipChanged', { path: root.path });
 }
 
 function currentRecord(root: Directory): CurrentRuntime | undefined {
@@ -155,14 +155,14 @@ export async function prepareRuntime(request: RuntimePreparation, signal: AbortS
   const requestedPath = absolutePath(request.cacheDirectory);
   // Resolve an existing parent before creating anything, including short-name aliases.
   const parent = admitDirectory(dirname(requestedPath)), cachePath = join(parent.path, basename(requestedPath));
-  if (overlaps(cachePath, source.root)) throw new LocalizedError('Git source and cache paths must not overlap.', { key: 'error.cacheOverlap' });
+  if (overlaps(cachePath, source.root)) throw new LocalizedError('error.cacheOverlap', undefined, { fallback: 'Git source and cache paths must not overlap.' });
   if (parent.volumeSerial !== sourceDirectory.volumeSerial) {
-    throw new LocalizedError('Git and cache must share an NTFS volume.', { key: 'error.sameVolume' });
+    throw new LocalizedError('error.sameVolume', undefined, { fallback: 'Git and cache must share an NTFS volume.' });
   }
   const root = admitRoot(cachePath, true)!;
-  if (overlaps(root.path, source.root)) throw new LocalizedError('Git source and cache paths must not overlap.', { key: 'error.cacheOverlap' });
+  if (overlaps(root.path, source.root)) throw new LocalizedError('error.cacheOverlap', undefined, { fallback: 'Git source and cache paths must not overlap.' });
   if (root.volumeSerial !== sourceDirectory.volumeSerial) {
-    throw new LocalizedError('Git and cache must share an NTFS volume.', { key: 'error.sameVolume' });
+    throw new LocalizedError('error.sameVolume', undefined, { fallback: 'Git and cache must share an NTFS volume.' });
   }
   if (!request.rebuild) {
     const warm = await tryWarm(root, source, signal);
@@ -296,7 +296,7 @@ export async function purgeRuntimeCache(cacheDirectory: string): Promise<void> {
           hold.close();
         }
         for (const name of children(generations)) {
-          if (ordinaryChildDirectory(generations, name)) throw new Error(`Generation appeared after purge preflight: ${name}`);
+          if (ordinaryChildDirectory(generations, name)) throw new LocalizedError('error.generationAfterPreflight', { name });
           unlinkEntry(generations, name);
         }
         removeEmptyDirectory(generations);
@@ -313,7 +313,7 @@ export async function purgeRuntimeCache(cacheDirectory: string): Promise<void> {
 function closePurgeHolds(holds: readonly NativeHold[]): void {
   const errors: unknown[] = [];
   for (const hold of holds) { try { hold.close(); } catch (error) { errors.push(error); } }
-  if (errors.length) throw new AggregateError(errors, 'Runtime purge failed to close native resources.');
+  if (errors.length) throw new LocalizedAggregateError(errors, 'error.purgeCloseFailed');
 }
 
 /** One native directory hold, shared by an owner and its local uses. */
@@ -336,7 +336,7 @@ class RuntimePin implements GenerationPin {
   }
 
   async lease(scope: Pick<SandboxExecutionPolicy, 'mode' | 'workspaceRoot' | 'sessionId'>, signal: AbortSignal): Promise<RuntimeUse> {
-    if (this.retired) throw new Error('Runtime generation pin is retired.');
+    if (this.retired) throw new LocalizedError('error.pinRetired');
     signal.throwIfAborted();
     this.references++;
     let transferred = false;
@@ -344,7 +344,7 @@ class RuntimePin implements GenerationPin {
     try {
       const workspace = await canonicalWorkspace(scope.workspaceRoot);
       signal.throwIfAborted();
-      if (overlaps(workspace, this.record.sourceRoot) || overlaps(workspace, this.root.path)) throw new Error('Workspace must not overlap Git source or runtime cache.');
+      if (overlaps(workspace, this.record.sourceRoot) || overlaps(workspace, this.root.path)) throw new LocalizedError('error.workspaceOverlap');
       const key = scope.sessionId === undefined ? undefined : JSON.stringify([scope.mode, workspace.toLowerCase(), scope.sessionId]);
       view = await this.view(key);
       signal.throwIfAborted();

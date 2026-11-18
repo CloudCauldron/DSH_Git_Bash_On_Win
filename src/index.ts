@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { hasRuntimeCleanupFailure, prepareRuntime, type GenerationPin, type RuntimeUse } from './runtime/runtime-cache.ts';
 import { commandReceiver } from './adapter.ts';
-import { LocalizedError } from './localized-error.ts';
+import { LocalizedAggregateError, LocalizedError } from './localized-error.ts';
 
 export interface Config extends BashConfig { gitBashPath: Volatile<string | undefined> }
 
@@ -50,9 +50,9 @@ export default class GitBashExecutor extends SandboxBashExecutor {
   private readonly cleanupErrors: unknown[] = [];
 
   constructor(ctx: Context, config: Config) {
-    if (process.platform !== 'win32' || process.arch !== 'x64') throw new Error('This plugin runs only on native Windows x64.');
+    if (process.platform !== 'win32' || process.arch !== 'x64') throw new LocalizedError('error.pluginPlatform');
     const profile = ctx.get('profileContext') as { dir: string } | undefined;
-    if (!profile) throw new Error('Git Bash requires a DSH profile context.');
+    if (!profile) throw new LocalizedError('error.profileRequired');
     const cacheDirectory = join(profile.dir, '.git-bash-on-win');
     super(ctx, config);
     this.cacheDirectory = cacheDirectory;
@@ -67,7 +67,7 @@ export default class GitBashExecutor extends SandboxBashExecutor {
             return new Response(null, { status: 204 });
           } catch (error) {
             return Response.json({ error: error instanceof Error ? error.message : String(error),
-              localized: error instanceof LocalizedError ? error.localized : undefined }, { status: 500 });
+              localized: error instanceof LocalizedError || error instanceof LocalizedAggregateError ? error.localized : undefined }, { status: 500 });
           }
         },
       });
@@ -88,7 +88,7 @@ export default class GitBashExecutor extends SandboxBashExecutor {
   }
 
   private retire(slot: PreparationSlot): Promise<void> {
-    slot.controller.abort(new Error('Git Bash runtime preparation was superseded.'));
+    slot.controller.abort(new LocalizedError('error.preparationSuperseded', undefined, { fallback: 'Git Bash runtime preparation was superseded.' }));
     if (slot.pin) return this.ownCleanup(slot.pin.release());
     return this.track(slot.ready.then(() => {}, error => {
       // Preparation records resource failures at their boundary, independently
@@ -115,7 +115,7 @@ export default class GitBashExecutor extends SandboxBashExecutor {
       selection, controller,
       ready: this.track(Promise.resolve().then(async () => {
         await Promise.all(retired);
-        if (this.cleanupErrors.length) throw new AggregateError(this.cleanupErrors, 'Previous runtime cleanup failed.');
+        if (this.cleanupErrors.length) throw new LocalizedAggregateError(this.cleanupErrors, 'error.priorCleanupFailed');
         this.observeSelection();
         controller.signal.throwIfAborted();
         this.stopping.signal.throwIfAborted();
@@ -127,7 +127,7 @@ export default class GitBashExecutor extends SandboxBashExecutor {
           this.observeSelection();
           controller.signal.throwIfAborted();
           this.stopping.signal.throwIfAborted();
-          if (slot !== (rebuild ? this.rebuildOp : this.slot)) throw new Error('Stale Git Bash runtime preparation.');
+          if (slot !== (rebuild ? this.rebuildOp : this.slot)) throw new LocalizedError('error.stalePreparation');
           slot.pin = pin;
           return pin;
         } catch (error) { await this.ownCleanup(pin.release()); throw error; }
@@ -144,7 +144,7 @@ export default class GitBashExecutor extends SandboxBashExecutor {
   }
 
   private async acquireUse(spec: ShellExecSpec, signal: AbortSignal): Promise<{ slot: PreparationSlot; use: RuntimeUse }> {
-    if (!spec.sandboxPolicy) throw new Error('Git Bash requires a resolved DSH execution policy.');
+    if (!spec.sandboxPolicy) throw new LocalizedError('error.executionPolicyRequired');
     for (;;) {
       signal.throwIfAborted();
       this.stopping.signal.throwIfAborted();
@@ -196,11 +196,11 @@ export default class GitBashExecutor extends SandboxBashExecutor {
         use = acquired.use;
         try {
           // Lease admission precedes the native deferred confinement callback.
-          if (!this.current(acquired.slot, signal)) throw new Error('Git Bash runtime changed before confinement.');
+          if (!this.current(acquired.slot, signal)) throw new LocalizedError('error.changedBeforeConfinement');
           const argv = typeof argvOrPrepare === 'function' ? await argvOrPrepare(signal) : argvOrPrepare;
-          if (!this.current(acquired.slot, signal)) throw new Error('Git Bash runtime changed during command preparation.');
+          if (!this.current(acquired.slot, signal)) throw new LocalizedError('error.changedDuringConfinement');
           const offset = argv.length - 3;
-          if (offset < 0 || argv[offset] !== 'bash' || argv[offset + 1] !== '-c' || argv[offset + 2] !== spec.command) throw new Error('Unexpected DSH shell argv; the command did not run.');
+          if (offset < 0 || argv[offset] !== 'bash' || argv[offset + 1] !== '-c' || argv[offset + 2] !== spec.command) throw new LocalizedError('error.unexpectedShellArguments');
           return [...argv.slice(0, offset), process.execPath, fileURLToPath(new URL('./bash-launcher.js', import.meta.url)),
             use.baseRoot, use.installationRoot, use.sourceRoot, use.layout, spec.sandboxPolicy!.mode,
             Buffer.from(spec.command, 'utf8').toString('base64'), String(this.config.graceMs.get())];
@@ -231,7 +231,7 @@ export default class GitBashExecutor extends SandboxBashExecutor {
   async rebuildRuntime(): Promise<void> {
     this.stopping.signal.throwIfAborted();
     const selection = this.observeSelection();
-    if (this.rebuildOp) throw new LocalizedError('Git Bash runtime rebuilding is busy.', { key: 'error.rebuildBusy' });
+    if (this.rebuildOp) throw new LocalizedError('error.rebuildBusy', undefined, { fallback: 'Git Bash runtime rebuilding is busy.' });
     if (this.slot && !this.slot.pin) {
       const previous = this.slot; this.slot = undefined;
       void this.retire(previous);
@@ -243,7 +243,7 @@ export default class GitBashExecutor extends SandboxBashExecutor {
       this.observeSelection();
       this.stopping.signal.throwIfAborted();
       op.controller.signal.throwIfAborted();
-      if (this.rebuildOp !== op) throw new Error('Stale Git Bash runtime rebuild.');
+      if (this.rebuildOp !== op) throw new LocalizedError('error.staleRebuild');
       const previous = this.slot;
       this.slot = op;
       if (previous && previous !== op) await this.retire(previous);
@@ -253,7 +253,7 @@ export default class GitBashExecutor extends SandboxBashExecutor {
   }
 
   private async disposeRuntime(): Promise<void> {
-    this.stopping.abort(new Error('The Git Bash provider is stopping.'));
+    this.stopping.abort(new LocalizedError('error.providerStopping', undefined, { fallback: 'The Git Bash provider is stopping.' }));
     // Signal executions before waiting for any setup, regardless of selection.
     for (const execution of this.executions.keys()) {
       try { execution.kill(); } catch (error) { this.cleanupErrors.push(error); }
@@ -262,6 +262,6 @@ export default class GitBashExecutor extends SandboxBashExecutor {
     this.slot = this.rebuildOp = undefined;
     for (const slot of slots) if (slot) void this.retire(slot);
     while (this.work.size || this.cleanup.size) await Promise.allSettled([...this.work, ...this.cleanup]);
-    if (this.cleanupErrors.length) throw new AggregateError(this.cleanupErrors, 'Git Bash provider failed to release owned resources.');
+    if (this.cleanupErrors.length) throw new LocalizedAggregateError(this.cleanupErrors, 'error.providerCleanupFailed');
   }
 }

@@ -2,6 +2,7 @@ import { statSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import { installedDsh } from './installed-dsh.ts';
 import { purgeRuntimeCache } from '../src/runtime/runtime-cache.ts';
+import { LocalizedError } from '../src/localized-error.ts';
 
 // Arbitrary pnpm flags could redirect removal or bypass the cache purge.
 // DSH owns package compatibility and bundle reconciliation.
@@ -11,7 +12,7 @@ if (!pnpm || !isAbsolute(pnpm) || !profile || extra.length
   || !(operation === 'add' && target?.startsWith('file:') && isAbsolute(target.slice(5))
     && statSync(target.slice(5), { throwIfNoEntry: false })?.isDirectory()
     || operation === 'remove' && target === packageName)) {
-  throw new Error('Usage: node scripts/plugin.ts <absolute pnpm.exe> <profile> <add file:<absolute checkout> | remove dsh-git-bash-on-win>');
+  throw new LocalizedError('error.pluginUsage', { command: 'node scripts/plugin.ts <absolute pnpm.exe> <profile> <add file:<absolute checkout> | remove dsh-git-bash-on-win>' });
 }
 const runtime = installedDsh();
 const { resolveProfileDir } = await runtime.load(runtime.cliRequire, '@deepseek-ai/dsh-app-boot') as {
@@ -27,7 +28,7 @@ if (operation === 'remove') {
   // Close every instance using the profile; an idle one could recreate the cache.
   try { await purgeRuntimeCache(join(dir, '.git-bash-on-win')); }
   catch (cause) {
-    throw new Error('Runtime cleanup is incomplete; package removal was not started. Close every DSH instance using this profile and resolve the reported obstruction before retrying.', { cause });
+    throw new LocalizedError('error.removalBlocked', undefined, { cause });
   }
 }
 const result = await runPluginCommand({ profile, dir, installAnchor: runtime.manifest, cwd: process.cwd() },

@@ -3,7 +3,7 @@ import { realpath } from 'node:fs/promises';
 import { dirname, isAbsolute, join, parse, relative, resolve, sep, toNamespacedPath } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { closeHandleChecked, extendWin32ProcessBindings, isNullPtr, throwLastError, Win32Error, type NativePtr } from '@deepseek-ai/dsh-win32-process';
-import { LocalizedError } from '../localized-error.ts';
+import { LocalizedAggregateError, LocalizedError } from '../localized-error.ts';
 
 export interface FileIdentity { readonly volumeSerial: string; readonly fileId: string }
 export interface Directory extends FileIdentity { readonly path: string }
@@ -47,7 +47,7 @@ function api() {
 }
 
 export function requireWindows(): void {
-  if (process.platform !== 'win32' || process.arch !== 'x64') throw new Error('Native Windows x64 is required for the Git Bash runtime.');
+  if (process.platform !== 'win32' || process.arch !== 'x64') throw new LocalizedError('error.runtimePlatform');
 }
 
 export function isMissing(error: unknown): boolean {
@@ -60,10 +60,10 @@ export function isBusy(error: unknown): boolean {
     || ['EBUSY', 'ENOTEMPTY'].includes((error as NodeJS.ErrnoException)?.code ?? '');
 }
 
-export class InvalidMetadataError extends Error {}
+export class InvalidMetadataError extends LocalizedError {}
 
 /** The new name was created, but neither admission nor its rollback completed. */
-export class DirectoryRollbackError extends AggregateError {}
+export class DirectoryRollbackError extends LocalizedAggregateError {}
 
 export function hasCloseFailure(error: unknown): boolean {
   return (error instanceof Win32Error && error.api === 'CloseHandle')
@@ -112,7 +112,7 @@ export class NativeHold {
   canonicalPath(): string {
     const length = api().finalPath(this.handle, pathBuffer, pathBuffer.length / 2, 0);
     if (!length) throwLastError(api(), 'GetFinalPathNameByHandleW', this.path);
-    if (length >= pathBuffer.length / 2) throw new Error(`Canonical path exceeds the supported bound: ${this.path}`);
+    if (length >= pathBuffer.length / 2) throw new LocalizedError('error.canonicalPathTooLong', { path: this.path });
     return ordinaryPath(pathBuffer.subarray(0, length * 2).toString('utf16le'));
   }
 
@@ -120,20 +120,20 @@ export class NativeHold {
     const data = Buffer.alloc(64);
     if (!api().volume(this.handle, null, 0, null, null, null, data, 32)) throwLastError(api(), 'GetVolumeInformationByHandleW', this.path);
     if (data.toString('utf16le').split('\0')[0] !== 'NTFS') {
-      throw new LocalizedError(`NTFS is required: ${this.path}`, { key: 'error.ntfsRequired', params: { path: this.path } });
+      throw new LocalizedError('error.ntfsRequired', { path: this.path }, { fallback: `NTFS is required: ${this.path}` });
     }
   }
 
   readJson(maxBytes: number): unknown {
     const info = this.information();
     requireKind(info, 'file', this.path);
-    if (BigInt(info.size) > BigInt(maxBytes)) throw new InvalidMetadataError(`Metadata exceeds its path-aware bound: ${this.path}`);
+    if (BigInt(info.size) > BigInt(maxBytes)) throw new InvalidMetadataError('error.metadataTooLarge', { path: this.path });
     const size = Number(info.size), data = Buffer.alloc(size + 1), count = Buffer.alloc(4);
     // The SDK's raw count-pointer allocator has no public matching free. A
     // Buffer out-parameter keeps this bounded read entirely GC-owned.
     if (!api().readBytes(this.handle, data, data.length, count, null)) throwLastError(api(), 'ReadFile', this.path);
     const length = count.readUInt32LE(0);
-    if (length > size) throw new InvalidMetadataError(`Metadata grew during its read: ${this.path}`);
+    if (length > size) throw new InvalidMetadataError('error.metadataGrew', { path: this.path });
     return JSON.parse(data.subarray(0, length).toString('utf8')) as unknown;
   }
 
@@ -152,9 +152,9 @@ function open(path: string, access = 0, sharing = SHARE_ALL, disposition = OPEN_
 
 function requireKind(info: FileInformation, kind: 'file' | 'directory', path: string): void {
   if (info.attributes & ATTR_REPARSE) {
-    throw new LocalizedError(`Refusing reparse point: ${path}`, { key: 'error.reparsePoint', params: { path } });
+    throw new LocalizedError('error.reparsePoint', { path }, { fallback: `Refusing reparse point: ${path}` });
   }
-  if (!!(info.attributes & ATTR_DIRECTORY) !== (kind === 'directory')) throw new Error(`Expected ordinary ${kind}: ${path}`);
+  if (!!(info.attributes & ATTR_DIRECTORY) !== (kind === 'directory')) throw new LocalizedError('error.ordinaryEntryRequired', { kind, path });
 }
 
 function ordinaryPath(path: string): string {
@@ -166,7 +166,7 @@ export function absolutePath(path: string): string {
   requireWindows();
   if (!isAbsolute(path) || parse(path).root.length <= 1 || path.startsWith('\\\\?\\')
     || path.includes('\0') || path.length > 32767 || /[. ](?:[\\/]|$)/.test(path)
-    || path.slice(2).includes(':')) throw new Error(`Expected an ordinary absolute Windows path: ${path}`);
+    || path.slice(2).includes(':')) throw new LocalizedError('error.absoluteWindowsPath', { path });
   return resolve(path);
 }
 
@@ -208,7 +208,7 @@ export function admitDirectory(path: string, expected?: FileIdentity): Directory
   try {
     const info = hold.information();
     requireKind(info, 'directory', path);
-    if (expected && !sameIdentity(info, expected)) throw new Error(`Directory identity changed: ${path}`);
+    if (expected && !sameIdentity(info, expected)) throw new LocalizedError('error.directoryIdentityChanged', { path });
     hold.requireNtfs();
     return { path: hold.canonicalPath(), volumeSerial: info.volumeSerial, fileId: info.fileId };
   } finally { hold.close(); }
@@ -221,7 +221,7 @@ export function revalidateDirectory(directory: Directory): void {
 export function childPath(parent: Directory, name: string): string {
   // Enumerated interior names need not be valid generation IDs or conventional
   // Win32 spellings. Preserve one exact component, including trailing dots/spaces.
-  if (!name || name === '.' || name === '..' || /[\\/:\0]/.test(name)) throw new Error(`Invalid child name: ${name}`);
+  if (!name || name === '.' || name === '..' || /[\\/:\0]/.test(name)) throw new LocalizedError('error.invalidChildName', { name });
   return join(parent.path, name);
 }
 
@@ -229,13 +229,13 @@ export function childPath(parent: Directory, name: string): string {
 export function admitChildDirectory(parent: Directory, name: string, expected?: FileIdentity): Directory {
   const path = childPath(parent, name);
   const info = inspect(path);
-  if (expected && !sameIdentity(info, expected)) throw new Error(`Directory identity changed: ${path}`);
+  if (expected && !sameIdentity(info, expected)) throw new LocalizedError('error.directoryIdentityChanged', { path });
   return observedDirectory(path, info, parent.volumeSerial);
 }
 
 function observedDirectory(path: string, info: FileInformation, volumeSerial: string): Directory {
   requireKind(info, 'directory', path);
-  if (info.volumeSerial !== volumeSerial) throw new Error(`Volume boundary changed: ${path}`);
+  if (info.volumeSerial !== volumeSerial) throw new LocalizedError('error.volumeBoundaryChanged', { path });
   return { path, volumeSerial: info.volumeSerial, fileId: info.fileId };
 }
 
@@ -252,7 +252,7 @@ function createChildDirectory(parent: Directory, name: string): Directory {
     // Roll back only our successfully created, still-empty name. Never recurse
     // or repair attributes when admission itself could not establish a Directory.
     try { revalidateDirectory(parent); removeDirectoryName(path); }
-    catch (cleanup) { throw new DirectoryRollbackError([error, cleanup], `Directory admission and cleanup failed: ${path}`, { cause: cleanup }); }
+    catch (cleanup) { throw new DirectoryRollbackError([error, cleanup], 'error.directoryRollbackFailed', { path }, { cause: cleanup }); }
     throw error;
   }
 }
@@ -269,9 +269,9 @@ export function openOrdinaryFile(parent: Directory, name: string, writable = fal
   try {
     const info = hold.information();
     requireKind(info, 'file', path);
-    if (info.volumeSerial !== parent.volumeSerial) throw new Error(`Volume boundary changed: ${path}`);
+    if (info.volumeSerial !== parent.volumeSerial) throw new LocalizedError('error.volumeBoundaryChanged', { path });
     if (writable && (info.attributes & ATTR_READONLY)) {
-      throw new LocalizedError(`Refusing read-only source hardlink: ${path}`, { key: 'error.readOnlySource', params: { path } });
+      throw new LocalizedError('error.readOnlySource', { path }, { fallback: `Refusing read-only source hardlink: ${path}` });
     }
     return hold;
   } catch (error) { hold.close(); throw error; }
@@ -293,10 +293,10 @@ function directoryHold(directory: Directory, access: number, sharing: number): N
   try {
     const info = hold.information();
     requireKind(info, 'directory', directory.path);
-    if (!sameIdentity(info, directory)) throw new Error(`Directory identity changed: ${directory.path}`);
+    if (!sameIdentity(info, directory)) throw new LocalizedError('error.directoryIdentityChanged', { path: directory.path });
     // Admission already established the ancestor chain and NTFS volume. Reuse
     // it only while this opened object still has that identity AND physical path.
-    if (!samePath(hold.canonicalPath(), directory.path)) throw new Error(`Directory path redirected: ${directory.path}`);
+    if (!samePath(hold.canonicalPath(), directory.path)) throw new LocalizedError('error.directoryRedirected', { path: directory.path });
     return hold;
   } catch (error) { hold.close(); throw error; }
 }
@@ -313,7 +313,7 @@ export function createSetupLease(parent: Directory, name = '.setup-owner'): Nati
 export function requireActiveLease(parent: Directory, expected: FileIdentity): void {
   revalidateDirectory(parent);
   const lease = openOrdinaryFile(parent, '.setup-owner');
-  try { if (!sameIdentity(lease.information(), expected)) throw new Error('Setup lease identity changed.'); }
+  try { if (!sameIdentity(lease.information(), expected)) throw new LocalizedError('error.leaseIdentityChanged'); }
   finally { lease.close(); }
 }
 
@@ -344,7 +344,7 @@ export async function acquireWriterLock(directory: Directory, signal: AbortSigna
 export function createHardlink(sourceParent: Directory, sourceName: string, targetParent: Directory, targetName: string): void {
   revalidateDirectory(sourceParent);
   revalidateDirectory(targetParent);
-  if (sourceParent.volumeSerial !== targetParent.volumeSerial) throw new Error('Hardlink source and destination must share an NTFS volume.');
+  if (sourceParent.volumeSerial !== targetParent.volumeSerial) throw new LocalizedError('error.hardlinkVolume');
   const source = openOrdinaryFile(sourceParent, sourceName, true);
   try {
     // Keep admission and the syscall in one synchronous operation. Queuing an
@@ -367,7 +367,7 @@ export function createJunction(parent: Directory, name: string, target: Director
   catch (error) {
     // Only a successfully created name is ours to clean up on failed admission.
     try { unlinkEntry(parent, name); }
-    catch (cleanup) { throw new AggregateError([error, cleanup], `Junction admission and cleanup failed: ${path}`, { cause: cleanup }); }
+    catch (cleanup) { throw new LocalizedAggregateError([error, cleanup], 'error.junctionRollbackFailed', { path }, { cause: cleanup }); }
     throw error;
   }
   return path;
@@ -375,12 +375,12 @@ export function createJunction(parent: Directory, name: string, target: Director
 
 export function admitJunction(parent: Directory, name: string, target: Directory): void {
   const path = childPath(parent, name), info = inspect(path);
-  if (!(info.attributes & ATTR_REPARSE) || info.reparseTag !== MOUNT_POINT) throw new Error(`Unexpected runtime junction: ${path}`);
+  if (!(info.attributes & ATTR_REPARSE) || info.reparseTag !== MOUNT_POINT) throw new LocalizedError('error.unexpectedJunction', { path });
   let actual: string;
   try { actual = ordinaryPath(realpathSync(toNamespacedPath(path))); }
-  catch (cause) { throw new Error(`Unexpected runtime junction: ${path}`, { cause }); }
+  catch (cause) { throw new LocalizedError('error.unexpectedJunction', { path }, { cause }); }
   if (!samePath(actual, target.path)) {
-    throw new Error(`Unexpected runtime junction: ${path}`);
+    throw new LocalizedError('error.unexpectedJunction', { path });
   }
 }
 
@@ -410,10 +410,10 @@ export function unlinkEntry(parent: Directory, name: string): void {
 
 function unlinkObserved(path: string, info: FileInformation): void {
   if (info.attributes & ATTR_REPARSE) {
-    if (![MOUNT_POINT, SYMLINK].includes(info.reparseTag)) throw new Error(`Unsupported reparse tag at ${path}`);
+    if (![MOUNT_POINT, SYMLINK].includes(info.reparseTag)) throw new LocalizedError('error.unsupportedReparseTag', { path });
     if (info.attributes & ATTR_DIRECTORY) { removeDirectoryName(path); return; }
   } else if (info.attributes & ATTR_DIRECTORY) {
-    throw new Error(`Expected an unlinkable name, not a directory: ${path}`);
+    throw new LocalizedError('error.cannotUnlinkDirectory', { path });
   }
   // libuv's unlink/rmdir fallback can clear READONLY on the shared file.
   // Ordinary Win32 deletion reports obstructions without repairing attributes.

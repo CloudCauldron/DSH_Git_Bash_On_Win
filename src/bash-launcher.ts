@@ -1,6 +1,7 @@
 import { buildRuntimeEnvironment } from './runtime/git-installation.ts';
 import { inheritedCompatibility } from './debugger/native-debug.ts';
 import { runPrivateBash } from './debugger/process-family.ts';
+import { LocalizedError } from './localized-error.ts';
 
 // Reached through DSH's native policy/subprocess machinery. No token creation,
 // source probes, cache metadata or duplicate filesystem admission belong here.
@@ -10,11 +11,11 @@ try {
   if (process.argv.length !== 9 || !baseRoot || !installationRoot || !sourceRoot
     || (layout !== 'ucrt64' && layout !== 'mingw64')
     || (mode !== 'read-only' && mode !== 'workspace-write' && mode !== 'danger-full-access')
-    || encoded === undefined) throw new Error('Invalid private Git Bash invocation.');
+    || encoded === undefined) throw new LocalizedError('error.invalidLauncherInvocation');
   const command = Buffer.from(encoded, 'base64').toString('utf8');
-  if (Buffer.from(command, 'utf8').toString('base64') !== encoded || command.includes('\0')) throw new Error('Invalid encoded Bash command.');
+  if (Buffer.from(command, 'utf8').toString('base64') !== encoded || command.includes('\0')) throw new LocalizedError('error.invalidEncodedCommand');
   const graceMs = Number(grace);
-  if (!Number.isFinite(graceMs) || graceMs <= 0 || graceMs > 2147483647) throw new Error('Invalid DSH process grace period.');
+  if (!Number.isFinite(graceMs) || graceMs <= 0 || graceMs > 2147483647) throw new LocalizedError('error.invalidGracePeriod');
   const compatibility = inheritedCompatibility(mode);
   const runtimeEnvironment = buildRuntimeEnvironment(installationRoot, sourceRoot, layout, process.env);
   const replaced = new Set(Object.keys(runtimeEnvironment).map(key => key.toLowerCase()));

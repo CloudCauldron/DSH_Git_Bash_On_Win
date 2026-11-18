@@ -7,6 +7,7 @@ import {
   requireJobMember, spawnDebugFamily, ThreadContext, valid, waitDebugEvent, wide, writeData as allocateData, writeMemory,
   type DebugEvent, type IpcCompatibility,
 } from './native-debug.ts';
+import { LocalizedError } from '../localized-error.ts';
 
 export interface PrivateBashLaunch {
   readonly baseRoot: string;
@@ -41,10 +42,10 @@ interface DebugState {
 /** One child path admission; parent pins do not freeze junction targets. */
 export async function runPrivateBash(options: PrivateBashLaunch): Promise<PrivateFamilyExit> {
   const base = admitDirectory(options.baseRoot);
-  if (!samePath(base.path, absolutePath(options.baseRoot))) throw new Error('The admitted base was redirected.');
+  if (!samePath(base.path, absolutePath(options.baseRoot))) throw new LocalizedError('error.baseRedirected');
   const installationRoot = absolutePath(options.installationRoot);
   const viewsRoot = join(dirname(base.path), 'views');
-  if (samePath(viewsRoot, installationRoot) || !containsPath(viewsRoot, installationRoot)) throw new Error('The MSYS view must be generation-owned.');
+  if (samePath(viewsRoot, installationRoot) || !containsPath(viewsRoot, installationRoot)) throw new LocalizedError('error.viewOutsideGeneration');
   admitJunction(admitDirectory(dirname(installationRoot)), basename(installationRoot), base);
   const bin = admitChildDirectory(admitChildDirectory(base, 'usr'), 'bin');
   const bash = openOrdinaryFile(bin, 'bash.exe');
@@ -70,13 +71,13 @@ export async function runPrivateBash(options: PrivateBashLaunch): Promise<Privat
   const writeData = (payload: Buffer) => allocateData(processHandle, payload);
   function context(tid: number): NativePtr {
     const thread = state.threads.get(tid);
-    if (!thread) throw new Error('Unknown private thread.');
+    if (!thread) throw new LocalizedError('error.unknownThread');
     ctx.load(thread);
     return thread;
   }
   function arm(tid: number): void {
     const thread = state.threads.get(tid);
-    if (!thread) throw new Error('Unknown private thread.');
+    if (!thread) throw new LocalizedError('error.unknownThread');
     ctx.arm(thread, state.hooks.map(hook => hook.address), state.armed.has(tid));
     state.armed.add(tid);
   }
@@ -96,13 +97,13 @@ export async function runPrivateBash(options: PrivateBashLaunch): Promise<Privat
   function verifyLoaderPath(started = !state.firstBreakpoint): void {
     if (state.loaderPathVerified) return;
     if (!state.msys) {
-      if (started && state.pid === pid) throw new Error('The private Bash MSYS module was not identified at startup.');
+      if (started && state.pid === pid) throw new LocalizedError('error.missingStartupMsys');
       return; // Native descendants need not load MSYS.
     }
     const loaded = loaderPath(processHandle, state.msys.base) || state.msys.loaderPath;
     // Fork initialization may precede PSAPI loader-list visibility.
     if (!loaded && !started) return;
-    if (!loaded || !samePath(canonicalExistingPath(loaded), msysPath)) throw new Error(`MSYS loader path is outside the admitted base: ${loaded}`);
+    if (!loaded || !samePath(canonicalExistingPath(loaded), msysPath)) throw new LocalizedError('error.loaderOutsideBase', { path: loaded });
     state.loaderPathVerified = true;
   }
   function onHit(tid: number, slot: number) {
@@ -120,8 +121,8 @@ export async function runPrivateBash(options: PrivateBashLaunch): Promise<Privat
       const ownSignalPipe = match !== null && Number(match[2]) === state.pid;
       if (ownSignalPipe) {
         const key = match[1]!.toLowerCase();
-        if (!state.installationPathAdjusted && state.pid === pid) throw new Error('MSYS startup-root hook did not establish the scoped namespace.');
-        if (familyKey !== undefined && familyKey !== key) throw new Error('MSYS descendants changed the scoped namespace.');
+        if (!state.installationPathAdjusted && state.pid === pid) throw new LocalizedError('error.startupNamespaceMissing');
+        if (familyKey !== undefined && familyKey !== key) throw new LocalizedError('error.descendantNamespaceChanged');
         familyKey ??= key;
         state.installationKey = key;
       }
@@ -174,7 +175,7 @@ export async function runPrivateBash(options: PrivateBashLaunch): Promise<Privat
       // The native call/return still executes normally (including CET state).
       const text = win32.toNamespacedPath(resolve(installationRoot, 'usr/bin/msys-2.0.dll'));
       const bytes = Buffer.from(text + '\0', 'utf16le'), capacity = Number(reg(registers.r8));
-      if (capacity < text.length + 1 || capacity > 32_768) throw new Error('Private MSYS view exceeds its startup buffer.');
+      if (capacity < text.length + 1 || capacity > 32_768) throw new LocalizedError('error.viewBufferTooSmall');
       writeMemory(processHandle, reg(registers.rdx), bytes);
       ctx.write64(registers.rdx, writeData(Buffer.alloc(capacity * 2)));
       state.installationPathAdjusted = true;
@@ -187,15 +188,15 @@ export async function runPrivateBash(options: PrivateBashLaunch): Promise<Privat
     // Image-section handles may report another hardlink name. Prefer the
     // loader's spelling both for module classification and boundary admission.
     const loadedPath = loaderPath(processHandle, base) || debugLoaderPath(event) || fileName(file);
-    if (!loadedPath) throw new Error('Cannot identify a loaded module in the private family.');
+    if (!loadedPath) throw new LocalizedError('error.unidentifiedModule');
     const name = win32.basename(loadedPath).toLowerCase();
     const { size, x64 } = imageLayout(read(processHandle, base, 4096));
     state.modules.push({ name, base, end: base + BigInt(size) });
     if (name === 'msys-2.0.dll') {
-      if (!x64) throw new Error('A supported x64 MSYS module is required.');
+      if (!x64) throw new LocalizedError('error.x64MsysRequired');
       state.imagePath ??= imagePath(processHandle);
-      if (!containsPath(privateRoot, canonicalExistingPath(state.imagePath))) throw new Error('MSYS executable is outside the admitted base.');
-      if (!file || !sameIdentity(fileIdentity(file), dllIdentity)) throw new Error('MSYS module identity differs from the admitted private DLL.');
+      if (!containsPath(privateRoot, canonicalExistingPath(state.imagePath))) throw new LocalizedError('error.executableOutsideBase');
+      if (!file || !sameIdentity(fileIdentity(file), dllIdentity)) throw new LocalizedError('error.moduleIdentityMismatch');
       requireJobMember(processHandle, job);
       state.msys = { base, end: base + BigInt(size), loaderPath: debugLoaderPath(event) };
       verifyLoaderPath();
@@ -205,9 +206,9 @@ export async function runPrivateBash(options: PrivateBashLaunch): Promise<Privat
     state.hooks.forEach((hook, slot) => {
       if (!x64 || name !== hook.module || (!grantSid && (slot === 1 || slot === 2))) return;
       const localBase = api.module(hook.module);
-      if (!valid(localBase)) throw new Error(`Missing ${hook.module}.`);
+      if (!valid(localBase)) throw new LocalizedError('error.missingModule', { module: hook.module });
       const address = api.symbol(localBase, hook.symbol);
-      if (!valid(address) || address < localBase || address - localBase >= BigInt(size)) throw new Error(`Unsupported ${hook.symbol} address.`);
+      if (!valid(address) || address < localBase || address - localBase >= BigInt(size)) throw new LocalizedError('error.unsupportedSymbol', { symbol: hook.symbol });
       hook.address = base + address - localBase;
     });
     if (state.msys) for (const tid of state.threads.keys()) arm(tid);
@@ -224,7 +225,7 @@ export async function runPrivateBash(options: PrivateBashLaunch): Promise<Privat
     } else {
       if (event.kind === 'process') {
         try {
-          if (states.has(eventPid)) throw new Error('Duplicate live process identity.');
+          if (states.has(eventPid)) throw new LocalizedError('error.duplicateProcess');
           requireJobMember(event.process, job);
           states.set(eventPid, { pid: eventPid, process: event.process, threads: new Map([[tid, event.thread]]),
             armed: new Set(), modules: [], firstBreakpoint: true,
@@ -235,7 +236,7 @@ export async function runPrivateBash(options: PrivateBashLaunch): Promise<Privat
       const selected = states.get(eventPid);
       if (!selected) {
         if (event.kind === 'module') close(event.file);
-        throw new Error('Debug event is outside the observed private family.');
+        throw new LocalizedError('error.debugEventOutsideFamily');
       }
       state = selected; processHandle = state.process;
       switch (event.kind) {
@@ -266,7 +267,7 @@ export async function runPrivateBash(options: PrivateBashLaunch): Promise<Privat
           if (event.code === 0x80000004 && slot >= 0) onHit(tid, slot);
           else if (event.code === 0x80000003 && state.firstBreakpoint) {
             verifyLoaderPath(true);
-            if (state.msys && state.hooks.some((hook, i) => (grantSid || i === 0 || i === 3) && hook.address === undefined)) throw new Error('Required MSYS startup hooks are unavailable.');
+            if (state.msys && state.hooks.some((hook, i) => (grantSid || i === 0 || i === 3) && hook.address === undefined)) throw new LocalizedError('error.startupHooksUnavailable');
             state.firstBreakpoint = false;
           } else disposition = 0x80010001;
           break;
@@ -295,11 +296,11 @@ export async function runPrivateBash(options: PrivateBashLaunch): Promise<Privat
       if (terminatedAt === undefined && rootExitedAt !== undefined && performance.now() - rootExitedAt >= options.graceMs) {
         terminateJob(api, job, 1); terminatedAt = performance.now();
       }
-      if (terminatedAt !== undefined && performance.now() - terminatedAt > 3000) throw new Error('Private Job termination deadline exceeded.');
+      if (terminatedAt !== undefined && performance.now() - terminatedAt > 3000) throw new LocalizedError('error.jobTerminationTimeout');
       eventOnce(25);
     }
     joined = true;
-    if (exitCode === undefined || familyKey === undefined) throw new Error('MSYS startup namespace or family exit was not confirmed.');
+    if (exitCode === undefined || familyKey === undefined) throw new LocalizedError('error.familyExitUnconfirmed');
   } catch (error) { errors.push(error); }
   finally {
     if (job && !joined) {
@@ -308,7 +309,7 @@ export async function runPrivateBash(options: PrivateBashLaunch): Promise<Privat
       const until = performance.now() + 3000;
       attempt(() => { while ((!exited || !isJobEmpty(api, job!)) && performance.now() < until) eventOnce(25, true); });
     }
-    if (job) attempt(() => { if (!isJobEmpty(api, job!)) throw new Error('Private Job termination was not confirmed.'); });
+    if (job) attempt(() => { if (!isJobEmpty(api, job!)) throw new LocalizedError('error.jobTerminationUnconfirmed'); });
     attempt(() => close(ownerProcess));
     attempt(() => close(job));
     attempt(() => ctx.close());

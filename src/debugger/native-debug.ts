@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import type { SandboxMode } from '@deepseek-ai/dsh-sandbox';
 import { tempWriteSid } from '@deepseek-ai/dsh-sandbox-windows-acl';
 import { closeHandleChecked, extendWin32ProcessBindings, isNullPtr, spawnCurrentTokenJobProcess, throwLastError, type CurrentTokenProcessSpawnOptions, type NativePtr } from '@deepseek-ai/dsh-win32-process';
+import { LocalizedError } from '../localized-error.ts';
 
 interface DebugBindings {
   currentProcess(): NativePtr;
@@ -32,7 +33,7 @@ interface DebugBindings {
 
 let bindings: ReturnType<typeof extendWin32ProcessBindings<DebugBindings>> | undefined;
 export function debugApi() {
-  if (process.platform !== 'win32' || process.arch !== 'x64') throw new Error('Native Windows x64 is required.');
+  if (process.platform !== 'win32' || process.arch !== 'x64') throw new LocalizedError('error.nativeWindowsRequired');
   return bindings ??= extendWin32ProcessBindings(({ kernel32, advapi32, bind }) => ({
     currentProcess: bind(kernel32, 'GetCurrentProcess', 'void *', []),
     waitDebug: bind(kernel32, 'WaitForDebugEvent', 'int', ['void *', 'uint32']),
@@ -62,7 +63,7 @@ export function debugApi() {
 
 export function pointer(buffer: Buffer, offset = 0): NativePtr {
   const value = buffer.readBigUInt64LE(offset) as NativePtr;
-  if (!valid(value)) throw new Error('Missing native pointer.');
+  if (!valid(value)) throw new LocalizedError('error.missingNativePointer');
   return value;
 }
 export function valid(value: NativePtr | null | undefined): value is NativePtr {
@@ -94,20 +95,20 @@ export function loaderPath(process: NativePtr, base: bigint): string {
 export function imagePath(process: NativePtr): string {
   const data = Buffer.alloc(48), api = debugApi();
   const status = api.processInformation(process, 0, data, data.length, null);
-  if (status < 0) throw new Error(`NtQueryInformationProcess: 0x${(status >>> 0).toString(16)}`);
+  if (status < 0) throw new LocalizedError('error.processInformation', { api: 'NtQueryInformationProcess', status: (status >>> 0).toString(16) });
   const parameters = readMemory(process, data.readBigUInt64LE(8) + 0x20n, 8).readBigUInt64LE();
   const image = readMemory(process, parameters + 0x60n, 16), bytes = image.readUInt16LE();
-  if (!bytes || bytes > 32768 || bytes % 2) throw new Error('Invalid process image path.');
+  if (!bytes || bytes > 32768 || bytes % 2) throw new LocalizedError('error.invalidImagePath');
   return readMemory(process, image.readBigUInt64LE(8), bytes).toString('utf16le');
 }
 
 export function imageLayout(header: Buffer): { size: number; x64: boolean } {
-  if (header.length < 64 || header.readUInt16LE() !== 0x5a4d) throw new Error('Invalid module DOS header.');
+  if (header.length < 64 || header.readUInt16LE() !== 0x5a4d) throw new LocalizedError('error.invalidDosHeader');
   const pe = header.readUInt32LE(0x3c);
-  if (pe + 84 > header.length || header.readUInt32LE(pe) !== 0x00004550) throw new Error('Invalid module PE header.');
+  if (pe + 84 > header.length || header.readUInt32LE(pe) !== 0x00004550) throw new LocalizedError('error.invalidPeHeader');
   const x64 = header.readUInt16LE(pe + 4) === 0x8664 && header.readUInt16LE(pe + 24) === 0x20b;
   const size = header.readUInt32LE(pe + 24 + 56);
-  if (size < 4096) throw new Error('Invalid module image size.');
+  if (size < 4096) throw new LocalizedError('error.invalidImageSize');
   return { size, x64 };
 }
 
@@ -155,36 +156,36 @@ export function inheritedCompatibility(mode: SandboxMode): IpcCompatibility {
   try {
     requireJobMember(api.currentProcess(), null);
     if (mode === 'danger-full-access') {
-      if (api.restricted(token)) throw new Error('Full-access policy cannot use a restricted inherited token.');
+      if (api.restricted(token)) throw new LocalizedError('error.restrictedFullAccess');
       return { grantSid: undefined };
     }
     const query = (kind: number): Buffer => {
       const needed = Buffer.alloc(4);
       api.tokenInfo(token, kind, null, 0, needed);
       const bytes = needed.readUInt32LE();
-      if (bytes < 4 || bytes > 65_536) throw new Error('Invalid token information size.');
+      if (bytes < 4 || bytes > 65_536) throw new LocalizedError('error.invalidTokenInformationSize');
       const result = Buffer.alloc(bytes);
       checked(api.tokenInfo(token, kind, result, bytes, needed), 'GetTokenInformation');
       return result;
     };
     const groups = (kind: number) => {
       const data = query(kind), count = data.readUInt32LE();
-      if (8 + count * 16 > data.length) throw new Error('Invalid TOKEN_GROUPS layout.');
+      if (8 + count * 16 > data.length) throw new LocalizedError('error.invalidTokenGroups', { type: 'TOKEN_GROUPS' });
       return Array.from({ length: count }, (_, index) => ({
         sid: sidText(data, 8 + index * 16), attributes: data.readUInt32LE(16 + index * 16),
       }));
     };
     const logon = groups(2).find(group => ((group.attributes & 0xc0000000) >>> 0) === 0xc0000000)?.sid;
-    if (!logon) throw new Error('The inherited token has no logon SID.');
+    if (!logon) throw new LocalizedError('error.missingLogonSid');
     const restrictions = groups(11).map(group => group.sid);
     const user = sidText(query(1)), integrity = sidText(query(25));
     const capabilities = restrictions.filter(value => value.startsWith('S-1-4-'));
     if (!api.restricted(token) || integrity !== 'S-1-16-4096' || restrictions.includes(user)
-      || restrictions.includes('S-1-5-11') || !restrictions.includes(logon)) throw new Error('DSH Windows sandbox restrictions are missing.');
+      || restrictions.includes('S-1-5-11') || !restrictions.includes(logon)) throw new LocalizedError('error.missingSandboxRestrictions');
     if (mode === 'read-only' && capabilities.length === 0) return { grantSid: logon };
     const temp = tempWriteSid(tmpdir());
     if (mode === 'workspace-write' && capabilities.includes(temp)) return { grantSid: temp };
-    throw new Error('The inherited DSH mode or private-temp capability is incompatible.');
+    throw new LocalizedError('error.incompatibleInheritedMode');
   } finally { close(token); }
 }
 
@@ -192,9 +193,9 @@ function sidText(data: Buffer, pointerOffset = 0): string {
   // TOKEN_* pointers refer into the same caller-owned query buffer. Decode
   // there, keeping its storage alive and rejecting pointers outside its bounds.
   const relative = pointer(data, pointerOffset) - koffi.address(data);
-  if (relative < 0n || relative > BigInt(data.length - 8)) throw new Error('Invalid token SID pointer.');
+  if (relative < 0n || relative > BigInt(data.length - 8)) throw new LocalizedError('error.invalidTokenSidPointer');
   const offset = Number(relative), count = data[offset + 1]!;
-  if (data[offset] !== 1 || count > 15 || offset + 8 + count * 4 > data.length) throw new Error('Invalid SID.');
+  if (data[offset] !== 1 || count > 15 || offset + 8 + count * 4 > data.length) throw new LocalizedError('error.invalidSid');
   let authority = 0;
   for (let index = 2; index < 8; index++) authority = authority * 256 + data[offset + index]!;
   return `S-1-${authority}` + Array.from({ length: count }, (_, index) => `-${data.readUInt32LE(offset + 8 + index * 4)}`).join('');
@@ -203,7 +204,7 @@ function sidText(data: Buffer, pointerOffset = 0): string {
 export function requireJobMember(process: NativePtr, job: NativePtr | null): void {
   const member = Buffer.alloc(4);
   checked(debugApi().inJob(process, job, member), 'IsProcessInJob');
-  if (!member.readUInt32LE()) throw new Error('Private DSH Job containment is required.');
+  if (!member.readUInt32LE()) throw new LocalizedError('error.privateJobRequired');
 }
 
 export function spawnDebugFamily(options: CurrentTokenProcessSpawnOptions) {
@@ -215,22 +216,22 @@ export function spawnDebugFamily(options: CurrentTokenProcessSpawnOptions) {
 }
 
 export function readMemory(process: NativePtr, address: bigint, bytes: number): Buffer {
-  if (address === 0n || !Number.isInteger(bytes) || bytes < 0 || bytes > 65_536) throw new Error('Invalid bounded memory read.');
+  if (address === 0n || !Number.isInteger(bytes) || bytes < 0 || bytes > 65_536) throw new LocalizedError('error.invalidMemoryRead');
   const buffer = Buffer.alloc(bytes), got = Buffer.alloc(8);
   checked(debugApi().readMemory(process, address, buffer, bytes, got), 'ReadProcessMemory');
-  if (got.readBigUInt64LE() !== BigInt(bytes)) throw new Error('Partial process memory read.');
+  if (got.readBigUInt64LE() !== BigInt(bytes)) throw new LocalizedError('error.partialMemoryRead');
   return buffer;
 }
 
 export function writeMemory(process: NativePtr, address: bigint, payload: Buffer): void {
-  if (!address || payload.length > 65_536) throw new Error('Invalid bounded memory write.');
+  if (!address || payload.length > 65_536) throw new LocalizedError('error.invalidMemoryWrite');
   const written = Buffer.alloc(8);
   checked(debugApi().writeMemory(process, address, payload, payload.length, written), 'WriteProcessMemory');
-  if (written.readBigUInt64LE() !== BigInt(payload.length)) throw new Error('Partial process memory write.');
+  if (written.readBigUInt64LE() !== BigInt(payload.length)) throw new LocalizedError('error.partialMemoryWrite');
 }
 
 export function writeData(process: NativePtr, payload: Buffer): NativePtr {
-  if (!payload.length || payload.length > 65_536) throw new Error('Invalid private data allocation.');
+  if (!payload.length || payload.length > 65_536) throw new LocalizedError('error.invalidAllocation');
   const memory = debugApi().allocateMemory(process, null, payload.length, 0x3000, 0x04);
   if (!valid(memory)) throwLastError(debugApi(), 'VirtualAllocEx(data)');
   writeMemory(process, memory, payload);
@@ -238,7 +239,7 @@ export function writeData(process: NativePtr, payload: Buffer): NativePtr {
 }
 
 export function wide(process: NativePtr, address: bigint, maximum = 512): string {
-  if (maximum > 32768) throw new Error('Invalid Unicode bound.');
+  if (maximum > 32768) throw new LocalizedError('error.invalidUnicodeBound');
   const chars: number[] = [];
   for (let i = 0; i < maximum;) {
     const current = address + BigInt(i * 2);
@@ -252,7 +253,7 @@ export function wide(process: NativePtr, address: bigint, maximum = 512): string
     }
     i += data.length / 2;
   }
-  throw new Error('Unterminated process string.');
+  throw new LocalizedError('error.unterminatedProcessString');
 }
 
 /** x64 CONTEXT offsets; only hardware debug registers and data arguments change. */
@@ -262,7 +263,7 @@ export class ThreadContext {
   constructor() {
     if (!valid(this.memory) || (this.memory & 15n) !== 0n) {
       if (valid(this.memory)) koffi.free(this.memory);
-      throw new Error('A 16-byte aligned x64 CONTEXT is required.');
+      throw new LocalizedError('error.unalignedContext');
     }
   }
   read64(offset: number): bigint { return BigInt(koffi.decode(this.memory, offset, 'uint64') as bigint); }
@@ -275,8 +276,8 @@ export class ThreadContext {
   arm(thread: NativePtr, addresses: readonly (bigint | undefined)[], alreadyArmed: boolean): void {
     this.load(thread);
     const control = this.read64(112);
-    if (!alreadyArmed && (control & 255n) !== 0n) throw new Error('Refusing pre-existing debug-register state.');
-    if (addresses.length > 4) throw new Error('Too many hardware breakpoints.');
+    if (!alreadyArmed && (control & 255n) !== 0n) throw new LocalizedError('error.existingDebugRegisters');
+    if (addresses.length > 4) throw new LocalizedError('error.breakpointLimit');
     let enabled = 0n, addressesMatch = true;
     addresses.forEach((address, i) => {
       const offset = 72 + i * 8, desired = address ?? 0n;
@@ -311,7 +312,7 @@ export function readDescriptor(process: NativePtr, address: bigint) {
       if (!offset) continue;
       const first = readMemory(process, address + BigInt(offset), 8);
       const size = i < 2 ? 8 + first[1]! * 4 : first.readUInt16LE(2);
-      if (size < 8 || offset + size > 65_536) throw new Error('Invalid relative security descriptor.');
+      if (size < 8 || offset + size > 65_536) throw new LocalizedError('error.invalidRelativeDescriptor');
       bytes = Math.max(bytes, offset + size);
     }
     return readMemory(process, address, bytes);
@@ -327,7 +328,7 @@ export function readDescriptor(process: NativePtr, address: bigint) {
     if (!item) continue;
     const first = readMemory(process, item, 8);
     const size = i < 2 ? 8 + first[1]! * 4 : first.readUInt16LE(2);
-    if (size < 8 || size > 16_384) throw new Error('Invalid absolute security descriptor.');
+    if (size < 8 || size > 16_384) throw new LocalizedError('error.invalidAbsoluteDescriptor');
     const padding = (4 - length % 4) % 4;
     if (padding) { pieces.push(Buffer.alloc(padding)); length += padding; }
     result.writeUInt32LE(length, 4 + i * 4);
@@ -341,12 +342,12 @@ export function descriptorText(buffer: Buffer) {
   const address = pointer(slot);
   try {
     const extent = count.readUInt32LE();
-    if (extent < 1 || extent > 4096) throw new Error('Invalid SDDL buffer extent.');
+    if (extent < 1 || extent > 4096) throw new LocalizedError('error.invalidSddlExtent');
     const data = readMemory(debugApi().currentProcess(), address, extent * 2);
     for (let offset = 0; offset < data.length; offset += 2) {
       if (data.readUInt16LE(offset) === 0) return data.subarray(0, offset).toString('utf16le');
     }
-    throw new Error('Unterminated SDDL string.');
+    throw new LocalizedError('error.unterminatedSddl');
   } finally { freeLocal(address); }
 }
 export function objectName(process: NativePtr, remoteHandle: bigint) {
@@ -357,21 +358,21 @@ export function objectName(process: NativePtr, remoteHandle: bigint) {
   try {
     const buffer = Buffer.alloc(4096), needed = Buffer.alloc(4);
     const status = Number(debugApi().queryObject(handle, 1, buffer, buffer.length, needed));
-    if (status < 0) throw new Error(`NtQueryObject(name): 0x${(status >>> 0).toString(16)}`);
+    if (status < 0) throw new LocalizedError('error.objectNameQuery', { api: 'NtQueryObject', status: (status >>> 0).toString(16) });
     const length = buffer.readUInt16LE();
-    if (length < 2 || length > 2048 || length % 2) throw new Error('Invalid private namespace name.');
+    if (length < 2 || length > 2048 || length % 2) throw new LocalizedError('error.invalidNamespaceName');
     return readMemory(self, pointer(buffer, 8)!, length).toString('utf16le');
   } finally { close(handle); }
 }
 export function mergedDescriptor(original: string, sid: string) {
   const sddl = original.replace(/(?=S:|$)/, `(A;;GA;;;${sid})`);
-  if (!original.includes('D:') || original.includes('NO_ACCESS_CONTROL')) throw new Error('Unsupported pipe DACL.');
+  if (!original.includes('D:') || original.includes('NO_ACCESS_CONTROL')) throw new LocalizedError('error.unsupportedPipeDacl');
   const slot = Buffer.alloc(8), count = Buffer.alloc(4);
   checked(debugApi().descriptor(sddl, 1, slot, count), "descriptor");
   const local = pointer(slot);
   try {
     const bytes = count.readUInt32LE();
-    if (bytes < 20 || bytes > 16_384) throw new Error('Invalid replacement descriptor length.');
+    if (bytes < 20 || bytes > 16_384) throw new LocalizedError('error.invalidDescriptorLength');
     return readMemory(debugApi().currentProcess(), local!, bytes);
   } finally { freeLocal(local); }
 }
@@ -379,7 +380,7 @@ export function mergedDescriptor(original: string, sid: string) {
 /** x64 SECURITY_ATTRIBUTES and stack argument 7 of CreateNamedPipeW. */
 export function grantPipe(process: NativePtr, stack: bigint, attributes: bigint, original: string, sid: string): void {
   const payload = readMemory(process, attributes, 24);
-  if (payload.readUInt32LE() !== 24 || payload.readUInt32LE(16) > 1) throw new Error('Invalid SECURITY_ATTRIBUTES.');
+  if (payload.readUInt32LE() !== 24 || payload.readUInt32LE(16) > 1) throw new LocalizedError('error.invalidSecurityAttributes', { type: 'SECURITY_ATTRIBUTES' });
   payload.writeBigUInt64LE(writeData(process, mergedDescriptor(original, sid)), 8);
   const argument = Buffer.alloc(8); argument.writeBigUInt64LE(writeData(process, payload));
   writeMemory(process, stack + 0x40n, argument);
@@ -388,7 +389,7 @@ export function grantPipe(process: NativePtr, stack: bigint, attributes: bigint,
 export function defaultDaclText(process: NativePtr, information: bigint): string {
   const acl = readMemory(process, information, 8).readBigUInt64LE();
   const bytes = readMemory(process, acl, 8).readUInt16LE(2);
-  if (bytes < 8 || bytes > 16384) throw new Error('Invalid proposed TOKEN_DEFAULT_DACL.');
+  if (bytes < 8 || bytes > 16384) throw new LocalizedError('error.invalidTokenDefaultDacl', { type: 'TOKEN_DEFAULT_DACL' });
   const relative = Buffer.alloc(20 + bytes);
   relative[0] = 1; relative.writeUInt16LE(0x8004, 2); relative.writeUInt32LE(20, 16);
   readMemory(process, acl, bytes).copy(relative, 20);
@@ -397,9 +398,9 @@ export function defaultDaclText(process: NativePtr, information: bigint): string
 
 export function grantDefaultDacl(process: NativePtr, original: string, sid: string): NativePtr {
   const sd = mergedDescriptor(original, sid), offset = sd.readUInt32LE(16);
-  if (offset < 20 || offset + 8 > sd.length) throw new Error('Invalid replacement DACL offset.');
+  if (offset < 20 || offset + 8 > sd.length) throw new LocalizedError('error.invalidDaclOffset');
   const length = sd.readUInt16LE(offset + 2);
-  if (length < 8 || offset + length > sd.length) throw new Error('Invalid replacement DACL length.');
+  if (length < 8 || offset + length > sd.length) throw new LocalizedError('error.invalidDaclLength');
   const information = Buffer.alloc(8);
   information.writeBigUInt64LE(writeData(process, sd.subarray(offset, offset + length)));
   return writeData(process, information);
@@ -407,12 +408,12 @@ export function grantDefaultDacl(process: NativePtr, original: string, sid: stri
 
 export function objectAttributes(process: NativePtr, address: bigint) {
   const attributes = readMemory(process, address, 48);
-  if (attributes.readUInt32LE() !== 48) throw new Error('Invalid section OBJECT_ATTRIBUTES.');
+  if (attributes.readUInt32LE() !== 48) throw new LocalizedError('error.invalidObjectAttributes', { type: 'OBJECT_ATTRIBUTES' });
   const namePointer = attributes.readBigUInt64LE(16), root = attributes.readBigUInt64LE(8);
   let name = '';
   if (namePointer) {
     const unicode = readMemory(process, namePointer, 16), bytes = unicode.readUInt16LE();
-    if (bytes > 2048 || bytes % 2) throw new Error('Invalid section name length.');
+    if (bytes > 2048 || bytes % 2) throw new LocalizedError('error.invalidSectionNameLength');
     if (bytes) name = readMemory(process, unicode.readBigUInt64LE(8), bytes).toString('utf16le');
   }
   return { attributes, root, name };

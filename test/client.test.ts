@@ -38,36 +38,68 @@ await test('Save and link fences the path write and rebuilds once after confirma
     useShellForm<T>(select: (s: Snapshot) => T): T;
     t(key: string, params?: Record<string, string>): string;
   };
-  let Page!: React.ComponentType<PageProps>;
+  let Page!: React.ComponentType<PageProps>, Overlay!: React.ComponentType<Pick<PageProps, 't'>>;
+  let injected!: Partial<PageProps>;
+  function Modal() { return null; }
+  function Toast() { return null; }
+  function createSnapshotStore<T>(initial: T) {
+    let value = initial;
+    const listeners = new Set<() => void>();
+    return {
+      getSnapshot: () => value,
+      set(next: T) { value = next; for (const listener of listeners) listener(); },
+      subscribe(listener: () => void) { listeners.add(listener); return () => { listeners.delete(listener); }; },
+    };
+  }
   const applyContext = {
     fiber: { uid: 1 }, effect: (setup: () => unknown) => setup(),
     locale: { register() {} }, configForms: { get: () => form },
     slots: {
       inject: (_slot: string, setup: () => void) => setup(),
-      register(_entry: unknown, component: typeof Page) { Page = component; },
+      register(entry: { name: string; inject(): Partial<PageProps> }, component: typeof Page & typeof Overlay) {
+        if (entry.name === 'shell.overlay') Overlay = component;
+        else { Page = component; injected = entry.inject(); }
+      },
     },
   };
   const load = t.mock.fn<(entry: { factory(require: (name: string) => unknown): { apply(ctx: unknown): Promise<void> } }) => void>();
   const client = require.resolve(ns + '/client');
   new Script(readFileSync(client, 'utf8'), { filename: client }).runInNewContext({ window: { __ModuleLoader__: { load } }, fetch, Error });
-  await load.mock.calls[0]!.arguments[0].factory(name => name === 'react' ? React : { Input: 'input', Button: 'button' }).apply(applyContext);
+  await load.mock.calls[0]!.arguments[0].factory(name => {
+    if (name === 'react') return React;
+    if (name === '@deepseek-ai/dsh-client-store') return { createSnapshotStore };
+    return { Input: 'input', Button: 'button', Modal, Toast };
+  }).apply(applyContext);
 
   let language: keyof typeof dictionaries = 'en';
   const useShellForm = <T,>(select: (s: Snapshot) => T) => select(React.useSyncExternalStore(form.subscribe, form.getSnapshot));
-  const page = () => React.createElement(Page, { shellForm: form, useShellForm,
-    t: (key, params) => dictionaries[language][key]!.replace(/\{(\w+)\}/g, (_, name: string) => params![name]!),
-  });
+  const translate: PageProps['t'] = (key, params) => key === 'close' ? (language === 'en' ? 'Close' : '关闭')
+    : dictionaries[language][key]!.replace(/\{(\w+)\}/g, (_, name: string) => params![name]!);
+  const page = () => React.createElement(React.Fragment, null,
+    React.createElement(Page, { ...injected, shellForm: form, useShellForm, t: translate }),
+    React.createElement(Overlay, { t: translate }),
+  );
   let renderer!: ReactTestRenderer;
   await act(async () => { renderer = create(page()); });
   t.after(() => { renderer.unmount(); });
   const input = () => renderer.root.findByType('input');
   const button = () => renderer.root.findByType('button');
-  const status = () => renderer.root.findAllByProps({ role: 'status' }).flatMap(node => node.children);
+  function checkModal(key: string, description: string) {
+    const modal = renderer.root.findByType(Modal);
+    assert.equal(modal.props.open, true);
+    assert.equal(modal.props.title, translate(key));
+    assert.equal(modal.props.description, description);
+    assert.equal(modal.props.closeLabel, translate('close'));
+    assert.equal(renderer.root.findAllByType(Toast).length, 0);
+    assert.equal(renderer.root.findByType(Page).findAllByType(Modal).length, 0);
+  }
+  const closeModal = () => act(() => { renderer.root.findByType(Modal).props.onClose(); });
   const edit = (value: string) => input().props.onChange({ currentTarget: { value } });
   const click = () => button().props.onClick();
   assert.equal(input().props.disabled, true);
   assert.equal(button().props.disabled, true);
-  assert.ok(status().includes(dictionaries.en['form.loading']!));
+  assert.equal(renderer.root.findAllByProps({ role: 'status' }).length, 0);
+  assert.equal(renderer.root.findAllByType(Modal).length + renderer.root.findAllByType(Toast).length, 0);
   assert.equal(input().props.placeholder, dictionaries.en['path.placeholder']);
   assert.equal(renderer.root.findByType('label').props.htmlFor, input().props.id);
   assert.equal(button().props.type, 'button');
@@ -96,14 +128,16 @@ await test('Save and link fences the path write and rebuilds once after confirma
   assert.equal(rebuild.mock.callCount(), 0, 'wait for Host acceptance');
   await act(async () => { publish({ revision: 5, value: {} }); confirm(false); });
   assert.equal(input().props.value, text);
-  assert.ok(status().includes(dictionaries.zh['save.review']!.replace('{path}', dictionaries.zh['path.empty']!)));
+  checkModal('save.review', translate('save.reviewDetail', { path: translate('path.empty') }));
   await act(async () => { language = 'en'; renderer.update(page()); });
-  assert.ok(status().includes(dictionaries.en['save.review']!.replace('{path}', dictionaries.en['path.empty']!)));
+  checkModal('save.review', translate('save.reviewDetail', { path: translate('path.empty') }));
+  await closeModal();
   mutate.mock.mockImplementationOnce(async () => { throw new Error('offline'); });
   await act(async () => { click(); });
   assert.equal(input().props.value, text);
   assert.equal(mutate.mock.calls[1]!.arguments[1], 5);
-  assert.ok(status().includes(dictionaries.en['save.failed']!.replace('{reason}', 'offline')));
+  checkModal('save.failed', 'offline');
+  await closeModal();
 
   assert.equal(rebuild.mock.callCount(), 0, 'refusal and save errors must not rebuild');
 
@@ -113,6 +147,8 @@ await test('Save and link fences the path write and rebuilds once after confirma
   await act(async () => { publish({ status: 'ready', writable: false, value: { gitBashPath: 'inherited' } }); });
   assert.equal(input().props.disabled, true);
   assert.equal(button().props.disabled, true, 'this draft requires a write');
+  assert.equal(renderer.root.findAllByProps({ role: 'status' }).length, 0);
+  assert.equal(renderer.root.findAllByType(Modal).length + renderer.root.findAllByType(Toast).length, 0);
   await act(async () => { click(); });
   assert.equal(rebuild.mock.callCount(), 0);
   await act(async () => { renderer.unmount(); });
@@ -122,10 +158,13 @@ await test('Save and link fences the path write and rebuilds once after confirma
   assert.equal(button().props.disabled, false, 'no write required');
   await act(async () => { click(); publish({ writable: true, revision: 6 }); });
   assert.equal(rebuild.mock.callCount(), 1, 'read-only settings allow rebuilding an unchanged path');
+  const priorToast = renderer.root.findByType(Toast).props.onDone;
   await act(async () => { edit('   '); });
   await act(async () => { click(); });
   assert.equal(input().props.value, 'inherited');
   assert.equal(mutate.mock.callCount(), 2, 'no user override to clear');
+  await act(async () => { priorToast(); });
+  assert.equal(renderer.root.findByType(Toast).props.text, translate('link.ok'), 'an expired toast cannot dismiss its successor');
 
   await act(async () => { publish({ user: { gitBashPath: 'custom', timeoutMs: 500 }, value: { gitBashPath: 'custom' } }); });
   await act(async () => { edit(' '); });
@@ -153,18 +192,24 @@ await test('Save and link fences the path write and rebuilds once after confirma
   assert.equal(rebuild.mock.callCount(), 4, 'the click lock covers the pending POST');
   const reason = 'source busy <&>';
   await act(async () => { finish(new Response(reason, { status: 500 })); });
-  assert.ok(status().includes(dictionaries.en['link.failedAfterSave']!.replace('{reason}', reason)));
+  checkModal('link.failedAfterSave', reason);
   assert.equal(input().props.value, text);
   assert.equal(button().props.disabled, false);
   await act(async () => { language = 'zh'; renderer.update(page()); });
-  assert.ok(status().includes(dictionaries.zh['link.failedAfterSave']!.replace('{reason}', reason)));
+  checkModal('link.failedAfterSave', reason);
+  await closeModal();
   assert.equal(rebuild.mock.callCount(), 4);
   rebuild.mock.mockImplementationOnce(async () => { throw new Error('offline'); });
   await act(async () => { click(); });
-  assert.ok(status().includes(dictionaries.zh['link.failed']!.replace('{reason}', 'offline')));
+  checkModal('link.failed', 'offline');
+  await closeModal();
   assert.equal(rebuild.mock.callCount(), 5, 'disconnect does not retry the POST');
   await act(async () => { click(); });
-  assert.ok(status().includes(dictionaries.zh['link.ok']!));
+  const toast = renderer.root.findByType(Toast);
+  assert.equal(toast.props.text, translate('link.ok'));
+  assert.equal(renderer.root.findByType(Page).findAllByType(Toast).length, 0);
+  await act(async () => { toast.props.onDone(); });
+  assert.equal(renderer.root.findAllByType(Toast).length, 0);
   assert.equal(rebuild.mock.callCount(), 6);
   assert.equal(mutate.mock.callCount(), 4, 'manual retries use the saved path without writing again');
   await act(async () => { edit('another path'); });
@@ -174,16 +219,20 @@ await test('Save and link fences the path write and rebuilds once after confirma
   });
   await act(async () => { click(); });
   assert.equal(input().props.value, 'another path');
-  assert.ok(status().includes(dictionaries.zh['save.failed']!.replace('{reason}', dictionaries.zh['form.unavailable']!)));
+  checkModal('save.failed', translate('form.unavailable'));
+  await closeModal();
   await act(async () => { publish({ status: 'ready', revision: 10 }); });
   mutate.mock.mockImplementationOnce(async () => { throw new Error('offline'); });
   await act(async () => { click(); });
   assert.equal(mutate.mock.calls.at(-1)!.arguments[1], 8, 'an unavailable recovery snapshot preserves the draft fence');
+  checkModal('save.failed', 'offline');
+  await closeModal();
   await act(async () => { publish({ revision: 11, value: { gitBashPath: 'Host path' } }); });
   mutate.mock.mockImplementationOnce(async () => false);
   await act(async () => { click(); });
   assert.equal(mutate.mock.calls.at(-1)!.arguments[1], 8, 'a transport error preserves the draft fence');
-  assert.ok(status().includes(dictionaries.zh['save.review']!.replace('{path}', 'Host path')));
+  checkModal('save.review', translate('save.reviewDetail', { path: 'Host path' }));
+  await closeModal();
   assert.equal(input().props.value, 'another path');
   assert.equal(rebuild.mock.callCount(), 6);
   assert.equal(fetch.mock.callCount(), 1 + rebuild.mock.callCount(), 'one dictionary read per activation');

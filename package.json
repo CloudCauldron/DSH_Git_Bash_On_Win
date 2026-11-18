@@ -33,6 +33,7 @@
     "check": "tsc --noEmit",
     "build": "node --input-type=module -e \"import { rm } from 'node:fs/promises'; await rm('lib', { recursive: true, force: true });\" && tsc -p tsconfig.build.json",
     "test": "pnpm build && node --test test/*.test.ts",
+    "test:browser": "pnpm build && node --test test/client-browser.ts",
     "test:windows": "node -e \"if (process.platform !== 'win32' || process.arch !== 'x64') throw new Error('Native Windows x64 Node is required.');\" && pnpm test",
     "test:release": "node --input-type=module -e \"import { installedDsh } from './scripts/installed-dsh.ts'; import { discoverGitInstallation } from './src/runtime/git-installation.ts'; installedDsh(); discoverGitInstallation(process.env.DSH_TEST_GIT_BASH);\" && pnpm check && pnpm lint && pnpm test:windows"
   },
@@ -64,6 +65,7 @@
   },
   "devDependencies": {
     "@deepseek-ai/dsh-client-connection": "0.2.2-rc.2",
+    "@deepseek-ai/dsh-client-store": "0.2.2-rc.2",
     "@deepseek-ai/dsh-client-ui-settings": "0.2.2-rc.2",
     "@eslint/js": "10.0.1",
     "@types/node": "26.6.6",
@@ -71,6 +73,7 @@
     "@types/react-test-renderer": "18.3.2",
     "@typescript/native": "npm:typescript@7.0.2",
     "eslint": "10.14.0",
+    "playwright-core": "1.64.1",
     "react": "18.3.1",
     "react-test-renderer": "18.3.1",
     "typescript": "npm:@typescript/typescript6@6.0.2",

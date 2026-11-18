@@ -9,13 +9,12 @@
     "path.placeholder": "留空则自动查找 Git Bash 路径",
     "action.saveLink": "保存并链接",
     "link.ok": "硬链接已建立",
-    "form.loading": "正在读取配置",
     "form.unavailable": "配置不可用",
-    "form.readOnly": "配置只读",
-    "save.review": "未保存。Host 最近确认的路径为「{path}」，请核对后重试。",
+    "save.review": "未保存",
+    "save.reviewDetail": "Host 最近确认的路径为「{path}」，请核对后重试。",
     "path.empty": "未设置",
-    "save.failed": "路径保存失败：{reason}",
-    "link.failed": "硬链接建立失败：{reason}",
-    "link.failedAfterSave": "路径已保存，硬链接建立失败：{reason}"
+    "save.failed": "路径保存失败",
+    "link.failed": "硬链接建立失败",
+    "link.failedAfterSave": "路径已保存，但硬链接建立失败"
   }
 }

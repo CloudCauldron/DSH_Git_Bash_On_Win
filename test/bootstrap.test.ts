@@ -142,11 +142,11 @@ await test('the classic client registers dictionaries and the bundle slot after 
   const [entry] = load.mock.calls[0]!.arguments;
   assert.equal(entry.id, ns);
   const hostRequire = t.mock.fn((name: string) => {
-    assert.ok(['react', '@deepseek-ai/dsh-client-ui-primitives'].includes(name));
-    return {};
+    assert.ok(['react', '@deepseek-ai/dsh-client-store', '@deepseek-ai/dsh-client-ui-primitives'].includes(name));
+    return name === '@deepseek-ai/dsh-client-store' ? { createSnapshotStore: () => ({}) } : {};
   });
   const plugin = entry.factory(hostRequire);
-  assert.deepEqual(hostRequire.mock.calls.map(call => call.arguments[0]), ['react', '@deepseek-ai/dsh-client-ui-primitives']);
+  assert.deepEqual(hostRequire.mock.calls.map(call => call.arguments[0]), ['react', '@deepseek-ai/dsh-client-store', '@deepseek-ai/dsh-client-ui-primitives']);
   assert.deepEqual([...plugin.inject], ['slots', 'configForms', 'locale']);
   assert.equal(request.mock.callCount(), 0);
 
@@ -158,11 +158,11 @@ await test('the classic client registers dictionaries and the bundle slot after 
   const registerLocale = t.mock.fn<(ns: string, lang: string, messages: unknown) => () => void>(() => disposeLocale);
   const form = {};
   const get = t.mock.fn<(id: string) => object>(() => form);
-  type SlotEntry = { name: string; key: string; locale: string; inject(): { shellForm: unknown; hooks: { shellForm: unknown } } };
+  type SlotEntry = { name: string; key?: string; id?: string; locale: string; inject(): { shellForm: unknown; hooks: { shellForm: unknown }; notify: unknown } };
   const register = t.mock.fn<(entry: SlotEntry, component: unknown) => void>();
   const context = {
     fiber, effect: fiber.effect.bind(fiber), locale: { register: registerLocale }, configForms: { get },
-    slots: { inject(name: string, setup: () => void) { assert.equal(name, slot); setup(); }, register },
+    slots: { inject(name: string, setup: () => void) { assert.ok([slot, 'shell.overlay'].includes(name)); setup(); }, register },
   };
 
   request.mock.mockImplementationOnce(async () => new Response(null, { status: 404 }));
@@ -175,11 +175,15 @@ await test('the classic client registers dictionaries and the bundle slot after 
   assert.equal(request.mock.callCount(), 3, 'one request per activation');
   assert.deepEqual(structuredClone(registerLocale.mock.calls.map(call => call.arguments)), [[ns, 'zh', dictionaries.zh], [ns, 'en', dictionaries.en]]);
   assert.deepEqual(get.mock.calls.map(call => call.arguments[0]), ['pwsh-sandbox']);
-  assert.equal(register.mock.callCount(), 1);
-  const [config, component] = register.mock.calls[0]!.arguments;
+  assert.equal(register.mock.callCount(), 2);
+  const [overlay, overlayComponent] = register.mock.calls[0]!.arguments;
+  assert.deepEqual([overlay.name, overlay.id, overlay.locale], ['shell.overlay', ns, ns]);
+  assert.equal(typeof overlayComponent, 'function');
+  const [config, component] = register.mock.calls[1]!.arguments;
   assert.deepEqual([config.name, config.key, config.locale], [slot, ns, ns]);
   assert.equal(typeof component, 'function');
   const injection = config.inject();
+  assert.equal(typeof injection.notify, 'function');
   assert.equal(injection.shellForm, form);
   assert.equal(injection.hooks.shellForm, form);
   let respond!: (response: Response) => void;
@@ -190,7 +194,7 @@ await test('the classic client registers dictionaries and the bundle slot after 
   await pending;
   assert.equal(registerLocale.mock.callCount(), 2);
   assert.equal(disposeLocale.mock.callCount(), 2);
-  assert.equal(register.mock.callCount(), 1);
+  assert.equal(register.mock.callCount(), 2);
 });
 
 await test('public pinned dependencies resolve and atomic-write is usable', async t => {

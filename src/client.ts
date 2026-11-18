@@ -10,9 +10,12 @@ window.__ModuleLoader__.load({
   factory(require) {
     const ns = 'dsh-git-bash-on-win';
     const React = require('react') as typeof import('react');
-    const { Input, Button } = require('@deepseek-ai/dsh-client-ui-primitives') as {
+    const { createSnapshotStore } = require('@deepseek-ai/dsh-client-store') as typeof import('@deepseek-ai/dsh-client-store');
+    const { Input, Button, Modal, Toast } = require('@deepseek-ai/dsh-client-ui-primitives') as {
       Input: import('react').ComponentType<import('react').ComponentProps<'input'>>;
       Button: import('react').ComponentType<import('react').ComponentProps<'button'>>;
+      Modal: import('react').ComponentType<{ open: boolean; title: string; description: string; closeLabel: string; onClose(): void }>;
+      Toast: import('react').ComponentType<{ text: string; onDone(): void }>;
     };
 
     type Messages = Record<string, string>;
@@ -21,8 +24,9 @@ window.__ModuleLoader__.load({
     type Snapshot = ReturnType<ShellForm['getSnapshot']>;
     type Feedback = { key: 'link.ok' } | { key: 'save.review'; path?: string }
       | { key: 'save.failed'; reason?: string } | { key: 'link.failed' | 'link.failedAfterSave'; reason: string };
-    interface PageProps {
-      t(key: string, params?: Record<string, string>): string;
+    interface LocalizedProps { t(key: string, params?: Record<string, string>): string }
+    interface PageProps extends LocalizedProps {
+      notify(message: Feedback): void;
       shellForm: ShellForm;
       useShellForm<T>(select: (snapshot: Snapshot) => T): T;
     }
@@ -30,10 +34,8 @@ window.__ModuleLoader__.load({
       locale: { register(ns: string, lang: string, messages: Messages): () => void };
       slots: {
         inject(name: string, setup: () => void): void;
-        register(entry: {
-          name: string; key: string; locale: string;
-          inject(): { shellForm: ShellForm; hooks: { shellForm: ShellForm } };
-        }, component: typeof GitBashPage): void;
+        register<P>(entry: { name: string; key?: string; id?: string; locale: string; inject?(): object },
+          component: import('react').ComponentType<P>): void;
       };
     }
 
@@ -45,10 +47,9 @@ window.__ModuleLoader__.load({
       }
     }
 
-    function GitBashPage({ t, shellForm, useShellForm }: PageProps) {
+    function GitBashPage({ t, shellForm, useShellForm, notify }: PageProps) {
       const snapshot = useShellForm(s => s);
       const [draft, setDraft] = React.useState<{ text: string; revision: number | undefined }>();
-      const [feedback, setFeedback] = React.useState<Feedback>();
       const [busy, setBusy] = React.useState(false);
       const locked = React.useRef(false);
       const inputId = React.useId();
@@ -61,14 +62,14 @@ window.__ModuleLoader__.load({
           const confirmed = shellForm.getSnapshot();
           if (confirmed.status === 'ready') {
             setDraft({ text, revision: confirmed.revision });
-            setFeedback({ key: 'save.review', path: confirmed.value?.gitBashPath });
+            notify({ key: 'save.review', path: confirmed.value?.gitBashPath });
           } else {
             setDraft({ text, revision });
-            setFeedback({ key: 'save.failed' });
+            notify({ key: 'save.failed' });
           }
         } catch (error) {
           setDraft({ text, revision });
-          setFeedback({ key: 'save.failed', reason: error instanceof Error ? error.message : String(error) });
+          notify({ key: 'save.failed', reason: error instanceof Error ? error.message : String(error) });
         }
         return false;
       }
@@ -83,15 +84,14 @@ window.__ModuleLoader__.load({
           const text = draft?.text ?? latest.value?.gitBashPath ?? '';
           const change = pathChange(text, latest);
           if (change && !latest.writable) return;
-          setFeedback(undefined);
           if (change && !await savePath(change, text, draft ? draft.revision : latest.revision)) return;
           setDraft(undefined);
           try {
             const response = await fetch('api/git-bash-on-win/rebuild', { method: 'POST', redirect: 'error' });
             if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
-            setFeedback({ key: 'link.ok' });
+            notify({ key: 'link.ok' });
           } catch (error) {
-            setFeedback({ key: change ? 'link.failedAfterSave' : 'link.failed', reason: error instanceof Error ? error.message : String(error) });
+            notify({ key: change ? 'link.failedAfterSave' : 'link.failed', reason: error instanceof Error ? error.message : String(error) });
           }
         } finally {
           locked.current = false;
@@ -99,11 +99,6 @@ window.__ModuleLoader__.load({
         }
       }
 
-      let message;
-      if (feedback?.key === 'link.ok') message = t(feedback.key);
-      else if (feedback?.key === 'save.review') message = t(feedback.key, { path: feedback.path || t('path.empty') });
-      else if (feedback) message = t(feedback.key, { reason: feedback.reason ?? t('form.unavailable') });
-      const status = snapshot.status !== 'ready' ? 'form.' + snapshot.status : !snapshot.writable ? 'form.readOnly' : undefined;
       const h = React.createElement;
       return h('div', null,
         h('label', { htmlFor: inputId }, t('path.label')),
@@ -112,15 +107,12 @@ window.__ModuleLoader__.load({
             onChange(event) {
               const text = event.currentTarget.value;
               setDraft(previous => ({ text, revision: previous ? previous.revision : snapshot.revision }));
-              setFeedback(undefined);
             },
           }),
           h(Button, { type: 'button', disabled: disabled || (!snapshot.writable && !!pathChange(value, snapshot)),
             onClick: () => { void saveAndLink(); },
           }, t('action.saveLink')),
         ),
-        status && h('p', { role: 'status' }, t(status)),
-        message && h('p', { role: 'status' }, message),
       );
     }
 
@@ -144,10 +136,30 @@ window.__ModuleLoader__.load({
         for (const [lang, messages] of Object.entries({ zh, en })) {
           ctx.effect(() => ctx.locale.register(ns, lang, messages));
         }
+        const notices = createSnapshotStore<(Feedback & { id: number }) | null>(null);
+        let sequence = 0;
+        const notify = (message: Feedback) => notices.set({ ...message, id: ++sequence });
+
+        function FeedbackOverlay({ t }: LocalizedProps) {
+          const notice = React.useSyncExternalStore(notices.subscribe, notices.getSnapshot);
+          if (!notice) return null;
+          const dismiss = () => { if (notices.getSnapshot() === notice) notices.set(null); };
+          if (notice.key === 'link.ok') {
+            return React.createElement(Toast, { key: notice.id, text: t(notice.key), onDone: dismiss });
+          }
+          const description = notice.key === 'save.review'
+            ? t('save.reviewDetail', { path: notice.path || t('path.empty') })
+            : notice.reason ?? t('form.unavailable');
+          return React.createElement(Modal, { open: true, title: t(notice.key), description, closeLabel: t('close'), onClose: dismiss });
+        }
+
+        ctx.slots.inject('shell.overlay', () => ctx.slots.register({
+          name: 'shell.overlay', id: ns, locale: ns,
+        }, FeedbackOverlay));
         const form = ctx.configForms.get<ShellSettings>('pwsh-sandbox');
         ctx.slots.inject('plugins.bundle.config', () => ctx.slots.register({
           name: 'plugins.bundle.config', key: ns, locale: ns,
-          inject: () => ({ shellForm: form, hooks: { shellForm: form } }),
+          inject: () => ({ notify, shellForm: form, hooks: { shellForm: form } }),
         }, GitBashPage));
       },
     };

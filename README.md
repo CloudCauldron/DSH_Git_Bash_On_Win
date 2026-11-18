@@ -216,7 +216,7 @@ caller cancels or the selected pin changes.
 Close all relevant DSH instances before running the **installed package's** entry:
 
 ```bash
-node '<installed package>/lib/cleanup.js' '<absolute profile directory>/.git-bash-on-win'
+node '<installed package>/lib/purge-runtime-cache.js' '<absolute profile directory>/.git-bash-on-win'
 ```
 
 This purges the supplied profile cache.
@@ -256,7 +256,7 @@ node scripts/plugin.ts "$gitbash_pnpm" web remove dsh-git-bash-on-win
 ```
 
 The wrapper leaves configuration editing to DSH/user ownership. For native CLI
-removal instead, run the installed cleanup entry above first, then
+removal instead, run the installed cache purge command above first, then
 `dsh plugin --profile web remove dsh-git-bash-on-win --ignore-scripts`.
 Native package removal alone preserves settings and does not purge runtime caches.
 If multiple profiles used the same installed package, purge each profile cache

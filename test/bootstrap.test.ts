@@ -199,10 +199,10 @@ await test('execution uses native DSH policy and purge refuses an unowned direct
   const directory = await temporaryDirectory(t);
   const sentinel = join(directory, 'owned.txt');
   await writeFile(sentinel, 'unowned directory must be retained');
-  const cleanup = spawnSync(process.execPath, [join(root, 'lib/cleanup.js'), directory], { encoding: 'utf8', timeout: 30_000 });
-  assert.equal(cleanup.error, undefined);
-  assert.equal(cleanup.status, 1);
-  assert.match(cleanup.stderr, /uninstallation are incomplete/);
+  const purge = spawnSync(process.execPath, [join(root, 'lib/purge-runtime-cache.js'), directory], { encoding: 'utf8', timeout: 30_000 });
+  assert.equal(purge.error, undefined);
+  assert.equal(purge.status, 1);
+  assert.match(purge.stderr, /uninstallation are incomplete/);
   for (const operation of [['add', root], ['add', 'file:relative'], ['add', 'file:' + join(root, 'package.json')],
     ['remove', 'another-package'], ['--silent', 'remove', 'dsh-git-bash-on-win'],
     ['remove', 'dsh-git-bash-on-win', '--dir', directory]]) {
@@ -313,8 +313,8 @@ await test('checkout install, offline recovery and removal preserve shared Shell
   const current = readFileSync(join(cache, 'current.json'), 'utf8');
   success(await operation('add', checkout));
   assert.equal(readFileSync(join(cache, 'current.json'), 'utf8'), current, 'package installation retains the profile cache');
-  const cleanup = () => run([process.execPath, join(packageRoot, 'lib/cleanup.js'), cache]);
-  success(await cleanup());
+  const purge = () => run([process.execPath, join(packageRoot, 'lib/purge-runtime-cache.js'), cache]);
+  success(await purge());
   assert.equal(pathExists(cache), false);
   assert.deepEqual(parse(readFileSync(patchPath, 'utf8')), patches, 'offline rebuild retains the override and package');
   assert.equal(statSync(sourceFile).nlink, before.links);

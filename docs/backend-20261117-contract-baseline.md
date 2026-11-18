@@ -15,7 +15,7 @@ The [roadmap](backend-20261117-refactor-roadmap.md) is the implementation specif
 - Keep filesystem defenses in `runtime/ntfs-filesystem.ts`: non-reparse admission, identities, writer locks, setup leases, pin/collector handles, exact-target unlink/rmdir and checked closure. It owns neither Git policy nor cache lifetime.
 - Keep orchestration linear. Cache, Git, provisioning, helper and executor code consume admitted values; they do not assemble Win32 flags, repeat boundary walks or build nested defensive catch chains. Helpers receive only the values they use.
 - `runtime-cache.ts` owns selection, publication, pins/views and cleanup policy. `git-installation.ts` owns layouts, anchors, bounded inventory and the one linker shared with the helper. Neither Git functions nor NTFS primitives import cache/executor state.
-- `provision-runtime.ts` owns the fixed plan and one awaited setup operation; the helper imports its decoder and the shared linker, not the cache owner. `native-debug.ts` owns precise bindings and bounded data helpers; `process-family.ts` retains family/hook state.
+- `elevated-linking.ts` owns the fixed plan and one awaited setup operation; the helper imports its decoder and the shared linker, not the cache owner. `native-debug.ts` owns precise bindings and bounded data helpers; `process-family.ts` retains family/hook state.
 - Reuse DSH policy, mode, execution, subprocess and native pointer types, public wait/close helpers and pinned public atomic writing. Retain DSH approvals, confinement, deadlines and process ownership. No frontend, route, custom tool or general supervisor is introduced.
 
 ## 2. Validation and resource ownership

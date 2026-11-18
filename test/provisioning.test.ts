@@ -18,7 +18,7 @@ import {
   admitDirectory, children, createSetupLease, isBusy, isMissing, NativeHold, openExclusiveMetadata, openOrdinaryFile, pathExists, pinDirectory,
   requireActiveLease, unlinkEntry,
 } from '../src/runtime/ntfs-filesystem.ts';
-import { decodeElevationPlan } from '../src/setup/provision-runtime.ts';
+import { decodeElevationPlan } from '../src/setup/elevated-linking.ts';
 import { runLinkHelper } from '../src/setup/link-helper.ts';
 import { runElevationBroker } from '../src/setup/elevation-broker.ts';
 

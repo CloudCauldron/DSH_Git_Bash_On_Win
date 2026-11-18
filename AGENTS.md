@@ -2,7 +2,6 @@
 
 ## DSH APIs and UI conventions
 
-- **Current phase:** Backend/runtime work only; do not add frontend or client UI logic.
 - **Reuse existing capabilities:** Leverage built-in DSH APIs and interfaces whenever available instead of reinventing the wheel.
 - **Stick to native UI:** Use DSH native controls and default styles by default. Avoid custom styles that introduce code redundancy and visual inconsistency.
 

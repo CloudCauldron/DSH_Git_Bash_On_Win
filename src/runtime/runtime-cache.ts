@@ -4,7 +4,7 @@ import z from '@deepseek-ai/schemastery';
 import { writeFileAtomic } from '@deepseek-ai/dsh-atomic-write';
 import type { SandboxExecutionPolicy } from '@deepseek-ai/dsh-sandbox';
 import type Subprocess from '@deepseek-ai/dsh-subprocess';
-import { provisionRuntime, ProvisioningCleanupError } from '../setup/provision-runtime.ts';
+import { provisionRuntime, ProvisioningCleanupError } from '../setup/elevated-linking.ts';
 import {
   absolutePath, acquireWriterLock, admitChildDirectory, admitDirectory, admitJunction,
   bestEffort, canonicalWorkspace, children, claimDirectory, createDirectory, createHardlink,

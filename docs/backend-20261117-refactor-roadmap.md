@@ -47,7 +47,7 @@ Follow [AGENTS.md](../AGENTS.md): backend/runtime work only, native DSH capabili
 These rules apply to every implementation phase:
 
 1. **Centralize defensive filesystem checks in `ntfs-filesystem.ts`.** Encapsulate non-reparse ancestor/target admission, `volumeSerial`/`fileId` reads and comparisons, writer locks, `.setup-owner` leases, `GenerationPin` directory handles, collector `DELETE` claims, and non-following file `unlink` / directory `rmdir` traversal in a small, composable set of primitives with checked `closeHandleChecked` cleanup built in. Keep Git policy and cache lifetime out of these primitives.
-2. **Keep orchestration linear.** `runtime-cache.ts`, `git-installation.ts`, `provision-runtime.ts`, `link-helper.ts` and `index.ts` compose those primitives and pass admitted values across internal boundaries. They must not assemble raw Win32 flags, repeat path/reparse/identity checks inline, or bury workflows in nested defensive `try/catch` pyramids. Helpers take only values they use.
+2. **Keep orchestration linear.** `runtime-cache.ts`, `git-installation.ts`, `elevated-linking.ts`, `link-helper.ts` and `index.ts` compose those primitives and pass admitted values across internal boundaries. They must not assemble raw Win32 flags, repeat path/reparse/identity checks inline, or bury workflows in nested defensive `try/catch` pyramids. Helpers take only values they use.
 3. **Write contract-focused tests.** Maintained `test/` verifies safety, sharing, cancellation and execution contracts with small reusable helpers in `test/fixtures.ts`. Avoid bloated mock harnesses and brittle assertions on incidental internal call counts; use the coverage plan in §10.
 
 ### Boundary validation ownership map
@@ -77,7 +77,7 @@ src/
     Native preset adaptation.
   tool.ts
     Native Bash-tool re-export.
-  cleanup.ts
+  purge-runtime-cache.ts
     Packaged purge entry using the same orphan recovery as initialization.
   bash-launcher.ts
     Confined entry, argument/inherited-token/Job validation, child environment
@@ -98,7 +98,7 @@ src/
       Calls Git file operations; does not implement a second linker.
 
   setup/
-    provision-runtime.ts
+    elevated-linking.ts
       Elevation plan validation, setup-only lease and one awaited UAC operation.
       Uses DSH broker supervision; cancellation closes the lease.
     elevation-broker.ts
@@ -145,7 +145,7 @@ tmp/
 
 No runtime-coordinator.ts, support/, windows/, schema registry or extra module merely for a type. Keep actual package/process boundaries and the public package exports. Remove stale generated lib/ files and obsolete internal implementations when production callers migrate.
 
-runtime-cache owns cache state and lifetime. git-installation owns source layout, inventory and file creation. provision-runtime owns the UAC plan/lifetime boundary; the helper imports its decoder and the shared linker, not CacheStore. Neither Git file functions nor NTFS helpers import runtime-cache or executor state. Plan data types may use type-only references to shared file-layout types; no generic schema registry or circular runtime imports are needed.
+runtime-cache owns cache state and lifetime. git-installation owns source layout, inventory and file creation. elevated-linking owns the UAC plan/lifetime boundary; the helper imports its decoder and the shared linker, not CacheStore. Neither Git file functions nor NTFS helpers import runtime-cache or executor state. Plan data types may use type-only references to shared file-layout types; no generic schema registry or circular runtime imports are needed.
 
 ## 3. EXECUTION ORDER
 
@@ -259,7 +259,7 @@ The method resolves after fresh commit and guarded adoption. Reject overlapping 
   ): Promise<T>;
 ```
 
-This is the single awaited UAC operation selected by §6.1. `provision-runtime` owns the lease/plan and fixed broker supervision (§6.2); the helper inventories its source. After the broker/DSH success contract is satisfied, it invokes `buildFresh`'s synchronous final-admission callback while the setup lease remains active, then checked-closes the lease before returning the admitted result. Validation failure also closes the lease. The lease never transfers to the cache owner; plan unlink and publication remain in `buildFresh`. Rejection is non-publishable and does not establish helper quiescence; cleanup follows §§6.4–6.5, not an outcome taxonomy or separate result/join API.
+This is the single awaited UAC operation selected by §6.1. `elevated-linking` owns the lease/plan and fixed broker supervision (§6.2); the helper inventories its source. After the broker/DSH success contract is satisfied, it invokes `buildFresh`'s synchronous final-admission callback while the setup lease remains active, then checked-closes the lease before returning the admitted result. Validation failure also closes the lease. The lease never transfers to the cache owner; plan unlink and publication remain in `buildFresh`. Rejection is non-publishable and does not establish helper quiescence; cleanup follows §§6.4–6.5, not an outcome taxonomy or separate result/join API.
 
 ### 4.4 Launch and debugger admission
 
@@ -516,7 +516,7 @@ Local process/handle failures are errors; ephemeral cache-local cleanup is best 
 The interim rebuild CLI and continuing offline fallback are:
 
 1. Close all DSH instances using the profile/package.
-2. Invoke installed `lib/cleanup.js` with the absolute profile cache path. It purges that cache through §6.5.
+2. Invoke installed `lib/purge-runtime-cache.js` with the absolute profile cache path. It purges that cache through §6.5.
 3. Retain the installed plugin and `gitBashPath` setting, restart DSH and let the next Bash command prepare cold.
 
 For **complete uninstall**, remove any plugin-only `gitBashPath` override while preserving shared Shell settings, close all DSH instances using the profile, successfully purge its `.git-bash-on-win` cache (§6.5), then invoke official package removal. Restore plugin-created source link counts and preserve source contents/ACLs under the workspace/AGENTS constraints. Interrupted/blocked purge must fail explicitly and must never be reported as complete uninstallation.
@@ -570,7 +570,7 @@ A further fresh-context audit found a false positive in the interrupted-GC test:
 
 Phase 3 completed on 2026-11-17:
 
-- Added only §2's three setup modules. `provision-runtime.ts` owns the bounded plan, setup lease and one awaited broker operation; the fixed helper shares Git inventory/linking and imports no cache owner. NTFS admission and handle/deletion flags remain centralized.
+- Added only §2's three setup modules. `elevated-linking.ts` owns the bounded plan, setup lease and one awaited broker operation; the fixed helper shares Git inventory/linking and imports no cache owner. NTFS admission and handle/deletion flags remain centralized.
 - Only the admitted sibling probe's link-permission denial selects UAC. No controller inventory crosses elevation and no later failure resets/recreates the base. The helper binds paths and identities, requires an ordinary empty base and matching source layout, checks the setup lease between batches and retains its exclusive plan handle until issued work drains.
 - Both scripts default to failure. Broker success requires ShellExecuteEx's process handle, public DSH `pollProcessExit` observing zero and checked handle close. The parent separately joins the DSH managed range, closes its lease before returning from provisioning, then captures final anchors, admits runtime boundaries and ordinarily unlinks the plan before publishing. Cancellation revokes the lease before bounded local broker shutdown; unconfirmed elevated work remains subject to guarded collection.
 - Added the direct pinned Koffi dependency already used by the SDK solely for the broker's ShellExecuteEx/COM ABI. DSH retains process supervision, wait/close helpers and execution-policy ownership. No result channel, cancellation file, recursive helper cleanup, coordinator or new setup state machine was introduced.

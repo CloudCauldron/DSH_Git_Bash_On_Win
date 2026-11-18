@@ -20,7 +20,7 @@ import GitBashExecutor from '../src/index.ts';
 import { buildRuntimeEnvironment } from '../src/runtime/git-installation.ts';
 import { admitDirectory, claimDirectory, createDirectory, createJunction, isBusy, NativeHold, pathExists } from '../src/runtime/ntfs-filesystem.ts';
 import { purgeRuntimeCache } from '../src/runtime/runtime-cache.ts';
-import type { RebuildNotice } from '../src/rebuild-feedback.ts';
+import type { RebuildFeedback } from '../src/rebuild-feedback.ts';
 import type { ConnectionFetchRoute } from '@deepseek-ai/dsh-client-connection';
 import { executionFixture, nativeOnly, runtimeFixture } from './fixtures.ts';
 
@@ -165,9 +165,16 @@ async function feedbackClient(ctx: Context) {
   await ctx.loader.await();
   const url = 'http://localhost' + route.path;
   const subscribe = async () => {
-    const response = await route.fetch(new Request(url));
-    const reader = response.body!.getReader();
-    return { close: () => reader.cancel(), next: async () => JSON.parse(new TextDecoder().decode((await reader.read()).value)) as RebuildNotice };
+    const { descriptors: [contract] } = await (await route.fetch(new Request(url))).json();
+    assert.equal(contract.mode, 'stream');
+    const watch = (kind: string, interactions: string) => {
+      const current = ctx.extend({ invocation: { peer: { principal: { kind }, interactions } } });
+      return (current.get(contract.service) as RebuildFeedback).watch(new AbortController().signal);
+    };
+    assert.throws(() => watch('other', 'answer'), /owner/);
+    assert.throws(() => watch('owner', 'none'), /owner/);
+    const reader = watch('owner', 'answer').getReader();
+    return { close: () => reader.cancel(), next: async () => (await reader.read()).value! };
   };
   return { subscribe, answer: (action: string, id: string) =>
     route.fetch(new Request(url + '?action=' + action + '&id=' + id, { method: 'POST' })) };

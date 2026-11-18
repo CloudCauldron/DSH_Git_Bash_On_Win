@@ -124,7 +124,7 @@ await test('bundle adaptation preserves Loader entry/config identity and restore
 await test('the classic client registers dictionaries and the bundle slot after one locale request', async t => {
   const ns = 'dsh-git-bash-on-win', slot = 'plugins.bundle.config';
   assert.deepEqual(packageJson.dsh.client, { platform: 'web', inject: [
-    '@deepseek-ai/dsh-client-ui-plugin-manager', '@deepseek-ai/dsh-client-ui-settings', '@deepseek-ai/dsh-client-locale',
+    '@deepseek-ai/dsh-api-gateway', '@deepseek-ai/dsh-client-ui-plugin-manager', '@deepseek-ai/dsh-client-ui-settings', '@deepseek-ai/dsh-client-locale',
   ] });
   type ClientPlugin = { inject: string[]; apply(ctx: unknown): Promise<void> };
   type Registration = { id: string; factory(require: (name: string) => unknown): ClientPlugin };
@@ -148,7 +148,7 @@ await test('the classic client registers dictionaries and the bundle slot after 
   });
   const plugin = entry.factory(hostRequire);
   assert.deepEqual(hostRequire.mock.calls.map(call => call.arguments[0]), ['react', '@deepseek-ai/dsh-client-store', '@deepseek-ai/dsh-client-ui-primitives']);
-  assert.deepEqual([...plugin.inject], ['slots', 'configForms', 'locale']);
+  assert.deepEqual([...plugin.inject], ['slots', 'configForms', 'locale', 'remote']);
   assert.equal(request.mock.callCount(), 0);
 
   const ctx = new Context();

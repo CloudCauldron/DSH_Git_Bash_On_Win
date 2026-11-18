@@ -21,6 +21,7 @@
     "client": {
       "platform": "web",
       "inject": [
+        "@deepseek-ai/dsh-api-gateway",
         "@deepseek-ai/dsh-client-ui-plugin-manager",
         "@deepseek-ai/dsh-client-ui-settings",
         "@deepseek-ai/dsh-client-locale"
@@ -49,6 +50,7 @@
     "@deepseek-ai/dsh-subprocess": "0.2.2-rc.2",
     "@deepseek-ai/dsh-subprocess-local": "0.2.2-rc.2",
     "@deepseek-ai/dsh-timeout": "0.2.2-rc.2",
+    "@deepseek-ai/dsh-typert-protocol": "0.2.2-rc.2",
     "@deepseek-ai/dsh-win32-process": "0.2.2-rc.2",
     "koffi": "3.1.1"
   },
@@ -68,9 +70,11 @@
     "@deepseek-ai/dsh-win32-process": "0.2.2-rc.2"
   },
   "devDependencies": {
+    "@deepseek-ai/dsh-api-gateway": "0.2.2-rc.2",
     "@deepseek-ai/dsh-client-connection": "0.2.2-rc.2",
     "@deepseek-ai/dsh-client-store": "0.2.2-rc.2",
     "@deepseek-ai/dsh-client-ui-settings": "0.2.2-rc.2",
+    "@deepseek-ai/dsh-typert-registry": "0.2.2-rc.2",
     "@eslint/js": "10.0.1",
     "@types/node": "26.6.6",
     "@types/react": "18.3.31",

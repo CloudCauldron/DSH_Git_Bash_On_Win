@@ -239,10 +239,24 @@ await test('installed DSH presents link failures and conflicts in native dialogs
       const previous = (await fixture.current()).generationId;
       await writeFile(join(fixture.source, 'etc/profile'), 'updated Git installation');
       await writeFile(gate, '');
+      // The installed host's separate plugin hot-reload EventSource also consumes one HTTP/1 connection per tab.
+      // Isolate this plugin's connection use while mounting the real native overlay in six tabs.
+      const extra = await Promise.all(Array.from({ length: 4 }, async () => {
+        const page = await browser.newPage();
+        await page.route('**/plugins/events*', route => route.fulfill({ status: 204 }));
+        await page.goto(url);
+        return page;
+      }));
+      const priorFailure = second.getByRole('dialog', { name: '硬链接建立失败', exact: true });
+      if (manual !== 'approve') {
+        await second.route('**/api/git-bash-on-win/rebuild', route => route.fulfill({ status: 500, json: { error: 'prior manual error' } }), { times: 1 });
+        await second.getByRole('button', { name: '保存并链接', exact: true }).click();
+        await priorFailure.waitFor();
+      }
       const pending = runShell();
       const consent = first.getByRole('dialog', { name: 'Git Bash', exact: true });
       const other = second.getByRole('dialog', { name: 'Git Bash', exact: true });
-      await Promise.race([Promise.all([consent.waitFor(), other.waitFor()]),
+      await Promise.race([Promise.all([consent, other, ...extra.map(page => page.getByRole('dialog', { name: 'Git Bash', exact: true }))].map(modal => modal.waitFor())),
         pending.then(result => { throw new Error('Shell settled before confirmation: ' + JSON.stringify(result)); })]);
       assert.equal(await consent.locator('p').innerText(), 'Git Bash 原文件发生变化，需要获取管理员权限以重新链接。');
       assert.equal(await consent.getByRole('button', { name: '关闭' }).isDisabled(), true);
@@ -259,6 +273,7 @@ await test('installed DSH presents link failures and conflicts in native dialogs
       assert.equal(receipt.status(), 204);
       assert.equal(await second.evaluate(async url => (await fetch(url, { method: 'POST' })).status, receipt.url()), 409);
       await Promise.all([consent.waitFor({ state: 'hidden' }), other.waitFor({ state: 'hidden' })]);
+      await Promise.all(extra.map(page => page.close()));
       const result = await pending;
       assert.equal(await readFile(attempts, 'utf8'), 'plan\n');
       if (manual === 'approve') {
@@ -271,6 +286,8 @@ await test('installed DSH presents link failures and conflicts in native dialogs
         assert.equal((await fixture.current()).generationId, previous);
         await failedAutomatically.waitFor();
         assert.match(await failedAutomatically.innerText(), reason);
+        await priorFailure.getByText(reason).waitFor();
+        assert.equal(await priorFailure.getByRole('button', { name: '关闭' }).isEnabled(), true);
         await first.reload();
         await failedAutomatically.waitFor();
         await failedAutomatically.getByRole('button', { name: '关闭' }).click();
@@ -278,6 +295,9 @@ await test('installed DSH presents link failures and conflicts in native dialogs
       }
       await unlink(gate);
       if (manual !== 'approve') {
+        // Closing the shared automatic failure reveals the earlier tab-local error.
+        await priorFailure.getByText('prior manual error').waitFor();
+        await priorFailure.getByRole('button', { name: '关闭' }).click();
         // A new selection retries the failed preparation with ordinary permissions.
         await saveSelection(valid.replaceAll('\\', '/'));
         await toast.waitFor({ state: 'detached' });

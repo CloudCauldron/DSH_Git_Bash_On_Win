@@ -1,3 +1,7 @@
+import type { Context } from '@deepseek-ai/cordis';
+import type {} from '@deepseek-ai/dsh-api-gateway';
+import { RemoteError, TypertRemoteService, type TypertRemoteContribution } from '@deepseek-ai/dsh-typert-protocol';
+import type {} from '@deepseek-ai/dsh-typert-registry';
 import { randomUUID } from 'node:crypto';
 import { LocalizedAggregateError, LocalizedError } from './localized-error.ts';
 
@@ -12,15 +16,30 @@ export interface RebuildNotice {
   success?: boolean;
 }
 
+const namespace = 'gitBashFeedback';
+const streamContract = {
+  package: 'dsh-git-bash-on-win',
+  descriptors: [{ id: namespace + '/watch', service: namespace, namespace, method: 'watch', mode: 'stream',
+    invocation: { kind: 'direct' }, parameters: [], cancellation: { parameter: 'signal' }, result: { mode: 'src-json' } }],
+} as const satisfies TypertRemoteContribution;
+
 /** Lives with one executor. Only an owner with a mounted overlay can answer its current request. */
-export class RebuildFeedback {
-  private readonly clients = new Map<ReadableStreamDefaultController<Uint8Array>, () => void>();
+export class RebuildFeedback extends TypertRemoteService {
+  private readonly clients = new Map<ReadableStreamDefaultController<RebuildNotice>, () => void>();
   private readonly failures: NonNullable<RebuildNotice['failure']>[] = [];
   private pending?: { notice: NonNullable<RebuildNotice['confirmation']>; confirm(): void; disconnect(): void };
 
-  private frame(success = false) {
-    const snapshot: RebuildNotice = { confirmation: this.pending?.notice, failure: this.failures[0], success };
-    return new TextEncoder().encode(JSON.stringify(snapshot) + '\n');
+  constructor(ctx: Context) {
+    super(ctx, namespace);
+    ctx.inject(['typert'], scope => {
+      scope.typert.register({ package: streamContract.package, face: 'host', model: { services: [], events: [], objects: [] },
+        schemas: [], invocations: streamContract.descriptors });
+      scope.effect(() => () => this.disconnect());
+    });
+  }
+
+  private frame(success = false): RebuildNotice {
+    return { confirmation: this.pending?.notice, failure: this.failures[0], success };
   }
 
   private publish(success = false) {
@@ -56,7 +75,7 @@ export class RebuildFeedback {
 
   /** The native Connection registry checks owner authentication for both methods. */
   handle(request: Request): Response {
-    if (request.method === 'GET') return this.subscribe(request.signal);
+    if (request.method === 'GET') return Response.json(streamContract);
     const params = new URL(request.url).searchParams;
     const id = params.get('id');
     if (params.get('action') === 'confirm' && this.pending?.notice.id === id) {
@@ -69,14 +88,19 @@ export class RebuildFeedback {
     return new Response(null, { status: 204 });
   }
 
-  private subscribe(signal: AbortSignal) {
-    let client: ReadableStreamDefaultController<Uint8Array>;
+  /** The Gateway runs this method on the calling peer's Cordis context. */
+  watch(signal: AbortSignal) {
+    const peer = this.ctx.invocation?.peer;
+    if (peer?.principal.kind !== 'owner' || peer.interactions !== 'answer') {
+      throw new RemoteError('gateway/interactions-forbidden', 'Interactive DSH owner required.', { endpoint: namespace + '/watch' });
+    }
+    let client: ReadableStreamDefaultController<RebuildNotice>;
     const remove = () => {
       signal.removeEventListener('abort', abort);
       if (this.clients.delete(client) && !this.clients.size) this.pending?.disconnect();
     };
     const abort = () => { if (this.clients.has(client)) client.close(); remove(); };
-    const stream = new ReadableStream<Uint8Array>({
+    return new ReadableStream<RebuildNotice>({
       start: controller => {
         client = controller;
         this.clients.set(client, abort);
@@ -85,7 +109,6 @@ export class RebuildFeedback {
       },
       cancel: remove,
     });
-    return new Response(stream, { headers: { 'Content-Type': 'application/x-ndjson', 'Cache-Control': 'no-store' } });
   }
 
   disconnect() {

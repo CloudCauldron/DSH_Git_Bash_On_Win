@@ -42,7 +42,7 @@ export default class GitBashExecutor extends SandboxBashExecutor {
   declare readonly config: Config;
   private readonly cacheDirectory: string;
   private readonly installAnchor?: string;
-  private readonly feedback = new RebuildFeedback();
+  private readonly feedback: RebuildFeedback;
   private readonly setupSpawn: Subprocess['spawn'];
   private slot?: PreparationSlot;
   private rebuildOp?: PreparationSlot;
@@ -59,6 +59,7 @@ export default class GitBashExecutor extends SandboxBashExecutor {
     const cacheDirectory = join(profile.dir, '.git-bash-on-win');
     super(ctx, config);
     this.cacheDirectory = cacheDirectory;
+    this.feedback = new RebuildFeedback(ctx);
     this.installAnchor = profile.installAnchor;
     this.setupSpawn = ctx.subprocess.spawn.bind(ctx.subprocess);
     ctx.on('loader/volatile-update', () => {

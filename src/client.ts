@@ -35,6 +35,8 @@ window.__ModuleLoader__.load({
       useShellForm<T>(select: (snapshot: Snapshot) => T): T;
     }
     interface ClientContext extends Pick<import('@deepseek-ai/cordis').Context, 'fiber' | 'effect' | 'configForms'> {
+      remote: Pick<import('@deepseek-ai/dsh-typert-protocol').TypertClientRemote, '$mount'>;
+      get(name: 'remote.gitBashFeedback'): { watch(signal: AbortSignal): AsyncIterable<RebuildNotice> };
       locale: { register(ns: string, lang: string, messages: Messages): () => void };
       slots: {
         inject(name: string, setup: () => void): void;
@@ -132,22 +134,6 @@ window.__ModuleLoader__.load({
       return { error: text || `HTTP ${response.status}` };
     }
 
-    async function followFeedback(signal: AbortSignal, receive: (notice: RebuildNotice) => void) {
-      const response = await fetch(feedbackUrl, { signal, cache: 'no-store', redirect: 'error' });
-      if (!response.ok || !response.body) return;
-      const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
-      let partial = '';
-      try {
-        for (;;) {
-          const { value, done } = await reader.read();
-          if (done || signal.aborted) break;
-          const lines = (partial + value).split('\n');
-          partial = lines.pop()!;
-          for (const line of lines) receive(JSON.parse(line) as RebuildNotice);
-        }
-      } finally { await reader.cancel(); }
-    }
-
     function answer(action: 'confirm' | 'dismiss', id: string) {
       return fetch(feedbackUrl + '?action=' + action + '&id=' + encodeURIComponent(id), { method: 'POST', redirect: 'error' });
     }
@@ -168,7 +154,7 @@ window.__ModuleLoader__.load({
     }
 
     return {
-      inject: ['slots', 'configForms', 'locale'],
+      inject: ['slots', 'configForms', 'locale', 'remote'],
       async apply(ctx: ClientContext) {
         const response = await fetch('api/git-bash-on-win/locales', { cache: 'no-store', redirect: 'error' });
         if (ctx.fiber.uid === null) return;
@@ -189,6 +175,16 @@ window.__ModuleLoader__.load({
         let sequence = 0;
         const notify = (message: Feedback) => notices.set({ ...message, id: ++sequence });
 
+        // Mount the browser projection once per plugin lifetime. The executor may start after this settings page.
+        let projection: Promise<unknown> | undefined;
+        async function mountFeedback(signal: AbortSignal) {
+          const reply = await fetch(feedbackUrl, { signal, cache: 'no-store', redirect: 'error' });
+          if (!reply.ok) throw new Error('Git Bash feedback: HTTP ' + reply.status);
+          const contract = await reply.json() as import('@deepseek-ai/dsh-typert-protocol').TypertRemoteContribution;
+          signal.throwIfAborted();
+          await ctx.remote.$mount(contract);
+        }
+
         function FeedbackOverlay({ t }: LocalizedProps) {
           const local = React.useSyncExternalStore(notices.subscribe, notices.getSnapshot);
           const [automatic, setAutomatic] = React.useState<RebuildNotice>({});
@@ -198,10 +194,13 @@ window.__ModuleLoader__.load({
             let retry: ReturnType<typeof setTimeout>;
             const connect = async () => {
               try {
-                await followFeedback(controller.signal, snapshot => {
+                await (projection ??= mountFeedback(controller.signal).catch(error => { projection = undefined; throw error; }));
+                if (controller.signal.aborted) return;
+                for await (const snapshot of ctx.get('remote.gitBashFeedback').watch(controller.signal)) {
+                  if (controller.signal.aborted) return;
                   setAutomatic(snapshot);
                   if (snapshot.success) notify({ key: 'link.ok' });
-                });
+                }
               } catch { /* The next subscription receives the pending confirmation and undismissed failure. */ }
               if (!controller.signal.aborted) {
                 setAutomatic(previous => ({ failure: previous.failure }));
@@ -214,9 +213,10 @@ window.__ModuleLoader__.load({
           // Send consent only after React has committed the closed dialog.
           React.useEffect(() => {
             if (!submitted) return;
+            const retry = () => setSubmitted(current => current === submitted ? undefined : current);
             void answer('confirm', submitted).then(response => {
-              if (!response.ok && response.status !== 409) setSubmitted(undefined);
-            }, () => setSubmitted(undefined));
+              if (!response.ok && response.status !== 409) retry();
+            }, retry);
           }, [submitted]);
           const confirmation = automatic.confirmation;
           const open = confirmation && confirmation.id !== submitted;
@@ -227,7 +227,7 @@ window.__ModuleLoader__.load({
             }
           }, [open, confirmation?.id]);
           if (open) {
-            return React.createElement(Modal, { open: true, className: 'dsh-git-bash-confirm', title: 'Git Bash',
+            return React.createElement(Modal, { key: 'confirmation', open: true, className: 'dsh-git-bash-confirm', title: 'Git Bash',
               description: t(confirmation.sourceChanged ? 'link.confirmChanged' : 'link.confirmSetup'),
               closeLabel: t('close'), onClose() {},
               footer: React.createElement(Button, { type: 'button', autoFocus: true,

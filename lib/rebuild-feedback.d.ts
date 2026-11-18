@@ -1,3 +1,5 @@
+import type { Context } from '@deepseek-ai/cordis';
+import { TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol';
 import { LocalizedError } from './localized-error.ts';
 export declare function describeFailure(error: unknown): {
     error: string;
@@ -15,10 +17,11 @@ export interface RebuildNotice {
     success?: boolean;
 }
 /** Lives with one executor. Only an owner with a mounted overlay can answer its current request. */
-export declare class RebuildFeedback {
+export declare class RebuildFeedback extends TypertRemoteService {
     private readonly clients;
     private readonly failures;
     private pending?;
+    constructor(ctx: Context);
     private frame;
     private publish;
     succeeded(): void;
@@ -26,6 +29,7 @@ export declare class RebuildFeedback {
     confirm(sourceChanged: boolean, unavailable: LocalizedError, signal: AbortSignal): Promise<void>;
     /** The native Connection registry checks owner authentication for both methods. */
     handle(request: Request): Response;
-    private subscribe;
+    /** The Gateway runs this method on the calling peer's Cordis context. */
+    watch(signal: AbortSignal): ReadableStream<RebuildNotice>;
     disconnect(): void;
 }

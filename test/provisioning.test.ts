@@ -76,20 +76,25 @@ await test('local probe is removed before inventory and creates no elevation con
 await test('automatic consent releases the writer and re-admits another writer’s publication', nativeOnly, async t => {
   const f = await runtimeFixture(t);
   let restore = denyProbe(t), confirmations = 0;
+  let obsolete: string | undefined;
   const request = { ...f.request, elevation: async (source: string, changed: boolean) => {
     assert.equal(source, f.source);
     assert.equal(changed, [false, true, false, true][confirmations++]);
     assert.equal(pathExists(join(f.cache, '.writer-lock')), false);
     assert.ok(readdirSync(join(f.cache, 'generations')).every(id => !pathExists(join(f.cache, 'generations', id, 'plan.json'))));
+    if (obsolete) assert.ok(pathExists(obsolete), 'the permission probe must leave old generations alone');
     restore();
     if (confirmations === 4) await fsp.writeFile(join(f.source, 'etc/profile'), 'reinstalled profile');
     const other = await f.prepare();
     assert.equal(other.freshlyBuilt, true);
     await other.release();
+    if (obsolete) { assert.equal(pathExists(obsolete), false); obsolete = undefined; }
   } };
   try {
     const first = await prepareRuntime(request, signal());
     assert.equal(first.freshlyBuilt, false); await first.release();
+    obsolete = join(f.cache, 'generations', (await f.current()).generationId);
+    await (await f.prepare(true)).release();
     await fsp.writeFile(join(f.source, 'etc/profile'), 'updated source');
     restore = denyProbe(t);
     const second = await prepareRuntime(request, signal());

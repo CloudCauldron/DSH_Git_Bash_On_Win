@@ -41,6 +41,7 @@ export default class GitBashExecutor extends SandboxBashExecutor {
 
   declare readonly config: Config;
   private readonly cacheDirectory: string;
+  private readonly installAnchor?: string;
   private readonly feedback = new RebuildFeedback();
   private readonly setupSpawn: Subprocess['spawn'];
   private slot?: PreparationSlot;
@@ -53,13 +54,16 @@ export default class GitBashExecutor extends SandboxBashExecutor {
 
   constructor(ctx: Context, config: Config) {
     if (process.platform !== 'win32' || process.arch !== 'x64') throw new LocalizedError('error.pluginPlatform');
-    const profile = ctx.get('profileContext') as { dir: string } | undefined;
+    const profile = ctx.get('profileContext') as { dir: string; installAnchor?: string } | undefined;
     if (!profile) throw new LocalizedError('error.profileRequired');
     const cacheDirectory = join(profile.dir, '.git-bash-on-win');
     super(ctx, config);
     this.cacheDirectory = cacheDirectory;
+    this.installAnchor = profile.installAnchor;
     this.setupSpawn = ctx.subprocess.spawn.bind(ctx.subprocess);
-    ctx.on('loader/volatile-update', () => { if (this.slot && !this.slot.pin) this.observeSelection(); });
+    ctx.on('loader/volatile-update', () => {
+      if (this.rebuildOp || (this.slot && !this.slot.pin)) this.observeSelection();
+    });
     ctx.effect(() => () => this.disposeRuntime());
     ctx.inject(['connection'], scope => {
       scope.effect(() => () => this.feedback.disconnect());
@@ -155,6 +159,7 @@ export default class GitBashExecutor extends SandboxBashExecutor {
   private confirmElevation(source: string, changed: boolean, signal: AbortSignal): Promise<void> {
     this.observeSelection();
     const args = [fileURLToPath(new URL('./link-runtime-cache.js', import.meta.url)), dirname(this.cacheDirectory), join(source, 'usr/bin/bash.exe')];
+    if (this.installAnchor) args.push(this.installAnchor);
     // Print literal arguments for Windows Git Bash, including paths with quotes or shell metacharacters.
     const command = 'node ' + args.map(arg => "'" + arg.replaceAll('\\', '/').replaceAll("'", "'\\''") + "'").join(' ');
     return this.feedback.confirm(changed, new LocalizedError('error.confirmationUnavailable', { command }), signal);

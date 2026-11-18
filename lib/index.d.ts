@@ -10,6 +10,7 @@ export default class GitBashExecutor extends SandboxBashExecutor {
     static Config: typeof SandboxBashExecutor.Config;
     readonly config: Config;
     private readonly cacheDirectory;
+    private readonly installAnchor?;
     private readonly feedback;
     private readonly setupSpawn;
     private slot?;

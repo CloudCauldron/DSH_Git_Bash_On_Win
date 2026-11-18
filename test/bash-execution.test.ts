@@ -296,6 +296,20 @@ await test('a successful rebuild serves the old pin during preparation and prese
   f.spawned[2]!.finish(); await next.done;
 });
 
+await test('a selection change cancels a manual rebuild while a previous ready pin is serving commands', nativeOnly, async t => {
+  const f = await executorFixture(t), execution = await f.run();
+  const published = await f.current();
+  const blocked = f.holdInventory();
+  const cancelled = assert.rejects(f.executor.rebuildRuntime(), /superseded/);
+  await blocked.entered;
+  await f.select(join(f.source, 'another', 'bash.exe'));
+  blocked.resume();
+  await cancelled;
+  assert.equal((await f.current()).generationId, published.generationId);
+  f.spawned[0]!.finish();
+  await execution.done;
+});
+
 await test('UAC denial during rebuilding preserves a ready pin and its current selection', nativeOnly, async t => {
   const f = await executorFixture(t), existing = await f.run();
   const before = await f.current(), original = fs.linkSync;

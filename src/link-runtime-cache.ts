@@ -1,6 +1,7 @@
 import { readFileSync, realpathSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { basename, dirname, isAbsolute, join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { Context } from '@deepseek-ai/cordis';
 import { LocalSubprocessRuntime } from '@deepseek-ai/dsh-subprocess-local';
 import { LocalizedError } from './localized-error.ts';
@@ -8,17 +9,27 @@ import { admitDirectory, samePath } from './runtime/ntfs-filesystem.ts';
 import { prepareRuntime } from './runtime/runtime-cache.ts';
 
 // An explicit operator invocation. Only the fixed broker/helper may elevate.
-const [profile, gitBashPath, ...extra] = process.argv.slice(2);
+const [profile, gitBashPath, installAnchor, ...extra] = process.argv.slice(2);
 if (process.platform !== 'win32' || process.arch !== 'x64') throw new LocalizedError('error.runtimePlatform');
-if (!profile || !isAbsolute(profile) || !gitBashPath || !isAbsolute(gitBashPath) || extra.length) {
-  throw new LocalizedError('error.pluginUsage', { command: 'node lib/link-runtime-cache.js <absolute DSH profile directory> <absolute bash.exe>' });
+if (!profile || !isAbsolute(profile) || !gitBashPath || !isAbsolute(gitBashPath) || (installAnchor !== undefined && !isAbsolute(installAnchor)) || extra.length) {
+  throw new LocalizedError('error.pluginUsage', { command: 'node lib/link-runtime-cache.js <absolute DSH profile directory> <absolute bash.exe> [absolute DSH installation anchor]' });
 }
 const directory = admitDirectory(profile).path;
 const manifest = join(directory, 'package.json'), name = 'dsh-git-bash-on-win';
 const metadata = JSON.parse(readFileSync(manifest, 'utf8')) as { dsh?: { profile?: { bundles?: string[] } } };
 const bundles = metadata.dsh?.profile?.bundles;
-if (basename(dirname(directory)).toLowerCase() !== 'profiles' || !Array.isArray(bundles) || !bundles.includes(name)
-  || !samePath(realpathSync(createRequire(manifest).resolve(name + '/package.json')), realpathSync(join(import.meta.dirname, '../package.json')))) {
+if (!Array.isArray(bundles) || !bundles.includes(name)) throw new LocalizedError('error.linkProfile', { path: directory });
+let installedManifest: string;
+if (installAnchor) {
+  const boot = createRequire(installAnchor).resolve('@deepseek-ai/dsh-app-boot');
+  const { resolveBundleDir } = await import(pathToFileURL(boot).href) as {
+    resolveBundleDir(binName: string, packageName: string, installAnchor: string, profileDir: string): string;
+  };
+  installedManifest = join(resolveBundleDir('dsh', name, installAnchor, directory), 'package.json');
+} else {
+  installedManifest = createRequire(manifest).resolve(name + '/package.json');
+}
+if (!samePath(realpathSync(installedManifest), realpathSync(join(import.meta.dirname, '../package.json')))) {
   throw new LocalizedError('error.linkProfile', { path: directory });
 }
 const controller = new AbortController(), ctx = new Context();

@@ -170,11 +170,12 @@ in a new DSH process. It invokes the installed package for the affected
 profile and selected Git installation.
 
 ```bash
-node '<installed package>/lib/link-runtime-cache.js' '<absolute DSH profile directory>' '<absolute path to bash.exe>'
+node '<installed package>/lib/link-runtime-cache.js' '<absolute DSH profile directory>' '<absolute path to bash.exe>' '<DSH installation anchor>'
 ```
 
-The command checks that this plugin is enabled in the named profile and uses
-its private cache. It reuses an already valid runtime. Git and the profile
+The command uses the running DSH installation's bundle resolver to check that
+the named profile enables this copy of the plugin. It reuses an already valid
+runtime in that profile's private cache. Git and the profile
 cache must be on the same NTFS volume.
 
 `pnpm test:browser` exercises the confirmation and failure dialogs across two

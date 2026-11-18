@@ -202,7 +202,6 @@ async function preparePass(request: RuntimePreparation, signal: AbortSignal, app
       pin = warm;
     } else {
       const generations = ensureDirectory(root, 'generations');
-      collectUnused(generations, currentRecord(root)?.generationId);
       const authorized = request.elevation === 'manual' || !!approved && approved.layout === source.layout
         && samePath(approved.source.path, source.root) && sameIdentity(approved.source, sourceDirectory);
       pin = await buildFresh(root, generations, source, sourceDirectory, signal, request.spawn, authorized);
@@ -239,6 +238,11 @@ async function buildFresh(root: Directory, generations: Directory, source: GitIn
     }
     if (!elevated) unlinkEntry(generation, '.probe');
     signal.throwIfAborted();
+    // A permission check can end here without starting a rebuild. Collect only once it may proceed.
+    const selected = currentRecord(root)?.generationId;
+    for (const name of children(generations)) {
+      if (name !== selected && name !== id) bestEffort(() => collectGeneration(generations, name));
+    }
     const base = createDirectory(generation, 'base');
     const validate = () => {
       signal.throwIfAborted();
@@ -295,10 +299,6 @@ function collectGeneration(generations: Directory, name: string): void {
     unlinkPlan(directory);
     removeDirectoryTree(directory);
   } finally { claim.close(); }
-}
-
-function collectUnused(generations: Directory, selected?: string): void {
-  for (const name of children(generations)) if (name !== selected) bestEffort(() => collectGeneration(generations, name));
 }
 
 /** Offline only. Preflight every generation before unpublication or payload deletion. */

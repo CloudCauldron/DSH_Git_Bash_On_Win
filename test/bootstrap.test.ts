@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
-import { mkdir, rmdir, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, rmdir, symlink, unlink, writeFile } from 'node:fs/promises';
 import { createRequire, findPackageJSON } from 'node:module';
 import { dirname, join, relative, resolve } from 'node:path';
 import { test } from 'node:test';
@@ -444,7 +444,7 @@ await test('checkout install, offline recovery and removal preserve shared Shell
       const url = 'http://localhost/api/git-bash-on-win/locales';
       const get = (method = 'GET', peer = ctx.connection.browserPeer) => routes.fetch(new Request(url, { method }), peer);
       assert.equal((await get()).status, 404, 'no route outside a profile');
-      const profileScope = ctx.plugin(scope => { scope.provide('profileContext', { dir }); });
+      const profileScope = ctx.plugin(scope => { scope.provide('profileContext', { dir, installAnchor }); });
       await profileScope;
       await ctx.loader.await();
       assert.equal((await get('POST')).status, 404);
@@ -516,11 +516,36 @@ await test('checkout install, offline recovery and removal preserve shared Shell
   assert.equal(statSync(sourceFile).nlink, before.links);
   assert.deepEqual(parse(readFileSync(patchPath, 'utf8')), patches);
   const recovery = readFileSync(join(home, 'recovery-command'), 'utf8');
+  assert.ok(recovery.endsWith("/package.json'"), 'the command includes the DSH installation anchor');
   const git = discoverGitInstallation(process.env.DSH_TEST_GIT_BASH);
   try {
     success(await run([join(git.root, 'bin/bash.exe'), '--noprofile', '--norc', '-c', recovery]));
     assert.equal(statSync(join(cache, 'current.json')).isFile(), true);
   } finally { success(await purge()); }
+  assert.equal(statSync(sourceFile).nlink, before.links);
+  // Application-owned profiles can live anywhere. DSH selects an installation bundle before a profile-local copy.
+  const appProfile = join(home, 'application-data'), install = join(home, 'application-installation');
+  const name = 'dsh-git-bash-on-win', appCache = join(appProfile, '.git-bash-on-win');
+  initProfile(appProfile, [name]);
+  const appAnchor = join(install, 'package.json');
+  const scoped = join(install, 'node_modules', '@deepseek-ai');
+  await mkdir(scoped, { recursive: true });
+  await writeFile(appAnchor, '{}');
+  await symlink(dirname(runtime.cliRequire.resolve('@deepseek-ai/dsh-app-boot/package.json')), join(scoped, 'dsh-app-boot'), 'junction');
+  await symlink(packageRoot, join(install, 'node_modules', name), 'junction');
+  const otherCopy = join(appProfile, 'node_modules', name);
+  await mkdir(otherCopy, { recursive: true });
+  await writeFile(join(otherCopy, 'package.json'), JSON.stringify({ name }));
+  const appRecovery = (anchor: string) => run([process.execPath, join(packageRoot, 'lib/link-runtime-cache.js'),
+    appProfile, sourceFile, anchor]);
+  const mismatch = await appRecovery(runtime.manifest);
+  assert.notEqual(mismatch.exitCode, 0);
+  assert.match(mismatch.stderr, /this copy of the Git Bash plugin/);
+  assert.equal(pathExists(appCache), false);
+  try {
+    success(await appRecovery(appAnchor));
+    assert.equal(JSON.parse(readFileSync(join(appCache, 'current.json'), 'utf8')).sourceRoot, fixture.source);
+  } finally { success(await run([process.execPath, join(packageRoot, 'lib/purge-runtime-cache.js'), appCache])); }
   assert.equal(statSync(sourceFile).nlink, before.links);
   const prepare = () => fixture.prepare(false, new AbortController().signal, cache);
   // Standalone script imports must resolve with native profile autoInstallPeers:false.

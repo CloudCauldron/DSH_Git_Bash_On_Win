@@ -1,0 +1,21 @@
+{
+  "meta": {
+    "title": "Git Bash on Windows",
+    "description": "Configure the Git Bash path and create hard links for DSH on Windows.",
+    "detail": "README.md"
+  },
+  "messages": {
+    "path.label": "Git Bash path",
+    "path.placeholder": "Leave blank to find Git Bash automatically",
+    "action.saveLink": "Save and link",
+    "link.ok": "Hard links created",
+    "form.loading": "Loading settings",
+    "form.unavailable": "Settings unavailable",
+    "form.readOnly": "Settings are read-only",
+    "save.review": "Changes were not saved. Last confirmed path: {path}. Review it and try again.",
+    "path.empty": "Unset",
+    "save.failed": "Could not save the path: {reason}",
+    "link.failed": "Could not create hard links: {reason}",
+    "link.failedAfterSave": "Path saved, but hard link creation failed: {reason}"
+  }
+}

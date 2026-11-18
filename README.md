@@ -3,7 +3,9 @@
 Experimental Git Bash backend for native Windows x64, Node 26+ and DSH
 **0.2.2-rc.2**. It provides lazy cache preparation, optional guarded UAC,
 shared executor readiness, explicit rebuilding, scoped views, native Bash
-execution and strict offline cache purge. There is no frontend or rebuild button.
+execution and strict offline cache purge. In DSH Web, open the sidebar, choose
+**Plugins**, then select **Git Bash on Windows** under installed plugins to read
+this README. The path editor and online rebuild button are planned.
 
 The approved [roadmap](docs/backend-20261117-refactor-roadmap.md),
 [contract baseline](docs/backend-20261117-contract-baseline.md) and
@@ -114,7 +116,7 @@ purge, blocked removal, bundle restoration and preservation of shared Shell
 settings after removing the plugin-only override. No personal profile is opened.
 
 The installation test checks the files in the installed package against the
-tracked build output, `cordis.patch.yml`, `README.md` and the manifest.
+tracked build output, bundled locales, `cordis.patch.yml`, `README.md` and the manifest.
 `pnpm test:release` verifies the supported Windows, DSH and Git prerequisites,
 then runs type checking, lint, a clean build and the maintained test suite.
 
@@ -161,7 +163,11 @@ executor; cache preparation remains lazy until a command or explicit rebuild.
 The bundle is Windows-only. The adapter preserves native entry IDs, canonical
 module names and Shell configuration. The native Bash schema is reused with one
 additional volatile `gitBashPath` setting; presets and tools reuse DSH modules.
-There is no frontend or custom settings UI.
+The Loader mounts the adapter at the package root so DSH can discover its web
+client. Code importing the executor class or its `Config` type uses
+`dsh-git-bash-on-win/executor`. The client registers its configuration slot
+after loading the dictionaries. The Host dictionary endpoint is planned for the
+next implementation step.
 
 Compatibility work stays within DSH's Windows Git Bash process family.
 Ordinary Git Bash, other hosts, WSL and non-Windows DSH must remain unaffected.

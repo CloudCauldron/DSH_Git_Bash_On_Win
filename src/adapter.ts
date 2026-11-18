@@ -32,7 +32,7 @@ export const inject = { loader: { await: false } };
 export async function apply(ctx: Context): Promise<void> {
   if (process.platform !== 'win32') return;
   const modules: Record<string, readonly [string, string]> = {
-    'pwsh-sandbox': ['@deepseek-ai/dsh-pwsh-sandbox', 'dsh-git-bash-on-win'],
+    'pwsh-sandbox': ['@deepseek-ai/dsh-pwsh-sandbox', 'dsh-git-bash-on-win/executor'],
     'tool-pwsh': ['@deepseek-ai/dsh-tool-pwsh', 'dsh-git-bash-on-win/tool'],
     'preset-standard': ['@deepseek-ai/dsh-agent-preset', 'dsh-git-bash-on-win/preset'],
     'preset-ptc': ['@deepseek-ai/dsh-agent-preset', 'dsh-git-bash-on-win/preset'],

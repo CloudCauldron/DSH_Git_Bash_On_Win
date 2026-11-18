@@ -12,4 +12,4 @@
   inject: { gitBashAdapter: null }
 - insert:
     - id: git-bash-adapter
-      name: dsh-git-bash-on-win/adapter
+      name: dsh-git-bash-on-win

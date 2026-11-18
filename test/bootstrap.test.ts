@@ -6,6 +6,7 @@ import { createRequire, findPackageJSON } from 'node:module';
 import { dirname, join, relative, resolve } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { Script } from 'node:vm';
 import { Context } from '@deepseek-ai/cordis';
 import Loader, { type EntryChange } from '@deepseek-ai/cordis-plugin-loader';
 import { SandboxBashExecutor } from '@deepseek-ai/dsh-bash-sandbox';
@@ -26,9 +27,11 @@ const root = fileURLToPath(new URL('../', import.meta.url));
 const require = createRequire(import.meta.url);
 const nativeWindows = process.platform === 'win32' && process.arch === 'x64';
 const packageJson = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as {
+  main: string;
+  types: string;
   exports: Record<string, string | { types: string; default: string }>;
   engines: { dsh: string };
-  dsh: { bundle: { patch: string; platforms: string[] } };
+  dsh: { bundle: { patch: string; platforms: string[] }; client: { platform: string; inject: string[] } };
   dependencies: Record<string, string>;
   peerDependencies: Record<string, string>;
 };
@@ -65,7 +68,7 @@ await test('executor requires a DSH profile before registering a Shell provider'
 await test('bundle adaptation preserves Loader entry/config identity and restores namespaces', { skip: !nativeWindows && 'Requires native Windows x64.' }, async t => {
   const original = { inject: ['bootstrapMissingService'], apply() {} };
   const replacements = new Map<string, unknown>([
-    ['dsh-git-bash-on-win', GitBashExecutor],
+    ['dsh-git-bash-on-win/executor', GitBashExecutor],
     ['dsh-git-bash-on-win/tool', BashTool],
     ['dsh-git-bash-on-win/preset', GitBashPreset],
   ]);
@@ -113,8 +116,81 @@ await test('bundle adaptation preserves Loader entry/config identity and restore
   const patch = parse(readFileSync(join(root, 'cordis.patch.yml'), 'utf8')) as Array<{ id?: string; inject?: unknown; insert?: unknown }>;
   assert.deepEqual(patch.filter(row => row.id).map(row => row.id), modules.map(([id]) => id));
   for (const row of patch.filter(row => row.id)) assert.deepEqual(row.inject, { gitBashAdapter: null });
-  assert.deepEqual(patch.at(-1)?.insert, [{ id: 'git-bash-adapter', name: 'dsh-git-bash-on-win/adapter' }]);
+  assert.deepEqual(patch.at(-1)?.insert, [{ id: 'git-bash-adapter', name: 'dsh-git-bash-on-win' }]);
   assert.deepEqual(packageJson.dsh.bundle, { patch: './cordis.patch.yml', platforms: ['win32'] });
+});
+
+await test('the classic client registers dictionaries and the bundle slot after one locale request', async t => {
+  const ns = 'dsh-git-bash-on-win', slot = 'plugins.bundle.config';
+  assert.deepEqual(packageJson.dsh.client, { platform: 'web', inject: [
+    '@deepseek-ai/dsh-client-ui-plugin-manager', '@deepseek-ai/dsh-client-ui-settings', '@deepseek-ai/dsh-client-locale',
+  ] });
+  type ClientPlugin = { inject: string[]; apply(ctx: unknown): Promise<void> };
+  type Registration = { id: string; factory(require: (name: string) => unknown): ClientPlugin };
+  const load = t.mock.fn<(entry: Registration) => void>();
+  const dictionaries = { zh: { 'path.label': 'Git Bash 路径' }, en: { 'path.label': 'Git Bash path' } };
+  const request = t.mock.fn(async (url: string, options: { cache: string }) => {
+    assert.equal(url, 'api/git-bash-on-win/locales');
+    assert.deepEqual({ ...options }, { cache: 'no-store' });
+    return Response.json({ ok: true, dictionaries });
+  });
+  const client = require.resolve(ns + '/client');
+  new Script(readFileSync(client, 'utf8'), { filename: client })
+    .runInNewContext({ window: { __ModuleLoader__: { load } }, fetch: request });
+  assert.equal(load.mock.callCount(), 1);
+  assert.equal(request.mock.callCount(), 0);
+  const [entry] = load.mock.calls[0]!.arguments;
+  assert.equal(entry.id, ns);
+  const hostRequire = t.mock.fn((name: string) => {
+    assert.ok(['react', '@deepseek-ai/dsh-client-ui-primitives'].includes(name));
+    return {};
+  });
+  const plugin = entry.factory(hostRequire);
+  assert.deepEqual(hostRequire.mock.calls.map(call => call.arguments[0]), ['react', '@deepseek-ai/dsh-client-ui-primitives']);
+  assert.deepEqual([...plugin.inject], ['slots', 'configForms', 'locale']);
+  assert.equal(request.mock.callCount(), 0);
+
+  const ctx = new Context();
+  t.after(() => ctx.fiber.dispose());
+  const fiber = ctx.plugin(() => {});
+  await fiber;
+  const disposeLocale = t.mock.fn();
+  const registerLocale = t.mock.fn<(ns: string, lang: string, messages: unknown) => () => void>(() => disposeLocale);
+  const form = {};
+  const get = t.mock.fn<(id: string) => object>(() => form);
+  type SlotEntry = { name: string; key: string; locale: string; inject(): { shellForm: unknown; hooks: { shellForm: unknown } } };
+  const register = t.mock.fn<(entry: SlotEntry, component: unknown) => void>();
+  const context = {
+    fiber, effect: fiber.effect.bind(fiber), locale: { register: registerLocale }, configForms: { get },
+    slots: { inject(name: string, setup: () => void) { assert.equal(name, slot); setup(); }, register },
+  };
+
+  request.mock.mockImplementationOnce(async () => new Response(null, { status: 404 }));
+  await assert.rejects(plugin.apply(context), /HTTP 404/);
+  request.mock.mockImplementationOnce(async () => Response.json({ ok: true, dictionaries: { zh: {} } }));
+  await assert.rejects(plugin.apply(context), /locale dictionaries/);
+  assert.equal(registerLocale.mock.callCount(), 0);
+  assert.equal(register.mock.callCount(), 0);
+  await plugin.apply(context);
+  assert.equal(request.mock.callCount(), 3, 'one request per activation');
+  assert.deepEqual(structuredClone(registerLocale.mock.calls.map(call => call.arguments)), [[ns, 'zh', dictionaries.zh], [ns, 'en', dictionaries.en]]);
+  assert.deepEqual(get.mock.calls.map(call => call.arguments[0]), ['pwsh-sandbox']);
+  assert.equal(register.mock.callCount(), 1);
+  const [config, component] = register.mock.calls[0]!.arguments;
+  assert.deepEqual([config.name, config.key, config.locale], [slot, ns, ns]);
+  assert.equal(typeof component, 'function');
+  const injection = config.inject();
+  assert.equal(injection.shellForm, form);
+  assert.equal(injection.hooks.shellForm, form);
+  let respond!: (response: Response) => void;
+  request.mock.mockImplementationOnce(() => new Promise(resolve => { respond = resolve; }));
+  const pending = plugin.apply(context);
+  await fiber.dispose();
+  respond(Response.json({ ok: true, dictionaries }));
+  await pending;
+  assert.equal(registerLocale.mock.callCount(), 2);
+  assert.equal(disposeLocale.mock.callCount(), 2);
+  assert.equal(register.mock.callCount(), 1);
 });
 
 await test('public pinned dependencies resolve and atomic-write is usable', async t => {
@@ -187,10 +263,21 @@ await test('maintained compiler graphs, lint and emitted public exports exclude 
   const expected = filesUnder(join(root, 'src'))
     .filter(file => file.endsWith('.ts')).flatMap(file => [file.replace(/\.ts$/, '.js'), file.replace(/\.ts$/, '.d.ts')]).sort();
   assert.deepEqual(outputs, expected, 'clean build contains only maintained production outputs');
+  assert.equal(packageJson.main, './lib/adapter.js');
+  assert.equal(packageJson.types, './lib/adapter.d.ts');
+  assert.deepEqual(packageJson.exports['.'], { types: packageJson.types, default: packageJson.main });
+  assert.deepEqual(packageJson.exports['./executor'], { types: './lib/index.d.ts', default: './lib/index.js' });
+  assert.equal(packageJson.exports['./client'], './lib/client.js');
+  assert.equal(packageJson.exports['./locale/*.json'], './locale/*.json');
+  assert.equal(packageJson.exports['./adapter'], undefined);
   for (const value of Object.values(packageJson.exports)) {
-    for (const path of typeof value === 'string' ? [value] : [value.default, value.types]) assert.ok(readFileSync(resolve(root, path)).length);
+    for (const path of typeof value === 'string' ? [value] : [value.default, value.types]) {
+      for (const file of path.includes('*') ? ['zh', 'en'].map(lang => path.replace('*', lang)) : [path]) {
+        assert.ok(readFileSync(resolve(root, file)).length);
+      }
+    }
   }
-  const built = await import(pathToFileURL(join(root, 'lib/index.js')).href) as { default: typeof GitBashExecutor };
+  const built = await import(pathToFileURL(require.resolve('dsh-git-bash-on-win/executor')).href) as { default: typeof GitBashExecutor };
   assert.equal(Object.getPrototypeOf(built.default), SandboxBashExecutor);
 });
 
@@ -263,9 +350,26 @@ await test('checkout install, offline recovery and removal preserve shared Shell
   assert.ok(manifest().dsh.profile.bundles.includes('dsh-git-bash-on-win'));
   assert.match(manifest().dependencies?.['dsh-git-bash-on-win'] ?? '', /^file:/);
   assert.deepEqual(parse(readFileSync(patchPath, 'utf8')), patches);
-  const packageRoot = dirname(realpathSync(createRequire(join(profile, 'package.json')).resolve('dsh-git-bash-on-win/package.json')));
-  assert.deepEqual(readdirSync(packageRoot).sort(), ['README.md', 'cordis.patch.yml', 'lib', 'package.json']);
+  const profileRequire = createRequire(join(profile, 'package.json'));
+  const packageRoot = dirname(realpathSync(profileRequire.resolve('dsh-git-bash-on-win/package.json')));
+  assert.deepEqual(readdirSync(packageRoot).sort(), ['README.md', 'cordis.patch.yml', 'lib', 'locale', 'package.json']);
   assert.deepEqual(filesUnder(join(packageRoot, 'lib')), filesUnder(join(root, 'lib')));
+  assert.deepEqual(filesUnder(join(packageRoot, 'locale')), ['en.json', 'zh.json']);
+  const placeholders = (messages: Record<string, string>) => Object.fromEntries(Object.entries(messages)
+    .map(([key, value]) => [key, value.match(/{[a-zA-Z0-9_]+}/g)?.sort() ?? []]));
+  const [zh, en] = ['zh', 'en'].map(lang => {
+    const path = profileRequire.resolve(`dsh-git-bash-on-win/locale/${lang}.json`);
+    const contents = readFileSync(path, 'utf8');
+    assert.equal(contents, readFileSync(join(root, 'locale', lang + '.json'), 'utf8'));
+    const { meta, messages } = JSON.parse(contents) as { meta: { title: string; description: string; detail: string }; messages: Record<string, string> };
+    assert.equal(meta.title, lang === 'zh' ? 'Windows Git Bash' : 'Git Bash on Windows');
+    assert.ok(meta.description.trim());
+    assert.equal(meta.detail, 'README.md');
+    assert.equal(readFileSync(join(packageRoot, meta.detail), 'utf8'), readFileSync(join(root, 'README.md'), 'utf8'));
+    return placeholders(messages);
+  });
+  assert.deepEqual(zh, en);
+  assert.equal(realpathSync(profileRequire.resolve('dsh-git-bash-on-win/client')), join(packageRoot, 'lib', 'client.js'));
   // Exercise DSH's real profile resolver: adding standalone dependencies must
   // not split the host's Cordis service or native Shell schema identities.
   const identityEntry = join(fixture.directory, 'profile-identity.mjs');
@@ -276,14 +380,32 @@ await test('checkout install, offline recovery and removal preserve shared Shell
     import { pathToFileURL } from 'node:url';
     import { Context } from ${JSON.stringify(pathToFileURL(runtime.baseRequire.resolve('@deepseek-ai/cordis')).href)};
     import { SandboxBashExecutor } from ${JSON.stringify(pathToFileURL(runtime.baseRequire.resolve('@deepseek-ai/dsh-bash-sandbox')).href)};
+    import Loader from ${JSON.stringify(pathToFileURL(runtime.cliRequire.resolve('@deepseek-ai/cordis-plugin-loader')).href)};
+    import ClientModules from ${JSON.stringify(pathToFileURL(runtime.cliRequire.resolve('@deepseek-ai/dsh-client-modules')).href)};
     import { PluginPackages, createRuntimeResolution, loadProfileDirectory } from ${JSON.stringify(pathToFileURL(runtime.cliRequire.resolve('@deepseek-ai/dsh-app-boot')).href)};
     const [dir, home, installAnchor] = process.argv.slice(2), ctx = new Context();
     try {
       const profile = loadProfileDirectory('dsh', dir, installAnchor);
       await ctx.plugin(PluginPackages, { resolution: await createRuntimeResolution({ profile, home, installAnchor }) });
       const require = createRequire(join(dir, 'package.json'));
-      const { default: Executor } = await import(pathToFileURL(require.resolve('dsh-git-bash-on-win')).href);
+      const adapter = await import(pathToFileURL(require.resolve('dsh-git-bash-on-win')).href);
+      assert.equal(typeof adapter.apply, 'function');
+      assert.deepEqual(adapter.inject, { loader: { await: false } });
+      assert.throws(() => require.resolve('dsh-git-bash-on-win/adapter'), { code: 'ERR_PACKAGE_PATH_NOT_EXPORTED' });
+      const { default: Executor } = await import(pathToFileURL(require.resolve('dsh-git-bash-on-win/executor')).href);
+      assert.ok(Executor.Config.dict.gitBashPath);
       assert.equal(Object.getPrototypeOf(Executor), SandboxBashExecutor);
+      await ctx.plugin(Loader, { baseUrl: pathToFileURL(join(dir, 'package.json')).href });
+      const layer = profile.layers.find(layer => layer.packageName === 'dsh-git-bash-on-win');
+      await ctx.loader.root.update([
+        { name: '@deepseek-ai/dsh-pwsh-sandbox', ...layer.patches.find(row => row.id === 'pwsh-sandbox') },
+        ...layer.patches.flatMap(row => row.insert ?? []),
+      ]);
+      await ctx.loader.await();
+      assert.equal(ctx.loader.resolve('pwsh-sandbox').moduleNamespace.default, Executor);
+      await ctx.plugin(ClientModules);
+      assert.deepEqual(ctx.clientModules.graph().entries.map(row => row.id), ['dsh-git-bash-on-win']);
+      assert.equal(ctx.clientModules.clientPath('dsh-git-bash-on-win'), require.resolve('dsh-git-bash-on-win/client'));
       for (const [name, field] of Object.entries(SandboxBashExecutor.Config.dict)) assert.equal(Executor.Config.dict[name], field);
     } finally { await ctx.fiber.dispose(); }
   `);

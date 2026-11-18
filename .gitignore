@@ -1,6 +1,4 @@
 tmp/
 node_modules/
-poc/results/
 test/results/
-.deprecated
 .git-bash-on-win/

@@ -1,0 +1,97 @@
+{
+  "description": "Selected fields from the Windows feasibility and profile fixture runs. Counts include checks of expected failures.",
+  "dsh": "0.2.2-rc.2",
+  "node": "v26.12.1",
+  "windows": {
+    "release": "10.0.26200",
+    "arch": "x64"
+  },
+  "stockShell": {
+    "completedAt": "2026-11-12T14:03:18.018Z",
+    "passed": 107,
+    "total": 107,
+    "verdict": "blocked: stock MSYS runtime does not start confined",
+    "outsideCanaryUnchanged": true,
+    "restrictedOutsideFixturesUnchanged": true,
+    "installedSourcesUnchanged": true,
+    "installedGitRuntimeUnchanged": true,
+    "cleanup": {
+      "temporaryRootRemoved": true,
+      "addedAmbientLocks": [],
+      "environmentRestored": true,
+      "failures": []
+    }
+  },
+  "privateProcessFamily": {
+    "completedAt": "2026-11-13T07:40:05.091Z",
+    "passed": 111,
+    "total": 111,
+    "runs": [
+      {
+        "mode": "read-only",
+        "variant": "observe",
+        "exitCode": 2147483651,
+        "exited": true,
+        "outsideFixturesUnchanged": true
+      },
+      {
+        "mode": "read-only",
+        "variant": "signal-pipe",
+        "exitCode": 2147483651,
+        "exited": true,
+        "outsideFixturesUnchanged": true
+      },
+      {
+        "mode": "read-only",
+        "variant": "ipc",
+        "exitCode": 0,
+        "exited": true,
+        "outsideFixturesUnchanged": true
+      },
+      {
+        "mode": "workspace-write",
+        "variant": "observe",
+        "exitCode": 2147483651,
+        "exited": true,
+        "outsideFixturesUnchanged": true
+      },
+      {
+        "mode": "workspace-write",
+        "variant": "signal-pipe",
+        "exitCode": 2147483651,
+        "exited": true,
+        "outsideFixturesUnchanged": true
+      },
+      {
+        "mode": "workspace-write",
+        "variant": "ipc",
+        "exitCode": 0,
+        "exited": true,
+        "outsideFixturesUnchanged": true
+      }
+    ],
+    "watchedFilesUnchanged": true,
+    "watchedSecurityUnchanged": true,
+    "canaryUnchanged": true,
+    "cleanup": {
+      "temporaryRootRemoved": true,
+      "addedAmbientLocks": [],
+      "environmentRestored": true
+    },
+    "cleanupErrors": []
+  },
+  "profileStructure": {
+    "completedAt": "2026-11-15T07:17:42.936Z",
+    "passed": 61,
+    "total": 61,
+    "profileExitCode": 0,
+    "restartExitCode": 0,
+    "ordinaryBashUnchanged": true,
+    "allHardlinkSourcesUnchanged": true,
+    "cleanup": {
+      "temporaryRootRemoved": true,
+      "addedAmbientLocks": [],
+      "environmentRestored": true
+    }
+  }
+}

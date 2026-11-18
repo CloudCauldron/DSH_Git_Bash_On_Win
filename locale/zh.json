@@ -2,7 +2,7 @@
   "meta": {
     "title": "Windows Git Bash",
     "description": "在 Windows DSH 中配置 Git Bash 路径并建立硬链接。",
-    "detail": "README.md"
+    "detail": "README_CN.md"
   },
   "messages": {
     "form.unavailable": "配置不可用",

@@ -14,5 +14,5 @@
     "skipLibCheck": true
   },
   "include": ["src/**/*.ts", "scripts/**/*.ts", "test/**/*.ts"],
-  "exclude": [".deprecated", "tmp", "poc", "lib", "node_modules"]
+  "exclude": ["tmp", "lib", "node_modules"]
 }

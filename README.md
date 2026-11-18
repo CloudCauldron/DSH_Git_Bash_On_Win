@@ -1,365 +1,158 @@
-# DSH Git Bash on Windows
+# **DSH Git Bash on Windows**
 
-Experimental Git Bash backend for native Windows x64, Node 26+ and DSH
-**0.2.2-rc.2**. It provides lazy cache preparation, optional guarded UAC,
-shared executor readiness, explicit rebuilding, scoped views, native Bash
-execution and strict offline cache purge. In DSH Web, open the sidebar, choose
-**Plugins**, then select **Git Bash on Windows** under installed plugins to read
-this README. The **Git Bash path** field and **Save and link** button appear
-below it. Keep the current path and click the button to rebuild its hard links.
+<span style="margin-left:2em;">&#8203;</span>An extension plugin that provides Git Bash execution support for **[DeepSeek Harness (DSH)](https://github.com/deepseek-ai/deepseek-harness)** on Windows x64.
 
-The approved backend roadmap, contract baseline and design decisions in `docs/`
-govern the implementation. The Phase 6 verification record lists supported-system
-results and remaining manual consent checks.
-The local `.deprecated/` archive is reference material, excluded from maintained
-source, tooling, tests, build output and packages. No archived runtime is launched.
+## **1 - Overview**
 
-## Development
+<span style="margin-left:2em;">&#8203;</span>DeepSeek Harness `0.2.2-rc.2` uses PowerShell (`pwsh-sandbox` / `tool-pwsh`) by default on Windows, and switching directly to Git Bash prevents the shell from starting because MSYS2 encounters permission restrictions under a restricted sandbox token.
 
-Run these commands in **Windows-native Git Bash**:
+<span style="margin-left:2em;">&#8203;</span>`dsh-git-bash-on-win` provides an out-of-the-box Git Bash backend for DSH on Windows (supporting both `ucrt64` and `mingw64` layouts), switching the terminal tool to Bash while preserving native mechanisms such as sandbox restrictions, approvals, timeouts, output truncation, and background job management.
 
-```bash
-pnpm install --ignore-scripts --frozen-lockfile
-pnpm check
-pnpm lint
-pnpm test:windows
-```
+## **2 - Key Features**
 
-`lib/` is tracked in Git. After editing `src/`, run `pnpm build` and include
-the regenerated JavaScript and declarations with the source change.
-`pnpm build` cleans `lib/` before compiling only `src/`. `pnpm check` and lint
-also cover `scripts/` and `test/`; `pnpm test` rebuilds and runs maintained
-`node --test` cases. The TypeScript 7 compiler uses the `@typescript/native`
-alias; TypeScript 6 supplies the API required by typescript-eslint.
-The supervisor benchmark in `docs/` reports Windows command latency, launcher
-memory and CPU measurements, with steps to reproduce them.
-Public DSH dependencies, including `@deepseek-ai/dsh-atomic-write`, are pinned.
-Standalone launcher, broker, helper and cleanup imports are installed as explicit
-dependencies, including their runtime peer requirements. Host-facing peer
-constraints are retained. DSH profiles use `autoInstallPeers: false`; development
-dependency resolution alone does not validate an installed package.
-The broker declares Koffi 3.1.1 (the SDK's existing version) for ShellExecuteEx/COM,
-which the SDK does not expose; process wait/close still use the public DSH helpers.
+- **Full Support for All Three DSH Sandbox Modes**
+  Run Git Bash directly under `read-only`, `workspace-write`, and `danger-full-access` without relaxing the sandbox or switching to WSL, with support for pipelines, subshells, native child processes, and multiple concurrent sessions.
+- **Single Shared Hard Link Base with Virtually No Extra Disk Usage**
+  Reuses local Git files via NTFS hard links and shares one base directory across all modes, with no extra copies required.
+- **Zero Intrusion on the Host Environment**
+  Leaves the Windows Registry, global `PATH`, environment variables, and the file contents and permissions (ACLs) of source Git and DSH installations untouched. Regular Git Bash and WSL remain unaffected, and following the uninstall and cleanup procedure restores the original hard link counts of source files.
 
-Bootstrap tests verify the native schema, Loader entry/configuration identity,
-installed CLI discovery, public dependency resolution and transitive input
-exclusion. They use disposable fixtures and never open a personal profile.
-The native Phase 2 suites verify root ownership, bounded inventory/linking,
-single-record publication, warm admission, pin/collector sharing, interrupted
-collection/purge, view lifetime and cleanup. Fixtures contain owned source files;
-tests verify restored source link counts and unchanged contents/ACLs after purge.
-The Phase 3 suite verifies probe-only escalation, independent helper admission and
-inventory, plan/lease sharing, cancellation/draining, failed native wait/exit/close
-outcomes, and publication gates. It also runs the fixed helper through a real
-isolated DSH subprocess provider and terminates a broker fixture blocked in a
-native call. The broker smoke test changes only its ShellExecuteEx verb to `open`
-through a test-only ESM preload, exercising the real COM/request ABI, argv,
-process wait/close and emitted entry points without consent. The ordinary helper
-may inherit the broker's Job; this does not test independent elevated lifetime.
-The Phase 4 suite exercises the native executor's deferred confinement and deadline
-mechanics, real Loader volatile updates, and actual NTFS cache/pin/view lifetime.
-Command subprocess outcomes and UAC denial are controlled fixtures; it does not
-launch Bash or grant workspace ACLs. It covers shared readiness, displaced waiters,
-rebuild success/failure, stale completion, disposal, and cleanup failures. View
-tests cover failed creation/cleanup, retry, unexpected EEXIST and validation ownership.
-The native lane runs the emitted executor, launcher and debugger through
-installed DSH sandbox/subprocess providers in a temporary context. It copies the
-selected Git files into owned fixture storage before linking, so it never asks for
-consent or changes installed Git ACLs. It exercises Bash/Git, pipelines, nested
-shells, native descendants, mode-specific writes, namespace separation/reuse,
-child admission failures, overlapping execution, cancellation and disposal.
-Separate workspace sessions also probe a live MSYS pinfo mapping: the owner can
-open it for writing, peer confined sessions can read but receive access-denied
-for writing, and full-access retains write access. The probe never changes pinfo.
-Every fixture joins its processes and strictly purges the cache; source
-contents/ACLs and all copied source link counts are checked afterward. Missing
-Windows x64, supported Git or pinned DSH prerequisites are explicit skips; a
-release run must execute this lane. `DSH_TEST_GIT_BASH` can select its source Git.
-Native fault tests retain the real hook engine and change only owned fixture
-paths between launch admission and process creation. Close-failure injection in
-the earlier suites reports failure after closing the test handle; it does not
-reproduce an unrecoverable kernel handle fault. Modal consent remains a separate
-manual lane.
+## **3 - Usage Guide**
 
-For explicit manual consent checks, build first, then run the selected command in
-Windows-native Git Bash and answer the Windows prompt as specified:
+### **3.1 - Configuring the Git Bash Path and Manual Linking**
 
-```bash
-pnpm build
-DSH_GIT_BASH_UAC_TEST=approve node --test --test-name-pattern='manual UAC' test/provisioning.test.ts
-DSH_GIT_BASH_UAC_TEST=deny node --test --test-name-pattern='manual UAC' test/provisioning.test.ts
-DSH_GIT_BASH_UAC_TEST=late node --test --test-name-pattern='manual UAC' test/provisioning.test.ts
-```
+1. In the left sidebar of DSH Web, open **Plugins** and select **Git Bash on Windows**.
+2. Fill in **Git Bash path** as needed and click **Save and link**:
+   - **Auto-detect (recommended)**: Leave blank to automatically locate Git for Windows in common installation directories.
+   - **Manual path**: For portable or custom installations, enter the absolute path to `bin/bash.exe` or `usr/bin/bash.exe`.
+   - **Reset to default**: Clear the input field and click **Save and link** to remove the override path and restore default detection.
+3. Common usage notes:
+   - **Multi-tab conflict**: If another window saved changes first, a **Changes were not saved** prompt appears listing the latest path; review it and try again.
+   - **Link failure after saving**: The saved path is preserved; resolve the path or permission issue and click **Save and link** again.
+   - **Shared settings**: Timeout, output limit, working directory, and exit grace period are still managed on the **Shell** settings page.
 
-This lane forces only the initial probe denial on an owned source fixture, then
-uses the production broker/helper and strict fixture purge. It changes no installed
-Git ACLs and opens no personal profile. It is not registered in the default suite.
-For `late`, leave consent pending until `LOCAL SHUTDOWN COMPLETED` is printed
-after the ten-second cancellation deadline, then approve within twenty seconds.
-The test refuses publication and requires strict purge. If Windows dismisses the
-prompt when the broker stops, this exercises modal cancellation only; it does not
-establish that an independent late helper ran. Record what was observed. A helper
-holding its plan or another removal obstruction makes purge fail explicitly;
-resolve it and retry the reported fixture's cleanup. A pending prompt alone may
-outlive successful cleanup; the revoked lease still prevents late helper work.
-These manual checks are not run by automated packaging.
-
-`scripts/installed-dsh.ts` discovers the installed CLI without loading a profile.
-If discovery is ambiguous, set `DSH_PACKAGE_JSON` for the current process to the
-absolute installed `@deepseek-ai/dsh/package.json`. The selected CLI must match
-the pinned release. Only an absent CLI skips the installed-CLI test; ambiguous,
-invalid or broken installations fail validation. Checkout installation tests use the
-official DSH package operation in an isolated profile with private pnpm storage.
-They exercise local `file:` installation, standalone script resolution, profile-cache
-purge, blocked removal, bundle restoration and preservation of shared Shell
-settings after removing the plugin-only override. No personal profile is opened.
-
-The installation test checks the files in the installed package against the
-tracked build output, bundled locales, `cordis.patch.yml`, `README.md` and the manifest.
-`pnpm test:release` verifies the supported Windows, DSH and Git prerequisites,
-then runs type checking, lint, a clean build and the maintained test suite.
-
-## Installing from the checkout
-
-From the repository root in Windows-native Git Bash, register the checkout
-with the intended DSH profile. The tracked `lib/` contains the runtime.
-The wrapper passes an absolute pnpm executable to the DSH plugin manager.
-
-```bash
-pnpm install --ignore-scripts --frozen-lockfile
-gitbash_pnpm="$(cygpath -m "$(type -P pnpm.exe)")"
-node scripts/plugin.ts "$gitbash_pnpm" web add "file:$(cygpath -m "$PWD")"
-```
-
-Use `desktop` for a Desktop profile. On systems where DSH can resolve pnpm
-by name, the equivalent CLI command is
-`dsh plugin --profile web add "file:$(cygpath -m "$PWD")" --ignore-scripts`.
-Installation and replacement retain the profile cache. The removal wrapper
-purges it before removing the package. A live pin or unowned cache blocks removal.
-Restart DSH unelevated after installation or bundle enable/disable changes.
-
-For a nonstandard Git installation, enter the path to `bin/bash.exe` or
-`usr/bin/bash.exe` on the plugin page and click **Save and link**.
-The button saves any change, then asks the active executor to rebuild the hard
-links once. With the path unchanged, it goes straight to rebuilding. Saving a
-blank field clears the profile override and restores the inherited path, or
-automatic discovery when no path is inherited. If DSH reports a configuration
-conflict, review the last saved path before retrying. If linking fails
-after a successful save, the path stays saved. Click again to retry linking.
-Shared command timeouts and output limits remain on DSH's **Shell** page.
-
-On the first Bash command, DSH checks the cached runtime. If it needs new
-links, it tries one link with your normal permissions. A successful automatic
-rebuild shows **Hard links created**. If the probe requires administrator
-permission, the DSH window shows a confirmation dialog before Windows opens
-UAC. The dialog identifies a detected change to Git's source files, or explains
-that permission is needed for setup or cache recovery. Select **Confirm** to
-continue. **Save and link** already requests the rebuild explicitly and proceeds
-directly to UAC when needed. Only the fixed linker runs elevated.
-
-An automatic rebuild failure appears in the **Could not create hard links**
-dialog, including when you are in chat. An undismissed failure is available to
-a reconnected window while the executor is running. Shell commands keep their
-own timeouts. If a command times out before confirmation, retry the command
-after linking succeeds.
-
-If no interactive DSH window is available, including in `dsh headless`, a
-probe that requires elevation stops and prints a command for **Windows Git
-Bash**. Run the printed command from an ordinary terminal and retry the task
-in a new DSH process. It invokes the installed package for the affected
-profile and selected Git installation.
-
-```bash
-node '<installed package>/lib/link-runtime-cache.js' '<absolute DSH profile directory>' '<absolute path to bash.exe>' '<DSH installation anchor>'
-```
-
-The command uses the running DSH installation's bundle resolver to check that
-the named profile enables this copy of the plugin. It reuses an already valid
-runtime in that profile's private cache. Git and the profile
-cache must be on the same NTFS volume.
-
-`pnpm test:browser` exercises the confirmation and failure dialogs across three
-tabs using a disposable Git fixture. To verify Windows consent as well, run
-`DSH_GIT_BASH_UAC_TEST=deny pnpm test:browser` and choose **No**, then run
-`DSH_GIT_BASH_UAC_TEST=approve pnpm test:browser` and choose **Yes**.
-
-The field belongs to the existing `pwsh-sandbox` row. A manual profile override
-can look like:
+If you edit the profile's `cordis.patch.yml` manually, be sure to preserve the existing shared Shell settings when modifying `pwsh-sandbox.config` (DSH replaces the entire `config` block):
 
 ```yaml
 - id: pwsh-sandbox
   config:
     gitBashPath: 'C:/Tools/Git/bin/bash.exe'
-    # Preserve all existing shared Shell values here.
+    # Keep existing shared Shell settings here, such as timeoutMs, maxOutputBytes, and graceMs
 ```
 
-DSH replaces a patched `config` wholesale. Preserve existing timeout, output,
-working-directory and grace settings when editing YAML. The cache and Git source
-must share an NTFS volume; neither may overlap the actual workspace in either
-containment direction. The only cache location is
-`<profileContext.dir>/.git-bash-on-win`, fixed for each DSH profile. The plugin has
-no cache-location setting. A DSH profile context is required when constructing the
-executor; cache preparation remains lazy until a command or explicit rebuild.
+### **3.2 - Automatic Linking, Permission Confirmation, and Headless Mode**
 
-## Integration and isolation contract
+- **Automatic setup**: Hard links are created automatically on the first Bash command or when a Git upgrade modifies key files, displaying **Hard links created** when finished.
+- **On-demand elevation (UAC)**: If Git is located in a protected directory such as `C:\Program Files\Git`, administrator permission is requested once on demand when creating links. Elevation is used solely to create hard links; everyday commands still run with standard privileges.
+- **Headless mode (`dsh headless`)**: When elevation is required without an interactive window, the process aborts and prints a recovery command in the terminal; run it in Windows Git Bash, then restart DSH and retry:
 
-The bundle is Windows-only. The adapter preserves native entry IDs, canonical
-module names and Shell configuration. The native Bash schema is reused with one
-additional volatile `gitBashPath` setting; presets and tools reuse DSH modules.
-The Loader mounts the adapter at the package root so DSH can discover its web
-client. Code importing the executor class or its `Config` type uses
-`dsh-git-bash-on-win/executor`. The client registers its configuration slot
-after reading the bundled English and Chinese dictionaries through DSH Connection.
-Changing the interface language preserves the current draft.
+    ```bash
+    node '<installed plugin directory>/lib/link-runtime-cache.js' '<absolute DSH profile directory>' '<absolute bash.exe path>' ['<DSH installation anchor path>']
+    ```
 
-Compatibility work stays within DSH's Windows Git Bash process family.
-Ordinary Git Bash, other hosts, WSL and non-Windows DSH must remain unaffected.
-Installed Git/DSH contents and ACLs, registry settings and global environment are
-never modified. Managed artifacts stay in private DSH cache directories.
+## **4 - Important Notes**
 
-The launcher validates the inherited DSH mode/token, and the debugger admits the
-base/executable/view once before spawning through DSH's public private-Job helper.
-Loaded MSYS modules must have the admitted file identity, an actual loader path
-inside that base, and private Job membership. The startup-root hook uses the
-scoped view in every mode, including full-access; pipe/default-DACL/mapping grants
-apply only in confined modes. Namespace separation does not promise IPC
-confidentiality: peer reads, shared-logon-SID read-only writes and broad full-access
-rights remain limits of DSH's partial Windows enforcement.
+<span style="margin-left:2em;">&#8203;</span>Please keep the following points in mind when using or troubleshooting the plugin:
 
-## Recovery and complete uninstallation
+1. **Git and the DSH profile must be on the same NTFS volume**
+   Windows hard links cannot be created across drive letters, and non-NTFS filesystems such as FAT32 and exFAT are not supported. Both the Git installation directory and the DSH profile directory (`.dsh\profiles\<profile-name>` by default, adjustable via `DSH_HOME`) must reside on the same NTFS volume.
+2. **Do not combine with other shell-replacing plugins in the same profile**
+   The plugin directly reuses the native `pwsh-sandbox`, `tool-pwsh`, `preset-standard`, `preset-ptc`, and `preset-cordis` entries. Do not mix it with other shell-replacement plugins or modify those module names.
+3. **Source directory, cache directory, and workspace must not overlap**
+   The cache location is fixed at `<profile directory>/.git-bash-on-win` (cannot be changed). The Git source directory, cache directory, and command workspace must not be identical or contain one another, and paths along the way should avoid passing through junctions or symbolic links.
+4. **Source Git files must not be marked "Read-only"**
+   If files in a portable Git installation carry the Windows "Read-only" attribute, clear the read-only attribute before creating links or running cleanup.
+5. **Cache size and file updates**
+   Hard links share on-disk data with the source files, so the size reported in File Explorer does not represent additional disk usage; modifying source files in place takes effect across the links as well. After upgrading Git or if supporting files are missing, click **Save and link** on the plugin page to rebuild.
+6. **Run with standard privileges and do not recursively delete the cache directly**
+   Launch DSH with standard privileges for installation, updates, and everyday use. Never force-delete `.git-bash-on-win` with `rm -rf` or File Explorer; when cleaning up, close all relevant DSH instances first and then run the command in Section 6.2.
 
-The cache layer provides guarded offline purge. Normal pin retirement retains
-the validated cache, refuses new uses, and protects existing uses with the same
-native directory handle until their last release. View cleanup is best effort;
-native handle close failures remain errors. Executor disposal blocks new work,
-signals commands before draining setup, and releases owned pins/uses. The launcher
-joins debug-event exits and actual Job settlement before returning; after the root
-exits, surviving descendants receive the configured grace period before Job
-termination. Admission or native cleanup failure fails the execution without an
-unrestricted retry.
-The pinned native Shell exposes target completion before the subprocess range is
-necessarily empty. A per-command Cordis receiver waits for DSH's existing
-`waitForExit()` before releasing the runtime use, including cancellation or a
-launcher crash; sibling subprocess consumers are unaffected. Failed range
-observation is reported at disposal and retains the existing pin reference until
-host-process exit, so an unconfirmed shutdown cannot authorize cache collection.
+## **5 - Requirements**
 
-The active executor handles the owner-only `POST /api/git-bash-on-win/rebuild`
-by calling `GitBashExecutor.rebuildRuntime()` once. It uses its configured Git
-path and profile cache to prepare a fresh generation. A ready pin continues
-serving commands until the new generation is adopted. A failed rebuild of the
-same path preserves that pin. Without readiness, rebuilding cancels and drains
-unfinished preparation and becomes the shared readiness for new and displaced
-callers. Overlapping rebuild calls fail as busy. An unchanged failed selection is retained until explicit rebuild
-or selection/provider replacement. Caller cancellation stops only that caller's
-wait; disposal or observed selection changes cancel owned setup. An unresolved
-local resource-cleanup failure blocks replacement setup and is reported at disposal.
-Cleanup failures are retained even when preparation rejects before retirement;
-ordinary source/setup errors during cancellation do not poison later rebuilding.
-Failed admission of a newly created empty directory attempts exact non-following
-rollback, allowing view creation to retry after a transient observation failure.
-If that rollback is also obstructed, the pin retains ownership of its created
-namespace for retry and final cleanup. Unexpected namespace EEXIST grants no such
-ownership. Native failures inside lease acquisition are also retained when the
-caller cancels or the selected pin changes.
+- **DeepSeek Harness**: `0.2.2-rc.2` (`web` / `desktop` profiles and `dsh headless`)
+- **Operating System**: Native **Windows x64** on an **NTFS** volume (automatically skipped on Linux, macOS, and WSL)
+- **Node.js**: `>= 26` (native Windows x64)
+- **Git for Windows**: With a `ucrt64` or `mingw64` layout
+- **Package Manager**: `pnpm`
 
-Close all relevant DSH instances before running the **installed package's** entry:
+## **6 - Installation, Cleanup, and Uninstallation**
+
+### **6.1 - Installing from Source**
+
+1. In **native Windows Git Bash**, change to the repository root to install dependencies and register the plugin (the repository already includes `lib/`; if you have modified `src/`, run `pnpm build` first):
+
+    ```bash
+    pnpm install --ignore-scripts --frozen-lockfile
+    gitbash_pnpm="$(cygpath -m "$(type -P pnpm.exe)")"
+    node scripts/plugin.ts "$gitbash_pnpm" web add "file:$(cygpath -m "$PWD")"
+    ```
+
+    - To install into **DSH Desktop**, replace `web` with `desktop`; if multiple DSH installations exist, you can set `DSH_PACKAGE_JSON` to the absolute path of the target `@deepseek-ai/dsh/package.json`.
+    - If DSH can resolve `pnpm` by name, you can also run `dsh plugin --profile web add "file:$(cygpath -m "$PWD")" --ignore-scripts` directly.
+
+2. Restart DSH with standard privileges to begin using it (installation or updates preserve any existing cache).
+
+### **6.2 - Offline Cache Cleanup and Troubleshooting**
+
+<span style="margin-left:2em;">&#8203;</span>When you need to reset the cache or clean up leftover artifacts, **close all DSH instances using this profile first** (including idle background instances), then run the offline cleanup command:
 
 ```bash
-node '<installed package>/lib/purge-runtime-cache.js' '<absolute profile directory>/.git-bash-on-win'
+node '<installed plugin directory>/lib/purge-runtime-cache.js' '<absolute DSH profile directory>/.git-bash-on-win'
 ```
 
-This purges the supplied profile cache.
-Only a root with this implementation's valid ownership marker is admitted; an old,
-markerless or unrecognized directory is refused without deletion. Recovery uses
-ordinary plan unlink and native generation claims; a busy pin or plan prevents
-completion. Deletion uses checked `DeleteFileW`/`RemoveDirectoryW` calls without
-attribute repair; read-only files cause an explicit obstruction. Enumerated names
-are addressed exactly, including unusual trailing characters. After an obstruction
-clears, rerun purge. For offline rebuilding, retain the package and settings.
-After purge succeeds, restart DSH. The next Bash command prepares a fresh
-runtime, or you can click **Save and link** to rebuild immediately.
+Troubleshooting common obstructions:
 
-| Obstruction | Recovery |
-| --- | --- |
-| Markerless, unrecognized or unsafe cache root/ancestor | Stop; the plugin has no authority to adopt or recursively remove it. Verify the selected path and ownership. |
-| Live generation pin or writer lock | Close all DSH instances using the cache, then retry. Purge preclaims every generation before deleting payload. |
-| Busy helper plan or unconfirmed late elevated work | Keep the candidate unpublished. Let the helper drain/release its plan; retry guarded purge. A new attempt never reauthorizes the old lease. |
-| Access denial, read-only artifact, unsupported reparse point or failed close | Treat cleanup as incomplete and inspect the reported operation/path. The plugin never changes attributes or ACLs to force deletion. |
-| Failure after the initial hardlink probe | Resolve the source/IO obstruction and explicitly rebuild. Setup drains and rejects without resetting the base or requesting another UAC pass. |
+| Issue | Resolution |
+| :---: | :---: |
+| Ownership cannot be verified or path contains a reparse point | Verify that the path points to `.git-bash-on-win` under that profile |
+| Directory is in use or has active references | Close all DSH processes using this profile and retry |
+| Active elevation plan has not exited or is blocking cleanup | Wait for the elevated helper process to release its handles and retry cleanup |
+| Access denied or blocked by read-only files | Clear the read-only attribute or release locks on the affected path and retry |
+| Interrupted linking or source directory issue | Verify the integrity of the source Git installation, then click **Save and link** to retry |
 
-Once guards permit removal, normal preparation collects unused generations through
-the same non-following primitives. It does not permanently freeze a rejected
-candidate; warm hits perform no collection. Session-view residue can persist in a
-selected generation until eligible collection or offline purge.
+After cleanup succeeds, restart DSH to rebuild on demand, or click **Save and link** to rebuild immediately.
 
-Complete uninstallation requires removing only the plugin-specific `gitBashPath`
-override while preserving shared Shell settings, closing all relevant DSH
-instances, successfully purging the profile cache, then using official package removal.
-After removing that field through the native editor or editing its profile patch
-(delete a manually added override row only if it becomes empty), the repository
-wrapper performs purge before official removal:
+### **6.3 - Complete Uninstallation**
+
+<span style="margin-left:2em;">&#8203;</span>To completely uninstall the plugin and restore the original hard link counts on source files, follow these steps in order:
+
+1. **Remove the configuration entry**: In the native config editor or `cordis.patch.yml`, delete only `gitBashPath` under `pwsh-sandbox` (keep shared settings such as `timeoutMs`, `maxOutputBytes`, and `graceMs`; if a manually added entry becomes empty, you may remove it as well).
+2. **Close related DSH instances**: Exit all DSH processes using this profile (including idle instances) to prevent the cache from being rebuilt in the background.
+3. **Clean up the cache and uninstall the plugin**: Run the uninstall script in **native Windows Git Bash** (it automatically cleans up the cache before uninstalling):
+
+    ```bash
+    gitbash_pnpm="$(cygpath -m "$(type -P pnpm.exe)")"
+    node scripts/plugin.ts "$gitbash_pnpm" web remove dsh-git-bash-on-win
+    ```
+
+    If using the native CLI directly, run the Section 6.2 cleanup command **first**, and then run `dsh plugin --profile web remove dsh-git-bash-on-win --ignore-scripts` (if multiple profiles share the same package, clean up each profile's cache individually).
+
+## **7 - Development and Testing**
+
+<span style="margin-left:2em;">&#8203;</span>Run the following commands in **native Windows Git Bash**. The build compiles `src/` into the tracked `lib/` directory via `@typescript/native` (TypeScript 7), while `typescript` (TypeScript 6) is used only for ESLint; after modifying `src/`, run `pnpm build` and commit the updated build artifacts alongside your changes.
 
 ```bash
 pnpm install --ignore-scripts --frozen-lockfile
-gitbash_pnpm="$(cygpath -m "$(type -P pnpm.exe)")"
-node scripts/plugin.ts "$gitbash_pnpm" web remove dsh-git-bash-on-win
+pnpm check          # TypeScript type-checking (src / scripts / test)
+pnpm lint           # ESLint check (zero warnings)
+pnpm build          # Rebuild lib/
+pnpm test:windows   # Run all unit and native integration tests
+pnpm test:release   # Environment preflight + check + lint + test:windows
+pnpm test:browser   # Playwright browser configuration and dialog tests
 ```
 
-The wrapper leaves configuration editing to DSH/user ownership. For native CLI
-removal instead, run the installed cache purge command above first, then
-`dsh plugin --profile web remove dsh-git-bash-on-win --ignore-scripts`.
-Native package removal alone preserves settings and does not purge runtime caches.
-If multiple profiles used the same installed package, purge each profile cache
-before removing that package. An idle instance holding no pin is not detected by
-purge and can recreate storage, so closing all relevant instances is mandatory.
-Purge must not follow junctions/reparse points; interruptions, blocked removal
-and failed native closes must fail explicitly. Never recursively delete these
-caches as a substitute for guarded purge.
+To manually verify real UAC prompts or run the supervisor benchmark, run `pnpm build` first, then run the commands below as needed:
 
-Source contents and ACLs must remain unchanged and source link counts must be
-restored. Hardlink creation/removal changes filesystem-maintained timestamps,
-archive bits and journal/audit records; this permitted bookkeeping is observable.
-No bit-for-bit restoration of host state is promised.
+```bash
+# Real UAC prompt verification (approve / deny / late)
+DSH_GIT_BASH_UAC_TEST=approve node --test --test-name-pattern='manual UAC' test/provisioning.test.ts
+DSH_GIT_BASH_UAC_TEST=deny node --test --test-name-pattern='manual UAC' test/provisioning.test.ts
+DSH_GIT_BASH_UAC_TEST=late node --test --test-name-pattern='manual UAC' test/provisioning.test.ts
 
-The six-anchor warm check is a bounded freshness sample, not a full-tree
-comparison. Restart does not promise non-anchor repair; explicit rebuild restores
-layout from installed Git and cannot repair damaged source bytes.
-Source pathname replacement does not invalidate an admitted live pin. In-place
-writes and ACL changes propagate through hardlinks, including Bash/MSYS files.
-Non-anchor additions, removals or replacements may be missed during preparation
-or survive warm restart; setup is not an atomic source snapshot. Child module
-checks admit repairs and execution, not freshness. Ordinary nonzero command exits
-do not trigger rebuilding. Atomic current-record replacement is the publication
-boundary, without a power-loss durability guarantee.
+# Browser-integrated UAC verification
+DSH_GIT_BASH_UAC_TEST=deny pnpm test:browser
+DSH_GIT_BASH_UAC_TEST=approve pnpm test:browser
 
-Entering the `current.json` atomic-write phase is the cancellation cutoff. Before
-entry, cancellation prevents publication. Once entered, the factory drains the
-write and returns the published pin on success even if cancellation arrives;
-actual write or native cleanup failures still reject. Executor selection and
-shutdown guards still release stale pins and prevent cancelled commands from
-launching. Disposal waits for an initiated write rather than rolling it back.
-
-Preparation probes one Bash hardlink before inventory. Only a permission denial
-from that link creation selects the fixed elevated linker; a later failure never
-resets the base or triggers another UAC pass. The helper validates the immutable
-plan and existing NTFS identities, inventories independently and holds the plan
-exclusively while linking. Source contents and ACLs remain unchanged.
-
-The parent requires an uncancelled normal broker zero exit and DSH managed-range
-settlement before final admission and atomic publication of `current.json`.
-Provisioning retains the setup lease through the cache owner's synchronous final
-anchor/root validation, then checked-closes it before plan cleanup and publication.
-Failed target outcomes revoke setup without waiting for surviving managed work.
-Both linking callers revalidate their admitted source/base identities after
-inventory and before writing payload; this is not an atomic source snapshot.
-Cancellation closes the setup-only lease, then gives the broker a short grace
-before DSH termination/join. This does not promise dismissal of consent or exit
-of an independently elevated helper. Its revoked candidate stays unpublished;
-the exclusive plan handle prevents guarded GC/purge from traversing active payload.
-Once that obstruction clears, normal guarded recovery can remove the residue.
-
-Preparation and recovery do not run archived helpers. Warm hits do not create
-owner files, scan the tree, collect old generations or wait on the writer lock.
-Native fixture measurements are reported by the tests; 5 ms remains an
-unestablished target.
+# Supervisor benchmark
+node --test test/benchmark-supervisor.ts
+```

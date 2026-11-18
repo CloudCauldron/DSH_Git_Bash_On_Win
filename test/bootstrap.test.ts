@@ -246,7 +246,7 @@ await test('CLI identity validation rejects invalid selections without an instal
   });
 });
 
-await test('maintained compiler graphs, lint and emitted public exports exclude historical inputs', async () => {
+await test('maintained compiler graphs, lint and emitted public exports exclude non-production inputs from the package', async () => {
   for (const config of ['tsconfig.json', 'tsconfig.build.json']) {
     const filename = join(root, config);
     const raw = ts.readConfigFile(filename, ts.sys.readFile);
@@ -264,10 +264,10 @@ await test('maintained compiler graphs, lint and emitted public exports exclude 
       assert.ok(local.includes('test/bootstrap.test.ts'));
     }
     // TypeScript follows transitive imports even when tsconfig excludes them.
-    // Also reject literal runtime file/launch references to historical trees.
+    // Also reject literal runtime file/launch references to documentation and scratch directories.
     for (const source of program.getSourceFiles().filter(file => /^(src|scripts)\//.test(relative(root, file.fileName).replaceAll('\\', '/')))) {
       const visit = (node: ts.Node): void => {
-        if (ts.isStringLiteralLike(node)) assert.doesNotMatch(node.text, /(?:^|[\\/])(?:\.deprecated|tmp|poc)(?:[\\/]|$)/, source.fileName);
+        if (ts.isStringLiteralLike(node)) assert.doesNotMatch(node.text, /(?:^|[\\/])(?:docs|tmp)(?:[\\/]|$)/, source.fileName);
         if (ts.isStringLiteralLike(node) && /^error\.\w+$/.test(node.text)) assert.ok(Object.hasOwn(en, node.text), node.text);
         ts.forEachChild(node, visit);
       };
@@ -275,7 +275,7 @@ await test('maintained compiler graphs, lint and emitted public exports exclude 
     }
   }
   const eslint = new ESLint({ cwd: root });
-  for (const path of ['.deprecated/src/index.ts', 'tmp/probe.ts', 'poc/run.ts', 'lib/index.js']) assert.equal(await eslint.isPathIgnored(path), true);
+  for (const path of ['tmp/probe.ts', 'lib/index.js']) assert.equal(await eslint.isPathIgnored(path), true);
   assert.equal(await eslint.isPathIgnored('test/bootstrap.test.ts'), false);
   const outputs = filesUnder(join(root, 'lib'));
   const expected = filesUnder(join(root, 'src'))
@@ -370,7 +370,7 @@ await test('checkout install, offline recovery and removal preserve shared Shell
   assert.deepEqual(parse(readFileSync(patchPath, 'utf8')), patches);
   const profileRequire = createRequire(join(profile, 'package.json'));
   const packageRoot = dirname(realpathSync(profileRequire.resolve('dsh-git-bash-on-win/package.json')));
-  assert.deepEqual(readdirSync(packageRoot).sort(), ['README.md', 'cordis.patch.yml', 'lib', 'locale', 'package.json']);
+  assert.deepEqual(readdirSync(packageRoot).sort(), ['README.md', 'README_CN.md', 'cordis.patch.yml', 'lib', 'locale', 'package.json']);
   const builtFiles = filesUnder(join(root, 'lib'));
   assert.deepEqual(filesUnder(join(packageRoot, 'lib')), builtFiles);
   for (const file of ['cordis.patch.yml', ...builtFiles.map(name => join('lib', name))]) {
@@ -387,8 +387,8 @@ await test('checkout install, offline recovery and removal preserve shared Shell
     const { meta, messages } = JSON.parse(contents) as { meta: { title: string; description: string; detail: string }; messages: Record<string, string> };
     assert.equal(meta.title, lang === 'zh' ? 'Windows Git Bash' : 'Git Bash on Windows');
     assert.ok(meta.description.trim());
-    assert.equal(meta.detail, 'README.md');
-    assert.equal(readFileSync(join(packageRoot, meta.detail), 'utf8'), readFileSync(join(root, 'README.md'), 'utf8'));
+    assert.equal(meta.detail, lang === 'zh' ? 'README_CN.md' : 'README.md');
+    assert.deepEqual(readFileSync(join(packageRoot, meta.detail)), readFileSync(join(root, meta.detail)));
     return placeholders(messages);
   });
   assert.deepEqual(zh, en);

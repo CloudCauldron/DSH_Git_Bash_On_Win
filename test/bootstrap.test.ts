@@ -20,7 +20,7 @@ import * as Adapter from '../src/adapter.ts';
 import GitBashPreset from '../src/preset.ts';
 import * as BashTool from '../src/tool.ts';
 import { findInstalledDshManifest, installedDsh, SUPPORTED_DSH } from '../scripts/installed-dsh.ts';
-import { localSpawn, runtimeFixture, temporaryDirectory } from './fixtures.ts';
+import { localSpawn, runtimeFixture, temporaryDirectory, readAclRecords } from './fixtures.ts';
 import { pathExists } from '../src/runtime/ntfs-filesystem.ts';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -353,7 +353,12 @@ await test('checkout install, offline recovery and removal preserve shared Shell
   const profileRequire = createRequire(join(profile, 'package.json'));
   const packageRoot = dirname(realpathSync(profileRequire.resolve('dsh-git-bash-on-win/package.json')));
   assert.deepEqual(readdirSync(packageRoot).sort(), ['README.md', 'cordis.patch.yml', 'lib', 'locale', 'package.json']);
-  assert.deepEqual(filesUnder(join(packageRoot, 'lib')), filesUnder(join(root, 'lib')));
+  const builtFiles = filesUnder(join(root, 'lib'));
+  assert.deepEqual(filesUnder(join(packageRoot, 'lib')), builtFiles);
+  for (const file of ['cordis.patch.yml', ...builtFiles.map(name => join('lib', name))]) {
+    assert.deepEqual(readFileSync(join(packageRoot, file)), readFileSync(join(root, file)), file);
+  }
+  assert.deepEqual(JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8')), packageJson);
   assert.deepEqual(filesUnder(join(packageRoot, 'locale')), ['en.json', 'zh.json']);
   const placeholders = (messages: Record<string, string>) => Object.fromEntries(Object.entries(messages)
     .map(([key, value]) => [key, value.match(/{[a-zA-Z0-9_]+}/g)?.sort() ?? []]));
@@ -374,13 +379,14 @@ await test('checkout install, offline recovery and removal preserve shared Shell
   // not split the host's Cordis service or native Shell schema identities.
   const sourceFile = join(fixture.source, 'usr/bin/bash.exe');
   const before = { bytes: readFileSync(sourceFile), links: statSync(sourceFile).nlink,
-    acl: execFileSync('icacls.exe', [sourceFile], { encoding: 'utf8' }) };
+    acl: readAclRecords(sourceFile) };
   const identityEntry = join(fixture.directory, 'profile-identity.mjs');
   await writeFile(identityEntry, `
     import assert from 'node:assert/strict';
-    import { existsSync } from 'node:fs';
-    import { createRequire } from 'node:module';
-    import { join } from 'node:path';
+    import fs, { existsSync, readFileSync } from 'node:fs';
+    import { createRequire, syncBuiltinESMExports } from 'node:module';
+    import { join, toNamespacedPath } from 'node:path';
+    import { mock } from 'node:test';
     import { pathToFileURL } from 'node:url';
     import { Context } from ${JSON.stringify(pathToFileURL(runtime.baseRequire.resolve('@deepseek-ai/cordis')).href)};
     import { SandboxBashExecutor } from ${JSON.stringify(pathToFileURL(runtime.baseRequire.resolve('@deepseek-ai/dsh-bash-sandbox')).href)};
@@ -442,11 +448,24 @@ await test('checkout install, offline recovery and removal preserve shared Shell
       assert.equal((await rebuild('GET')).status, 404);
       assert.equal((await rebuild('POST', { principal: { kind: 'other' } })).status, 403);
       assert.equal(existsSync(join(dir, '.git-bash-on-win')), false, 'discovery and dictionary reads leave the runtime cold');
+      const patchFile = join(dir, 'cordis.patch.yml');
+      const beforeRead = readFileSync(patchFile, 'utf8');
+      // Observe the configured executable's existence check with the real executor active.
+      const stat = mock.method(fs, 'lstatSync');
+      syncBuiltinESMExports();
+      const probed = () => stat.mock.calls.some(call => call.arguments[0] === toNamespacedPath(shellConfig.gitBashPath));
+      const rebuilds = mock.method(Executor.prototype, 'rebuildRuntime');
+      assert.deepEqual(await (await get()).json(), { ok: true, dictionaries: { zh: messages('zh'), en: messages('en') } });
+      assert.equal(probed(), false);
+      assert.equal(rebuilds.mock.callCount(), 0);
+      assert.equal(readFileSync(patchFile, 'utf8'), beforeRead);
       const first = rebuild();
       const busy = await rebuild();
       assert.equal(busy.ok, false);
       assert.match(await busy.text(), /rebuilding is busy/);
       assert.equal((await first).status, 204);
+      assert.equal(probed(), true, 'explicit rebuild exercises the observed Git probe');
+      assert.equal(rebuilds.mock.callCount(), 2);
       await services.dispose();
       await ctx.loader.await();
       assert.equal((await rebuild()).status, 404, 'disposing the executor releases the route');
@@ -454,7 +473,7 @@ await test('checkout install, offline recovery and removal preserve shared Shell
       await profileScope.dispose();
       assert.equal((await get()).status, 404, 'the injection scope releases the route');
       for (const [name, field] of Object.entries(SandboxBashExecutor.Config.dict)) assert.equal(Executor.Config.dict[name], field);
-    } finally { await ctx.fiber.dispose(); }
+    } finally { mock.restoreAll(); syncBuiltinESMExports(); await ctx.fiber.dispose(); }
   `);
   const cache = join(profile, '.git-bash-on-win');
   const purge = () => run([process.execPath, join(packageRoot, 'lib/purge-runtime-cache.js'), cache]);
@@ -522,5 +541,5 @@ await test('checkout install, offline recovery and removal preserve shared Shell
   assert.match(restored.stdout, /timeoutMs: 12345/);
   assert.deepEqual(readFileSync(sourceFile), before.bytes);
   assert.equal(statSync(sourceFile).nlink, before.links);
-  assert.equal(execFileSync('icacls.exe', [sourceFile], { encoding: 'utf8' }), before.acl);
+  assert.equal(readAclRecords(sourceFile), before.acl);
 });

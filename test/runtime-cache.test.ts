@@ -6,7 +6,7 @@ import { link, mkdir, readFile, rename, stat, symlink, unlink, writeFile } from 
 import { dirname, join, toNamespacedPath } from 'node:path';
 import { syncBuiltinESMExports } from 'node:module';
 import { test } from 'node:test';
-import { nativeOnly, runtimeFixture } from './fixtures.ts';
+import { nativeOnly, runtimeFixture, readAclRecords } from './fixtures.ts';
 import { prepareRuntime, purgeRuntimeCache } from '../src/runtime/runtime-cache.ts';
 import { anchorPaths, discoverGitInstallation, inventoryGitFiles, linkFreshTree } from '../src/runtime/git-installation.ts';
 import {
@@ -225,7 +225,7 @@ await test('structural and read-only source failures never create an elevated at
 await test('cold commit, ownerless warm reuse, immutable expectations and explicit rebuild', nativeOnly, async t => {
   const fixture = await runtimeFixture(t), sourceFile = join(fixture.source, 'usr/bin/bash.exe');
   const content = await readFile(sourceFile), links = (await stat(sourceFile)).nlink;
-  const acl = execFileSync('icacls.exe', [sourceFile], { encoding: 'utf8' });
+  const acl = readAclRecords(sourceFile);
   const cold = await fixture.prepare(), initial = await fixture.current();
   const generation = join(fixture.cache, 'generations', initial.generationId);
   assert.deepEqual(readdirSync(generation), ['base']);
@@ -255,7 +255,7 @@ await test('cold commit, ownerless warm reuse, immutable expectations and explic
   assert.equal(pathExists(fixture.cache), false);
   assert.equal((await stat(sourceFile)).nlink, links);
   assert.deepEqual(await readFile(sourceFile), content);
-  assert.equal(execFileSync('icacls.exe', [sourceFile], { encoding: 'utf8' }), acl);
+  assert.equal(readAclRecords(sourceFile), acl);
 });
 
 await test('warm admission compares source and base to saved stamps, not only to each other', nativeOnly, async t => {

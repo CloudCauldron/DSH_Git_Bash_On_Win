@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import fs, { readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import fsp from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
@@ -11,7 +11,7 @@ import koffi from 'koffi';
 import { loadWin32ProcessBindings, Win32Error, type NativePtr } from '@deepseek-ai/dsh-win32-process';
 import type Subprocess from '@deepseek-ai/dsh-subprocess';
 import type { SubprocessHandle, SubprocessOutcome } from '@deepseek-ai/dsh-subprocess';
-import { localSpawn, nativeOnly, runtimeFixture } from './fixtures.ts';
+import { localSpawn, nativeOnly, runtimeFixture, readAclRecords } from './fixtures.ts';
 import { prepareRuntime, purgeRuntimeCache, type GenerationPin } from '../src/runtime/runtime-cache.ts';
 import { anchorPaths } from '../src/runtime/git-installation.ts';
 import {
@@ -491,7 +491,7 @@ await test('native broker launch and wait join through DSH before cache publicat
   const fixture = await runtimeFixture(t), restore = denyProbe(t);
   const bash = join(fixture.source, 'usr/bin/bash.exe');
   const content = readFileSync(bash), links = fs.statSync(bash).nlink;
-  const acl = execFileSync('icacls.exe', [bash], { encoding: 'utf8' });
+  const acl = readAclRecords(bash);
   const preload = join(fixture.directory, 'ordinary-shell-execute.mjs');
   // Change only the consent verb. The request ABI, process handle, wait/close,
   // fixed script argv and DSH outcome/range observation all remain native.
@@ -524,7 +524,7 @@ await test('native broker launch and wait join through DSH before cache publicat
     await purgeRuntimeCache(fixture.cache);
     assert.equal(fs.statSync(bash).nlink, links);
     assert.deepEqual(readFileSync(bash), content);
-    assert.equal(execFileSync('icacls.exe', [bash], { encoding: 'utf8' }), acl);
+    assert.equal(readAclRecords(bash), acl);
   } catch (error) { t.diagnostic(broker?.collected.stderr?.readFrom(0).text ?? ''); throw error; }
   finally { restore(); }
 });
@@ -540,7 +540,7 @@ if (process.env.DSH_GIT_BASH_UAC_TEST) {
     const { prepareRuntime: prepareBuilt } = await import(pathToFileURL(join(root, 'lib/runtime/runtime-cache.js')).href) as typeof import('../src/runtime/runtime-cache.ts');
     const bash = join(fixture.source, 'usr/bin/bash.exe');
     const before = { bytes: readFileSync(bash), links: fs.statSync(bash).nlink,
-      acl: execFileSync('icacls.exe', [bash], { encoding: 'utf8' }) };
+      acl: readAclRecords(bash) };
     let pin: GenerationPin | undefined;
     console.error(choice === 'late'
       ? 'Leave consent pending for 10 seconds. Approve only after LOCAL SHUTDOWN COMPLETED appears below; finish any prompt within the following 20 seconds.'
@@ -570,7 +570,7 @@ if (process.env.DSH_GIT_BASH_UAC_TEST) {
     assert.equal(pathExists(fixture.cache), false);
     assert.deepEqual(readFileSync(bash), before.bytes);
     assert.equal(fs.statSync(bash).nlink, before.links);
-    assert.equal(execFileSync('icacls.exe', [bash], { encoding: 'utf8' }), before.acl);
+    assert.equal(readAclRecords(bash), before.acl);
   });
 }
 

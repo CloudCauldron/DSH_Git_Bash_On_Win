@@ -80,6 +80,7 @@ await test('Save and link fences the path write and rebuilds once after confirma
   await act(async () => { edit('C:/Git'); });
   await act(async () => { publish({ revision: 4, value: { gitBashPath: 'from Host' } }); });
   await act(async () => { edit(text); language = 'zh'; renderer.update(page()); });
+  assert.deepEqual(renderer.root.findByType('label').children, [dictionaries.zh['path.label']]);
   assert.equal(input().props.placeholder, dictionaries.zh['path.placeholder']);
   assert.deepEqual(button().children, [dictionaries.zh['action.saveLink']]);
   assert.equal(input().props.value, text);
@@ -166,5 +167,24 @@ await test('Save and link fences the path write and rebuilds once after confirma
   assert.ok(status().includes(dictionaries.zh['link.ok']!));
   assert.equal(rebuild.mock.callCount(), 6);
   assert.equal(mutate.mock.callCount(), 4, 'manual retries use the saved path without writing again');
+  await act(async () => { edit('another path'); });
+  mutate.mock.mockImplementationOnce(async () => {
+    publish({ status: 'unavailable', revision: 9 });
+    return false;
+  });
+  await act(async () => { click(); });
+  assert.equal(input().props.value, 'another path');
+  assert.ok(status().includes(dictionaries.zh['save.failed']!.replace('{reason}', dictionaries.zh['form.unavailable']!)));
+  await act(async () => { publish({ status: 'ready', revision: 10 }); });
+  mutate.mock.mockImplementationOnce(async () => { throw new Error('offline'); });
+  await act(async () => { click(); });
+  assert.equal(mutate.mock.calls.at(-1)!.arguments[1], 8, 'an unavailable recovery snapshot preserves the draft fence');
+  await act(async () => { publish({ revision: 11, value: { gitBashPath: 'Host path' } }); });
+  mutate.mock.mockImplementationOnce(async () => false);
+  await act(async () => { click(); });
+  assert.equal(mutate.mock.calls.at(-1)!.arguments[1], 8, 'a transport error preserves the draft fence');
+  assert.ok(status().includes(dictionaries.zh['save.review']!.replace('{path}', 'Host path')));
+  assert.equal(input().props.value, 'another path');
+  assert.equal(rebuild.mock.callCount(), 6);
   assert.equal(fetch.mock.callCount(), 1 + rebuild.mock.callCount(), 'one dictionary read per activation');
 });

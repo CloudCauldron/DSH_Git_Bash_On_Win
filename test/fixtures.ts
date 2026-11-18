@@ -15,6 +15,14 @@ import { admitDirectory, removeTree } from '../src/runtime/ntfs-filesystem.ts';
 import { prepareRuntime, purgeRuntimeCache, type GenerationPin, type RuntimePreparation } from '../src/runtime/runtime-cache.ts';
 import { anchorPaths, discoverGitInstallation, inventoryGitFiles, type AnchorStamps, type GitLayout } from '../src/runtime/git-installation.ts';
 
+/** Keep every ACL record. icacls localizes its final success count to the console language. */
+export function readAclRecords(path: string, recursive = false): string {
+  const report = execFileSync('icacls.exe', recursive ? [path, '/T'] : [path], { encoding: 'latin1', maxBuffer: 32 * 1024 * 1024 });
+  const footer = report.trimEnd().lastIndexOf('\n');
+  assert.ok(footer > 0, 'icacls must return ACL records before its summary');
+  return report.slice(0, footer);
+}
+
 /** Ordinary bootstrap files only. Native cache fixtures must use guarded purge. */
 export async function temporaryDirectory(t: TestContext): Promise<string> {
   const directory = await mkdtemp(join(tmpdir(), 'dsh-git-bash-bootstrap-'));
@@ -138,7 +146,7 @@ export async function executionFixture(t: TestContext) {
         links: (await stat(join(source, file))).nlink,
       }))));
     }
-    return { contents, acl: execFileSync('icacls.exe', [source, '/T'], { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 }) };
+    return { contents, acl: readAclRecords(source, true) };
   };
   const before = await snapshot();
   verifySource = async () => {

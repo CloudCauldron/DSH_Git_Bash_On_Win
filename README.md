@@ -5,7 +5,8 @@ Experimental Git Bash backend for native Windows x64, Node 26+ and DSH
 shared executor readiness, explicit rebuilding, scoped views, native Bash
 execution and strict offline cache purge. In DSH Web, open the sidebar, choose
 **Plugins**, then select **Git Bash on Windows** under installed plugins to read
-this README. The **Git Bash path** field appears below it.
+this README. The **Git Bash path** field and **Save and link** button appear
+below it. Keep the current path and click the button to rebuild its hard links.
 
 The approved [roadmap](docs/backend-20261117-refactor-roadmap.md),
 [contract baseline](docs/backend-20261117-contract-baseline.md) and
@@ -242,8 +243,9 @@ ordinary plan unlink and native generation claims; a busy pin or plan prevents
 completion. Deletion uses checked `DeleteFileW`/`RemoveDirectoryW` calls without
 attribute repair; read-only files cause an explicit obstruction. Enumerated names
 are addressed exactly, including unusual trailing characters. After an obstruction
-clears, rerun purge. For offline rebuilding,
-retain the package and settings. The next Bash call lazily prepares a fresh runtime.
+clears, rerun purge. For offline rebuilding, retain the package and settings.
+After purge succeeds, restart DSH. The next Bash command prepares a fresh
+runtime, or you can click **Save and link** to rebuild immediately.
 
 | Obstruction | Recovery |
 | --- | --- |

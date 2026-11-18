@@ -1,3 +1,5 @@
+import { readFile } from 'node:fs/promises';
+import type {} from '@deepseek-ai/dsh-client-connection';
 import type { Context } from '@deepseek-ai/cordis';
 import type { Entry } from '@deepseek-ai/cordis-plugin-loader';
 import type { SubprocessSpawnSpec } from '@deepseek-ai/dsh-subprocess';
@@ -27,6 +29,14 @@ export function commandReceiver<T extends object>(receiver: T, ctx: Context, onR
 }
 
 export const inject = { loader: { await: false } };
+
+async function readMessages(language: 'zh' | 'en'): Promise<Record<string, string>> {
+  const file = new URL(`../locale/${language}.json`, import.meta.url);
+  const { messages } = JSON.parse(await readFile(file, 'utf8')) as { messages: Record<string, string> };
+  if (!messages || typeof messages !== 'object' || Array.isArray(messages)
+    || !Object.values(messages).every(message => typeof message === 'string')) throw new Error('Invalid Git Bash locale dictionary.');
+  return messages;
+}
 
 /** Mount replacement providers in native entries, preserving their settings identity. */
 export async function apply(ctx: Context): Promise<void> {
@@ -72,4 +82,19 @@ export async function apply(ctx: Context): Promise<void> {
   }
   if (!changed.some(({ entry }) => entry.options.id === 'pwsh-sandbox')) throw new Error('The native pwsh-sandbox entry is required.');
   ctx.provide('gitBashAdapter', {});
+  if (process.arch === 'x64') {
+    ctx.inject(['profileContext', 'connection'], scope => {
+      scope.connection.fetch.register({
+        path: '/api/git-bash-on-win/locales', methods: ['GET'], requestBody: 'buffered',
+        async fetch() {
+          try {
+            const [zh, en] = await Promise.all([readMessages('zh'), readMessages('en')]);
+            return Response.json({ ok: true, dictionaries: { zh, en } });
+          } catch {
+            return Response.json({ ok: false }, { status: 500 });
+          }
+        },
+      });
+    });
+  }
 }

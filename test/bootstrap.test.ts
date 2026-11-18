@@ -186,7 +186,7 @@ await test('the classic client registers dictionaries and the bundle slot after 
   request.mock.mockImplementationOnce(() => new Promise(resolve => { respond = resolve; }));
   const pending = plugin.apply(context);
   await fiber.dispose();
-  respond(Response.json({ ok: true, dictionaries }));
+  respond(new Response(null, { status: 503 }));
   await pending;
   assert.equal(registerLocale.mock.callCount(), 2);
   assert.equal(disposeLocale.mock.callCount(), 2);
@@ -381,6 +381,8 @@ await test('checkout install, offline recovery and removal preserve shared Shell
     import { Context } from ${JSON.stringify(pathToFileURL(runtime.baseRequire.resolve('@deepseek-ai/cordis')).href)};
     import { SandboxBashExecutor } from ${JSON.stringify(pathToFileURL(runtime.baseRequire.resolve('@deepseek-ai/dsh-bash-sandbox')).href)};
     import Loader from ${JSON.stringify(pathToFileURL(runtime.cliRequire.resolve('@deepseek-ai/cordis-plugin-loader')).href)};
+    import * as Connection from ${JSON.stringify(pathToFileURL(runtime.cliRequire.resolve('@deepseek-ai/dsh-client-connection')).href)};
+    import Credentials from ${JSON.stringify(pathToFileURL(runtime.baseRequire.resolve('@deepseek-ai/dsh-credentials-local')).href)};
     import ClientModules from ${JSON.stringify(pathToFileURL(runtime.cliRequire.resolve('@deepseek-ai/dsh-client-modules')).href)};
     import { PluginPackages, createRuntimeResolution, loadProfileDirectory } from ${JSON.stringify(pathToFileURL(runtime.cliRequire.resolve('@deepseek-ai/dsh-app-boot')).href)};
     const [dir, home, installAnchor] = process.argv.slice(2), ctx = new Context();
@@ -406,11 +408,30 @@ await test('checkout install, offline recovery and removal preserve shared Shell
       await ctx.plugin(ClientModules);
       assert.deepEqual(ctx.clientModules.graph().entries.map(row => row.id), ['dsh-git-bash-on-win']);
       assert.equal(ctx.clientModules.clientPath('dsh-git-bash-on-win'), require.resolve('dsh-git-bash-on-win/client'));
+      await ctx.plugin(Credentials);
+      await ctx.plugin(Connection);
+      const routes = ctx.connection.createSharedFetchHandler('/api');
+      const url = 'http://localhost/api/git-bash-on-win/locales';
+      const get = (method = 'GET', peer = ctx.connection.browserPeer) => routes.fetch(new Request(url, { method }), peer);
+      assert.equal((await get()).status, 404, 'no route outside a profile');
+      const profileScope = ctx.plugin(scope => { scope.provide('profileContext', { dir }); });
+      await profileScope;
+      await ctx.loader.await();
+      assert.equal((await get('POST')).status, 404);
+      assert.equal((await get('GET', { principal: { kind: 'other' } })).status, 403);
+      const response = await get();
+      assert.equal(response.status, 200);
+      const messages = lang => require('dsh-git-bash-on-win/locale/' + lang + '.json').messages;
+      assert.deepEqual(await response.json(), { ok: true, dictionaries: { zh: messages('zh'), en: messages('en') } });
+      await profileScope.dispose();
+      assert.equal((await get()).status, 404, 'the injection scope releases the route');
       for (const [name, field] of Object.entries(SandboxBashExecutor.Config.dict)) assert.equal(Executor.Config.dict[name], field);
     } finally { await ctx.fiber.dispose(); }
   `);
   success(await run([process.execPath, identityEntry, profile, home, runtime.manifest]));
   const cache = join(profile, '.git-bash-on-win');
+  assert.equal(pathExists(cache), false, 'discovery and dictionary reads leave the runtime cold');
+  assert.deepEqual(parse(readFileSync(patchPath, 'utf8')), patches);
   const sourceFile = join(fixture.source, 'usr/bin/bash.exe');
   const before = { bytes: readFileSync(sourceFile), links: statSync(sourceFile).nlink,
     acl: execFileSync('icacls.exe', [sourceFile], { encoding: 'utf8' }) };

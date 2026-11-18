@@ -5,7 +5,7 @@ Experimental Git Bash backend for native Windows x64, Node 26+ and DSH
 shared executor readiness, explicit rebuilding, scoped views, native Bash
 execution and strict offline cache purge. In DSH Web, open the sidebar, choose
 **Plugins**, then select **Git Bash on Windows** under installed plugins to read
-this README. The path editor and online rebuild button are planned.
+this README. The **Git Bash path** field appears below it.
 
 The approved [roadmap](docs/backend-20261117-refactor-roadmap.md),
 [contract baseline](docs/backend-20261117-contract-baseline.md) and
@@ -139,9 +139,16 @@ Installation and replacement retain the profile cache. The removal wrapper
 purges it before removing the package. A live pin or unowned cache blocks removal.
 Restart DSH unelevated after installation or bundle enable/disable changes.
 
-For a nonstandard Git installation, set `gitBashPath` on the existing
-`pwsh-sandbox` row through DSH's native configuration editor. Both `bin/bash.exe`
-and `usr/bin/bash.exe` are accepted. A manual profile override can look like:
+For a nonstandard Git installation, enter the path to `bin/bash.exe` or
+`usr/bin/bash.exe` on the plugin page and click **Save and link**. In this
+version the button saves the path. The next Bash command prepares the runtime
+on demand. Saving a blank field clears the profile override and restores the
+inherited path, or automatic discovery when no path is inherited. If DSH
+reports a configuration conflict, review the last confirmed path before retrying.
+Shared command timeouts and output limits remain on DSH's **Shell** page.
+
+The field belongs to the existing `pwsh-sandbox` row. A manual profile override
+can look like:
 
 ```yaml
 - id: pwsh-sandbox
@@ -166,8 +173,8 @@ additional volatile `gitBashPath` setting; presets and tools reuse DSH modules.
 The Loader mounts the adapter at the package root so DSH can discover its web
 client. Code importing the executor class or its `Config` type uses
 `dsh-git-bash-on-win/executor`. The client registers its configuration slot
-after loading the dictionaries. The Host dictionary endpoint is planned for the
-next implementation step.
+after reading the bundled English and Chinese dictionaries through DSH Connection.
+Changing the interface language preserves the current draft.
 
 Compatibility work stays within DSH's Windows Git Bash process family.
 Ordinary Git Bash, other hosts, WSL and non-Windows DSH must remain unaffected.

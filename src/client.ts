@@ -10,32 +10,104 @@ window.__ModuleLoader__.load({
   factory(require) {
     const ns = 'dsh-git-bash-on-win';
     const React = require('react') as typeof import('react');
-    const { Tag } = require('@deepseek-ai/dsh-client-ui-primitives') as {
-      Tag: import('react').ComponentType<import('react').PropsWithChildren>;
+    const { Input, Button } = require('@deepseek-ai/dsh-client-ui-primitives') as {
+      Input: import('react').ComponentType<import('react').ComponentProps<'input'>>;
+      Button: import('react').ComponentType<import('react').ComponentProps<'button'>>;
     };
 
     type Messages = Record<string, string>;
-    type FormStatus = 'loading' | 'ready' | 'unavailable';
+    type ShellSettings = { gitBashPath?: string };
+    type ShellForm = import('@deepseek-ai/dsh-client-ui-settings/client').ConfigForm<ShellSettings>;
+    type Snapshot = ReturnType<ShellForm['getSnapshot']>;
+    type Feedback = { key: 'save.review'; path?: string } | { key: 'save.failed'; reason?: string };
     interface PageProps {
-      t(key: string): string;
-      useShellForm<T>(select: (snapshot: { status: FormStatus }) => T): T;
+      t(key: string, params?: Record<string, string>): string;
+      shellForm: ShellForm;
+      useShellForm<T>(select: (snapshot: Snapshot) => T): T;
     }
-    interface ClientContext extends Pick<import('@deepseek-ai/cordis').Context, 'fiber' | 'effect'> {
+    interface ClientContext extends Pick<import('@deepseek-ai/cordis').Context, 'fiber' | 'effect' | 'configForms'> {
       locale: { register(ns: string, lang: string, messages: Messages): () => void };
-      configForms: { get(id: string): unknown };
       slots: {
         inject(name: string, setup: () => void): void;
         register(entry: {
           name: string; key: string; locale: string;
-          inject(): { shellForm: unknown; hooks: { shellForm: unknown } };
+          inject(): { shellForm: ShellForm; hooks: { shellForm: ShellForm } };
         }, component: typeof GitBashPage): void;
       };
     }
 
-    function GitBashPage({ t, useShellForm }: PageProps) {
-      const status = useShellForm(snapshot => snapshot.status);
-      if (status === 'ready') return null;
-      return React.createElement(Tag, null, t('form.' + status));
+    function pathChange(text: string, snapshot: Snapshot) {
+      if (!text.trim()) {
+        if (snapshot.user && Object.hasOwn(snapshot.user, 'gitBashPath')) return { op: 'unset' as const, path: ['gitBashPath'] };
+      } else if (text !== snapshot.value?.gitBashPath) {
+        return { op: 'set' as const, path: ['gitBashPath'], value: text };
+      }
+    }
+
+    function GitBashPage({ t, shellForm, useShellForm }: PageProps) {
+      const snapshot = useShellForm(s => s);
+      const [draft, setDraft] = React.useState<{ text: string; revision: number | undefined }>();
+      const [feedback, setFeedback] = React.useState<Feedback>();
+      const [saving, setSaving] = React.useState(false);
+      const locked = React.useRef(false);
+      const inputId = React.useId();
+      const value = draft?.text ?? snapshot.value?.gitBashPath ?? '';
+      const disabled = saving || snapshot.status !== 'ready';
+
+      async function save() {
+        if (locked.current) return;
+        const latest = shellForm.getSnapshot();
+        if (latest.status !== 'ready') return;
+        const text = draft?.text ?? latest.value?.gitBashPath ?? '';
+        const change = pathChange(text, latest);
+        if (change && !latest.writable) return;
+        const revision = draft ? draft.revision : latest.revision;
+        locked.current = true;
+        setSaving(true);
+        setFeedback(undefined);
+        try {
+          if (change && !await shellForm.mutate([change], revision)) {
+            const confirmed = shellForm.getSnapshot();
+            if (confirmed.status === 'ready') {
+              setDraft({ text, revision: confirmed.revision });
+              setFeedback({ key: 'save.review', path: confirmed.value?.gitBashPath });
+            } else {
+              setDraft({ text, revision });
+              setFeedback({ key: 'save.failed' });
+            }
+            return;
+          }
+          setDraft(undefined);
+        } catch (error) {
+          setDraft({ text, revision });
+          setFeedback({ key: 'save.failed', reason: error instanceof Error ? error.message : String(error) });
+        } finally {
+          locked.current = false;
+          setSaving(false);
+        }
+      }
+
+      const status = snapshot.status !== 'ready' ? 'form.' + snapshot.status : !snapshot.writable ? 'form.readOnly' : undefined;
+      const h = React.createElement;
+      return h('div', null,
+        h('label', { htmlFor: inputId }, t('path.label')),
+        h('div', { style: { display: 'flex', alignItems: 'center', gap: '0.5rem' } },
+          h(Input, { id: inputId, value, placeholder: t('path.placeholder'), disabled: disabled || !snapshot.writable,
+            onChange(event) {
+              const text = event.currentTarget.value;
+              setDraft(previous => ({ text, revision: previous ? previous.revision : snapshot.revision }));
+              setFeedback(undefined);
+            },
+          }),
+          h(Button, { type: 'button', disabled: disabled || (!snapshot.writable && !!pathChange(value, snapshot)),
+            onClick: () => { void save(); },
+          }, t('action.saveLink')),
+        ),
+        status && h('p', { role: 'status' }, t(status)),
+        feedback && h('p', { role: 'status' }, feedback.key === 'save.review'
+          ? t(feedback.key, { path: feedback.path || t('path.empty') })
+          : t(feedback.key, { reason: feedback.reason ?? t('form.unavailable') })),
+      );
     }
 
     function isDictionary(value: unknown): value is Messages {
@@ -47,6 +119,7 @@ window.__ModuleLoader__.load({
       inject: ['slots', 'configForms', 'locale'],
       async apply(ctx: ClientContext) {
         const response = await fetch('api/git-bash-on-win/locales', { cache: 'no-store' });
+        if (ctx.fiber.uid === null) return;
         if (!response.ok) throw new Error(`Git Bash locales: HTTP ${response.status}`);
         const data = await response.json() as { ok?: boolean; dictionaries?: { zh?: unknown; en?: unknown } } | null;
         if (ctx.fiber.uid === null) return;
@@ -57,7 +130,7 @@ window.__ModuleLoader__.load({
         for (const [lang, messages] of Object.entries({ zh, en })) {
           ctx.effect(() => ctx.locale.register(ns, lang, messages));
         }
-        const form = ctx.configForms.get('pwsh-sandbox');
+        const form = ctx.configForms.get<ShellSettings>('pwsh-sandbox');
         ctx.slots.inject('plugins.bundle.config', () => ctx.slots.register({
           name: 'plugins.bundle.config', key: ns, locale: ns,
           inject: () => ({ shellForm: form, hooks: { shellForm: form } }),

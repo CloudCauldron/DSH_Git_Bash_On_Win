@@ -1,3 +1,4 @@
+import { statSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import { installedDsh } from './installed-dsh.ts';
 import { purgeRuntimeCache } from '../src/runtime/runtime-cache.ts';
@@ -7,9 +8,10 @@ import { purgeRuntimeCache } from '../src/runtime/runtime-cache.ts';
 const [pnpm, profile, operation, target, ...extra] = process.argv.slice(2);
 const packageName = 'dsh-git-bash-on-win';
 if (!pnpm || !isAbsolute(pnpm) || !profile || extra.length
-  || !(operation === 'add' && target && isAbsolute(target) && target.endsWith('.tgz')
+  || !(operation === 'add' && target?.startsWith('file:') && isAbsolute(target.slice(5))
+    && statSync(target.slice(5), { throwIfNoEntry: false })?.isDirectory()
     || operation === 'remove' && target === packageName)) {
-  throw new Error('Usage: node scripts/plugin.ts <absolute pnpm.exe> <profile> <add <absolute .tgz> | remove dsh-git-bash-on-win>');
+  throw new Error('Usage: node scripts/plugin.ts <absolute pnpm.exe> <profile> <add file:<absolute checkout> | remove dsh-git-bash-on-win>');
 }
 const runtime = installedDsh();
 const { resolveProfileDir } = await runtime.load(runtime.cliRequire, '@deepseek-ai/dsh-app-boot') as {

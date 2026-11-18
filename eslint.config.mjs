@@ -5,7 +5,7 @@ import tseslint from 'typescript-eslint';
 
 export default defineConfig(
   includeIgnoreFile(resolve(import.meta.dirname, '.gitignore')),
-  { ignores: ['.deprecated/**', 'tmp/**', 'poc/**', 'lib/**', 'artifacts/**'] },
+  { ignores: ['.deprecated/**', 'tmp/**', 'poc/**', 'lib/**'] },
   { files: ['eslint.config.mjs'], extends: [js.configs.recommended] },
   {
     files: ['{src,test,scripts}/**/*.ts'],

@@ -14,7 +14,7 @@ import type { ShellExecRequest, ShellExecution } from '@deepseek-ai/dsh-shell';
 import type Subprocess from '@deepseek-ai/dsh-subprocess';
 import type { SubprocessHandle, SubprocessOutcome, SubprocessSpawnSpec } from '@deepseek-ai/dsh-subprocess';
 import { runPrivateBash, type PrivateFamilyExit } from '../src/debugger/process-family.ts';
-import { debugApi, descriptorText, wide, writeMemory } from '../src/debugger/native-debug.ts';
+import { debugApi, descriptorText, ThreadContext, wide, writeMemory } from '../src/debugger/native-debug.ts';
 import { extendWin32ProcessBindings, Win32Error, type NativePtr } from '@deepseek-ai/dsh-win32-process';
 import GitBashExecutor from '../src/index.ts';
 import { buildRuntimeEnvironment } from '../src/runtime/git-installation.ts';
@@ -595,6 +595,28 @@ await test('local SDDL reading bounds the reported extent and always frees its a
     assert.equal(free.mock.callCount(), 1);
     assert.deepEqual(free.mock.calls[0]!.arguments, [address]);
   });
+});
+
+await test('repeated arming skips identical live breakpoints and restores changed state', nativeOnly, t => {
+  const ctx = new ThreadContext(), thread = 1n as NativePtr;
+  t.after(() => ctx.close());
+  t.mock.method(ctx, 'load', () => {});
+  const save = t.mock.method(ctx, 'save', () => {});
+  ctx.write64(72, 1234n); ctx.write64(104, 0xffff0ff0n); ctx.write64(112, 0x401n);
+
+  assert.throws(() => ctx.arm(thread, [1234n], false), /pre-existing/);
+  ctx.arm(thread, [1234n], true);
+  assert.equal(save.mock.callCount(), 0);
+  ctx.write64(112, 0n); // The desired address is unchanged, but the thread lost its enable bit.
+  ctx.arm(thread, [1234n], true);
+  assert.equal(save.mock.callCount(), 1);
+  assert.equal(ctx.read64(112), 1n);
+  ctx.arm(thread, [5678n], true);
+  assert.equal(ctx.read64(72), 5678n);
+  ctx.write64(104, 1n); // Pending debug status still needs clearing.
+  ctx.arm(thread, [5678n], true);
+  assert.equal(ctx.read64(104), 0n);
+  assert.equal(save.mock.callCount(), 3);
 });
 
 await test('remote Unicode reading respects chunk, page and WCHAR boundaries', nativeOnly, () => {

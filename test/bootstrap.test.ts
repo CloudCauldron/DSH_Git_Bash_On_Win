@@ -194,7 +194,7 @@ await test('maintained compiler graphs, lint and emitted public exports exclude 
   assert.equal(Object.getPrototypeOf(built.default), SandboxBashExecutor);
 });
 
-await test('execution uses native DSH policy; package inputs are confined and purge refuses an unowned directory', async t => {
+await test('execution uses native DSH policy and purge refuses an unowned directory', async t => {
   assert.equal(GitBashExecutor.prototype.execute, SandboxBashExecutor.prototype.execute);
   const directory = await temporaryDirectory(t);
   const sentinel = join(directory, 'owned.txt');
@@ -203,7 +203,8 @@ await test('execution uses native DSH policy; package inputs are confined and pu
   assert.equal(cleanup.error, undefined);
   assert.equal(cleanup.status, 1);
   assert.match(cleanup.stderr, /uninstallation are incomplete/);
-  for (const operation of [['add', root], ['remove', 'another-package'], ['--silent', 'remove', 'dsh-git-bash-on-win'],
+  for (const operation of [['add', root], ['add', 'file:relative'], ['add', 'file:' + join(root, 'package.json')],
+    ['remove', 'another-package'], ['--silent', 'remove', 'dsh-git-bash-on-win'],
     ['remove', 'dsh-git-bash-on-win', '--dir', directory]]) {
     const plugin = spawnSync(process.execPath, [join(root, 'scripts/plugin.ts'), process.execPath, 'bootstrap', ...operation], {
       encoding: 'utf8', timeout: 30_000,
@@ -215,20 +216,9 @@ await test('execution uses native DSH policy; package inputs are confined and pu
   }
   assert.deepEqual(filesUnder(directory), ['owned.txt']);
   assert.equal(readFileSync(sentinel, 'utf8'), 'unowned directory must be retained');
-  const pnpm = process.env.npm_execpath ?? (process.platform === 'win32' ? 'pnpm.exe' : 'pnpm');
-  const args = /\.[cm]?js$/.test(pnpm) ? [pnpm] : [];
-  const executable = args.length ? process.execPath : pnpm;
-  const packed = JSON.parse(execFileSync(executable, [...args, '--ignore-scripts', 'pack', '--dry-run', '--json'], {
-    cwd: root, encoding: 'utf8', timeout: 30_000,
-  })) as { files: Array<{ path: string }> };
-  const files = packed.files.map(file => file.path).sort();
-  const expected = ['README.md', 'package.json', 'cordis.patch.yml',
-    ...filesUnder(join(root, 'lib')).map(file => `lib/${file}`)].sort();
-  assert.deepEqual(files, expected);
-  assert.ok(files.every(file => dirname(file) === '.' || file.startsWith('lib/')));
 });
 
-await test('packed install, offline recovery and removal preserve shared Shell settings and source files', {
+await test('checkout install, offline recovery and removal preserve shared Shell settings and source files', {
   skip: !nativeWindows && 'Requires native Windows x64, pinned DSH and pnpm.',
 }, async t => {
   const spawn = await localSpawn(t); if (!spawn) return;
@@ -264,18 +254,18 @@ await test('packed install, offline recovery and removal preserve shared Shell s
   const success = (result: { exitCode: number | null; stdout: string; stderr: string }) => {
     assert.equal(result.exitCode, 0, result.stdout + result.stderr);
   };
-  // prepack is checked separately; invoking it here would rebuild under other tests.
-  const packed = await run([pnpm, '--ignore-scripts', 'pack', '--pack-destination', fixture.directory, '--json'], root);
-  success(packed);
-  const tarball = join(fixture.directory, readdirSync(fixture.directory).find(name => name.endsWith('.tgz'))!);
+  const checkout = 'file:' + resolve(root).replaceAll('\\', '/');
   const operation = (verb: 'add' | 'remove', target: string) => run([process.execPath, join(root, 'scripts/plugin.ts'), pnpm, 'integration', verb, target]);
-  success(await operation('add', tarball));
+  success(await operation('add', checkout));
   const manifest = () => JSON.parse(readFileSync(join(profile, 'package.json'), 'utf8')) as {
     dependencies?: Record<string, string>; dsh: { profile: { bundles: string[] } };
   };
   assert.ok(manifest().dsh.profile.bundles.includes('dsh-git-bash-on-win'));
+  assert.match(manifest().dependencies?.['dsh-git-bash-on-win'] ?? '', /^file:/);
   assert.deepEqual(parse(readFileSync(patchPath, 'utf8')), patches);
   const packageRoot = dirname(realpathSync(createRequire(join(profile, 'package.json')).resolve('dsh-git-bash-on-win/package.json')));
+  assert.deepEqual(readdirSync(packageRoot).sort(), ['README.md', 'cordis.patch.yml', 'lib', 'package.json']);
+  assert.deepEqual(filesUnder(join(packageRoot, 'lib')), filesUnder(join(root, 'lib')));
   // Exercise DSH's real profile resolver: adding standalone dependencies must
   // not split the host's Cordis service or native Shell schema identities.
   const identityEntry = join(fixture.directory, 'profile-identity.mjs');
@@ -321,7 +311,7 @@ await test('packed install, offline recovery and removal preserve shared Shell s
     assert.ok(pathExists(join(cache, 'current.json')));
   } finally { await pin.release(); }
   const current = readFileSync(join(cache, 'current.json'), 'utf8');
-  success(await operation('add', tarball));
+  success(await operation('add', checkout));
   assert.equal(readFileSync(join(cache, 'current.json'), 'utf8'), current, 'package installation retains the profile cache');
   const cleanup = () => run([process.execPath, join(packageRoot, 'lib/cleanup.js'), cache]);
   success(await cleanup());

@@ -24,10 +24,14 @@ pnpm lint
 pnpm test:windows
 ```
 
+`lib/` is tracked in Git. After editing `src/`, run `pnpm build` and include
+the regenerated JavaScript and declarations with the source change.
 `pnpm build` cleans `lib/` before compiling only `src/`. `pnpm check` and lint
 also cover `scripts/` and `test/`; `pnpm test` rebuilds and runs maintained
 `node --test` cases. The TypeScript 7 compiler uses the `@typescript/native`
 alias; TypeScript 6 supplies the API required by typescript-eslint.
+The [supervisor benchmark](docs/supervisor-benchmark.md) reports Windows command
+latency, launcher memory and CPU measurements, with steps to reproduce them.
 Public DSH dependencies, including `@deepseek-ai/dsh-atomic-write`, are pinned.
 Standalone launcher, broker, helper and cleanup imports are installed as explicit
 dependencies, including their runtime peer requirements. Host-facing peer
@@ -103,39 +107,34 @@ These manual checks are not run by automated packaging.
 If discovery is ambiguous, set `DSH_PACKAGE_JSON` for the current process to the
 absolute installed `@deepseek-ai/dsh/package.json`. The selected CLI must match
 the pinned release. Only an absent CLI skips the installed-CLI test; ambiguous,
-invalid or broken installations fail validation. Packed-install tests use the
+invalid or broken installations fail validation. Checkout installation tests use the
 official DSH package operation in an isolated profile with private pnpm storage.
-They exercise real tarball installation, standalone script resolution, profile-cache
+They exercise local `file:` installation, standalone script resolution, profile-cache
 purge, blocked removal, bundle restoration and preservation of shared Shell
 settings after removing the plugin-only override. No personal profile is opened.
 
-Production package inputs are limited to `lib/`, `cordis.patch.yml`, `README.md`
-and the manifest. `pnpm --ignore-scripts pack --dry-run --json` audits that allowlist.
-`prepack` runs typecheck, lint and a clean production build. Before producing a
-release artifact, run `pnpm test:release`: it also requires supported Windows,
-installed pinned DSH and supported Git before running the maintained suite, so
-missing native prerequisites cannot silently skip release verification.
+The installation test checks the files in the installed package against the
+tracked build output, `cordis.patch.yml`, `README.md` and the manifest.
+`pnpm test:release` verifies the supported Windows, DSH and Git prerequisites,
+then runs type checking, lint, a clean build and the maintained test suite.
 
-## Packaging and installation
+## Installing from the checkout
 
-In Windows-native Git Bash:
+From the repository root in Windows-native Git Bash, register the checkout
+with the intended DSH profile. The tracked `lib/` contains the runtime.
+The wrapper passes an absolute pnpm executable to the DSH plugin manager.
 
 ```bash
-pnpm test:release
-pnpm pack --pack-destination artifacts
+pnpm install --ignore-scripts --frozen-lockfile
 gitbash_pnpm="$(cygpath -m "$(type -P pnpm.exe)")"
-node scripts/plugin.ts "$gitbash_pnpm" web add "$(cygpath -m "$PWD/artifacts/dsh-git-bash-on-win-0.1.0-experimental.1.tgz")"
+node scripts/plugin.ts "$gitbash_pnpm" web add "file:$(cygpath -m "$PWD")"
 ```
 
-Choose the intended profile instead of `web`. The repository wrapper delegates to
-the pinned DSH public plugin-manager operation, including compatibility checks and
-bundle reconciliation, using an absolute pnpm executable. It accepts only `add`
-with an absolute tarball path or `remove dsh-git-bash-on-win`; lifecycle scripts
-are disabled and arbitrary pnpm flags are not forwarded. Where native executable
-lookup works, `dsh plugin --profile web add <tarball> --ignore-scripts` uses the same
-official package operation. Package installation and replacement retain the profile
-cache. The wrapper purges it before package removal; a live pin or unowned cache
-blocks removal. Runtime files live outside the package directory.
+Use `desktop` for a Desktop profile. On systems where DSH can resolve pnpm
+by name, the equivalent CLI command is
+`dsh plugin --profile web add "file:$(cygpath -m "$PWD")" --ignore-scripts`.
+Installation and replacement retain the profile cache. The removal wrapper
+purges it before removing the package. A live pin or unowned cache blocks removal.
 Restart DSH unelevated after installation or bundle enable/disable changes.
 
 For a nonstandard Git installation, set `gitBashPath` on the existing
@@ -251,6 +250,8 @@ After removing that field through the native editor or editing its profile patch
 wrapper performs purge before official removal:
 
 ```bash
+pnpm install --ignore-scripts --frozen-lockfile
+gitbash_pnpm="$(cygpath -m "$(type -P pnpm.exe)")"
 node scripts/plugin.ts "$gitbash_pnpm" web remove dsh-git-bash-on-win
 ```
 

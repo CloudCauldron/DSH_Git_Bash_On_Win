@@ -274,13 +274,23 @@ export class ThreadContext {
   save(thread: NativePtr): void { checked(debugApi().setContext(thread, this.memory), 'SetThreadContext'); }
   arm(thread: NativePtr, addresses: readonly (bigint | undefined)[], alreadyArmed: boolean): void {
     this.load(thread);
-    if (!alreadyArmed && (this.read64(112) & 255n) !== 0n) throw new Error('Refusing pre-existing debug-register state.');
+    const control = this.read64(112);
+    if (!alreadyArmed && (control & 255n) !== 0n) throw new Error('Refusing pre-existing debug-register state.');
     if (addresses.length > 4) throw new Error('Too many hardware breakpoints.');
-    let enabled = 0n;
+    let enabled = 0n, addressesMatch = true;
     addresses.forEach((address, i) => {
-      this.write64(72 + i * 8, address ?? 0n);
+      const offset = 72 + i * 8, desired = address ?? 0n;
+      if (this.read64(offset) !== desired) {
+        this.write64(offset, desired);
+        addressesMatch = false;
+      }
       if (address !== undefined) enabled |= 1n << BigInt(i * 2);
     });
+    // A thread can lose its breakpoints during MSYS startup. Windows may
+    // include x64 fixed bits in the live DR6 and DR7 values.
+    const status = this.read64(104);
+    if (alreadyArmed && addressesMatch && (control & ~0x400n) === enabled
+      && (status === 0n || status === 0xffff0ff0n)) return;
     this.write64(104, 0n); this.write64(112, enabled); this.save(thread);
   }
   resume(thread: NativePtr): void {

@@ -22,8 +22,7 @@
     "build": "node --input-type=module -e \"import { rm } from 'node:fs/promises'; await rm('lib', { recursive: true, force: true });\" && tsc -p tsconfig.build.json",
     "test": "pnpm build && node --test test/*.test.ts",
     "test:windows": "node -e \"if (process.platform !== 'win32' || process.arch !== 'x64') throw new Error('Native Windows x64 Node is required.');\" && pnpm test",
-    "test:release": "node --input-type=module -e \"import { installedDsh } from './scripts/installed-dsh.ts'; import { discoverGitInstallation } from './src/runtime/git-installation.ts'; installedDsh(); discoverGitInstallation(process.env.DSH_TEST_GIT_BASH);\" && pnpm check && pnpm lint && pnpm test:windows",
-    "prepack": "pnpm check && pnpm lint && pnpm build"
+    "test:release": "node --input-type=module -e \"import { installedDsh } from './scripts/installed-dsh.ts'; import { discoverGitInstallation } from './src/runtime/git-installation.ts'; installedDsh(); discoverGitInstallation(process.env.DSH_TEST_GIT_BASH);\" && pnpm check && pnpm lint && pnpm test:windows"
   },
   "dependencies": {
     "@deepseek-ai/cordis": "4.1.0",

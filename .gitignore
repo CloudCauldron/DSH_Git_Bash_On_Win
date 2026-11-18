@@ -1,8 +1,6 @@
 tmp/
 node_modules/
 poc/results/
-lib/
-artifacts/
 test/results/
 .deprecated
 .git-bash-on-win/

@@ -385,7 +385,7 @@ await test('checkout install, offline recovery and removal preserve shared Shell
     const contents = readFileSync(path, 'utf8');
     assert.equal(contents, readFileSync(join(root, 'locale', lang + '.json'), 'utf8'));
     const { meta, messages } = JSON.parse(contents) as { meta: { title: string; description: string; detail: string }; messages: Record<string, string> };
-    assert.equal(meta.title, lang === 'zh' ? 'Windows Git Bash' : 'Git Bash on Windows');
+    assert.equal(meta.title, 'DSH Git Bash on Windows');
     assert.ok(meta.description.trim());
     assert.equal(meta.detail, lang === 'zh' ? 'README_CN.md' : 'README.md');
     assert.deepEqual(readFileSync(join(packageRoot, meta.detail)), readFileSync(join(root, meta.detail)));
@@ -540,7 +540,7 @@ await test('checkout install, offline recovery and removal preserve shared Shell
     appProfile, sourceFile, anchor]);
   const mismatch = await appRecovery(runtime.manifest);
   assert.notEqual(mismatch.exitCode, 0);
-  assert.match(mismatch.stderr, /this copy of the Git Bash plugin/);
+  assert.match(mismatch.stderr, /this copy of DSH Git Bash on Windows/);
   assert.equal(pathExists(appCache), false);
   try {
     success(await appRecovery(appAnchor));

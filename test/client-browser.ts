@@ -30,7 +30,7 @@ async function openPlugins(page: Page, url: string) {
 
 async function openPlugin(page: Page, url: string) {
   await openPlugins(page, url);
-  await page.locator('[data-plugin-package="dsh-git-bash-on-win"]').getByRole('button', { name: /Windows Git Bash|Git Bash on Windows/ }).first().click();
+  await page.locator('[data-plugin-package="dsh-git-bash-on-win"]').getByText('DSH Git Bash on Windows', { exact: true }).click();
   return page.getByRole('textbox', { name: /^(Git Bash 路径|Git Bash path)$/ });
 }
 
@@ -128,6 +128,7 @@ await test('installed DSH presents link failures and conflicts in native dialogs
       const saveClass = await shellSave.getAttribute('class');
       assert.ok(saveClass);
       const input = await openPlugin(first, url);
+      await first.getByRole('paragraph').filter({ hasText: /^在 Windows x64 上使用 Git Bash 执行命令，遵循 DSH 当前的沙箱策略。$/ }).waitFor();
       const button = first.getByRole('button', { name: '保存并链接', exact: true });
       assert.equal(await button.getAttribute('class'), saveClass);
       const measure = () => input.evaluate(el => {
@@ -229,6 +230,9 @@ await test('installed DSH presents link failures and conflicts in native dialogs
         const page = await french.newPage();
         const path = await openPlugin(page, url);
         assert.equal(await page.locator('html').getAttribute('lang'), 'fr');
+        await page.getByRole('paragraph').filter({
+          hasText: /^Run commands with Git Bash on Windows x64 under DSH's current sandbox policy\.$/,
+        }).waitFor();
         await path.fill(missing);
         const save = page.getByRole('button', { name: 'Save and link', exact: true });
         await save.click();

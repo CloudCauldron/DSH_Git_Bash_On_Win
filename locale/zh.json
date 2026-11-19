@@ -1,7 +1,7 @@
 {
   "meta": {
-    "title": "Windows Git Bash",
-    "description": "在 Windows DSH 中配置 Git Bash 路径并建立链接。",
+    "title": "DSH Git Bash on Windows",
+    "description": "在 Windows x64 上使用 Git Bash 执行命令，遵循 DSH 当前的沙箱策略。",
     "detail": "README_CN.md"
   },
   "messages": {
@@ -45,7 +45,7 @@
     "error.pluginUsage": "用法：{command}",
     "error.purgeIncomplete": "运行时清理和卸载未完成。",
     "error.purgeUsage": "用法：{command}",
-    "error.linkProfile": "此 DSH 配置必须已安装并启用当前副本的 Git Bash 插件：{path}",
+    "error.linkProfile": "此 DSH 配置必须已安装并启用 DSH Git Bash on Windows 插件的当前副本：{path}",
     "error.removalBlocked": "运行时清理未完成，尚未开始移除包。请关闭使用此配置的所有 DSH 实例，排除报告的阻碍后重试。",
 
     "error.customizedModule": "无法适配已自定义的 {id} 模块，Shell 未被替换。",

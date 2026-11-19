@@ -21,7 +21,7 @@
 
 ### **3.1 - 配置 Git Bash 路径与手动链接**
 
-1. 在 DSH Web 左侧边栏进入 **「插件」**，选择 **「Windows Git Bash」**。
+1. 在 DSH Web 左侧边栏进入 **「插件」**，选择 **「DSH Git Bash on Windows」**。
 2. 在 **「Git Bash 路径」** 中按需填写并点击 **「保存并链接」**：
    - **自动查找（推荐）**：留空即可自动探测常见安装目录下的 Git for Windows。
    - **手动指定**：便携版或自定义安装可填入 `bin/bash.exe` 或 `usr/bin/bash.exe` 的绝对路径。

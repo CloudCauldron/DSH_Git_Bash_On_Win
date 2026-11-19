@@ -1,7 +1,7 @@
 {
   "meta": {
-    "title": "Git Bash on Windows",
-    "description": "Configure the Git Bash path and create links for DSH on Windows.",
+    "title": "DSH Git Bash on Windows",
+    "description": "Run commands with Git Bash on Windows x64 under DSH's current sandbox policy.",
     "detail": "README.md"
   },
   "messages": {
@@ -45,7 +45,7 @@
     "error.pluginUsage": "Usage: {command}",
     "error.purgeIncomplete": "Runtime cleanup and uninstallation are incomplete.",
     "error.purgeUsage": "Usage: {command}",
-    "error.linkProfile": "This DSH profile must have this copy of the Git Bash plugin installed and enabled: {path}",
+    "error.linkProfile": "This DSH profile must have this copy of DSH Git Bash on Windows installed and enabled: {path}",
     "error.removalBlocked": "Runtime cleanup is incomplete; package removal was not started. Close every DSH instance using this profile and resolve the reported obstruction before retrying.",
 
     "error.customizedModule": "Cannot adapt the customized {id} module; the shell was not replaced.",

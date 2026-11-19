@@ -1,9 +1,9 @@
 {
   "name": "dsh-git-bash-on-win",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
-  "description": "Process-local Git Bash compatibility for DSH's Windows sandbox.",
+  "description": "Run commands with Git Bash on Windows x64 under DSH's current sandbox policy.",
   "main": "./lib/adapter.js",
   "types": "./lib/adapter.d.ts",
   "exports": {

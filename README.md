@@ -21,7 +21,7 @@
 
 ### **3.1 - Configuring the Git Bash Path and Manual Linking**
 
-1. In the left sidebar of DSH Web, open **Plugins** and select **Git Bash on Windows**.
+1. In the left sidebar of DSH Web, open **Plugins** and select **DSH Git Bash on Windows**.
 2. Fill in **Git Bash path** as needed and click **Save and link**:
    - **Auto-detect (recommended)**: Leave blank to automatically locate Git for Windows in common installation directories.
    - **Manual path**: For portable or custom installations, enter the absolute path to `bin/bash.exe` or `usr/bin/bash.exe`.

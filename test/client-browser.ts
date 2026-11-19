@@ -200,6 +200,7 @@ await test('installed DSH presents link failures and conflicts in native dialogs
       const toast = second.getByRole('alert').filter({ hasText: '已建立链接' });
       await toast.waitFor();
       assert.equal(await toast.evaluate(el => el.parentElement === document.body), true);
+      assert.equal(await toast.locator(':scope > :first-child svg').count(), 1);
       assert.equal(await toast.innerText(), '已建立链接');
       await second.getByText('填写 bash.exe 的完整路径，DSH 会用它运行命令。', { exact: true }).waitFor();
       await toast.waitFor({ state: 'detached' });

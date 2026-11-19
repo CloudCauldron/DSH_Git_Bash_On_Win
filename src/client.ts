@@ -25,7 +25,7 @@ window.__ModuleLoader__.load({
       Button: import('react').ComponentType<import('react').ComponentProps<'button'>>;
       Modal: import('react').ComponentType<{ open: boolean; title: string; description?: import('react').ReactNode;
         closeLabel: string; onClose(): void; className?: string; footer?: import('react').ReactNode }>;
-      Toast: import('react').ComponentType<{ text: string; onDone(): void }>;
+      Toast: import('react').ComponentType<{ text: string; tone?: 'success'; onDone(): void }>;
     };
 
     type Messages = Record<string, string>;
@@ -281,7 +281,7 @@ window.__ModuleLoader__.load({
             else if (notices.getSnapshot() === local) notices.set(null);
           };
           if (notice.key === 'link.ok') {
-            return React.createElement(Toast, { key: notice.id, text: t(notice.key), onDone: dismiss });
+            return React.createElement(Toast, { key: notice.id, text: t(notice.key), tone: 'success', onDone: dismiss });
           }
           let description: import('react').ReactNode;
           let diagnostic: string | undefined;

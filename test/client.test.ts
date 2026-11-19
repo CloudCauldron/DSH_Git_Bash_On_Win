@@ -250,6 +250,7 @@ await test('Save and link fences the path write and rebuilds once after confirma
   await act(async () => { click(); });
   const toast = renderer.root.findByType(Toast);
   assert.equal(toast.props.text, translate('link.ok'));
+  assert.equal(toast.props.tone, 'success');
   assert.equal(renderer.root.findByType(Page).findAllByType(Toast).length, 0);
   await act(async () => { toast.props.onDone(); });
   assert.equal(renderer.root.findAllByType(Toast).length, 0);

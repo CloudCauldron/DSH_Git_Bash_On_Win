@@ -15,5 +15,25 @@ export interface PrivateFamilyExit {
     readonly mappingsAdjusted: number;
     readonly installationKey: string;
 }
+interface LoadedModule {
+    name: string;
+    base: bigint;
+    end: bigint;
+    msys?: {
+        pathVerified: boolean;
+        installationPathAdjusted?: boolean;
+    };
+}
+interface ModuleState {
+    hooks: Array<{
+        module: string;
+        symbol: string;
+        address?: bigint;
+    }>;
+    modules: LoadedModule[];
+}
+/** Unload just this base and report whether private MSYS hooks still apply. */
+export declare function unloadModule(state: ModuleState, base: bigint): boolean;
 /** One child path admission; parent pins do not freeze junction targets. */
 export declare function runPrivateBash(options: PrivateBashLaunch): Promise<PrivateFamilyExit>;
+export {};

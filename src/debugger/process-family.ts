@@ -26,17 +26,40 @@ export interface PrivateFamilyExit {
   readonly installationKey: string;
 }
 
-interface DebugState {
+interface LoadedModule {
+  name: string; base: bigint; end: bigint;
+  // Each concurrently mapped copy passes admission and loader-path verification independently.
+  msys?: { pathVerified: boolean; installationPathAdjusted?: boolean };
+}
+
+interface ModuleState {
+  hooks: Array<{ module: string; symbol: string; address?: bigint }>;
+  modules: LoadedModule[];
+}
+
+interface DebugState extends ModuleState {
   pid: number; process: NativePtr;
   threads: Map<number, NativePtr>; armed: Set<number>;
-  hooks: Array<{ module: string; symbol: string; address?: bigint }>;
-  modules: Array<{ name: string; base: bigint; end: bigint }>;
-  msys?: { base: bigint; end: bigint; loaderPath: string };
   installationKey?: string;
   firstBreakpoint: boolean;
-  loaderPathVerified?: boolean;
   imagePath?: string;
-  installationPathAdjusted?: boolean;
+}
+
+function moduleAt(modules: LoadedModule[], address: bigint) {
+  return modules.find(module => address >= module.base && address < module.end);
+}
+
+function hasMsys(modules: LoadedModule[]) {
+  return modules.some(module => module.msys !== undefined);
+}
+
+/** Unload just this base and report whether private MSYS hooks still apply. */
+export function unloadModule(state: ModuleState, base: bigint): boolean {
+  state.modules = state.modules.filter(module => module.base !== base);
+  for (const hook of state.hooks) {
+    if (hook.address !== undefined && !moduleAt(state.modules, hook.address)) hook.address = undefined;
+  }
+  return hasMsys(state.modules);
 }
 
 /** One child path admission; parent pins do not freeze junction targets. */
@@ -94,25 +117,29 @@ export async function runPrivateBash(options: PrivateBashLaunch): Promise<Privat
     const handle = pointer(output);
     try { return sameIdentity(fileIdentity(handle), dllIdentity); } finally { close(handle); }
   }
-  function verifyLoaderPath(started = !state.firstBreakpoint): void {
-    if (state.loaderPathVerified) return;
-    if (!state.msys) {
-      if (started && state.pid === pid) throw new LocalizedError('error.missingStartupMsys');
-      return; // Native descendants need not load MSYS.
-    }
-    const loaded = loaderPath(processHandle, state.msys.base) || state.msys.loaderPath;
+  function verifyLoaderPath(path: string, started: boolean): boolean {
     // Fork initialization may precede PSAPI loader-list visibility.
-    if (!loaded && !started) return;
-    if (!loaded || !samePath(canonicalExistingPath(loaded), msysPath)) throw new LocalizedError('error.loaderOutsideBase', { path: loaded });
-    state.loaderPathVerified = true;
+    if (!path && !started) return false;
+    if (!path || !samePath(canonicalExistingPath(path), msysPath)) throw new LocalizedError('error.loaderOutsideBase', { path });
+    return true;
+  }
+  function verifyLoaderPaths(started = !state.firstBreakpoint): boolean {
+    let present = false;
+    for (const { base, msys } of state.modules) {
+      if (!msys) continue;
+      present = true;
+      if (!msys.pathVerified) msys.pathVerified = verifyLoaderPath(loaderPath(processHandle, base), started);
+    }
+    if (!present && started && state.pid === pid) throw new LocalizedError('error.missingStartupMsys');
+    return present;
   }
   function onHit(tid: number, slot: number) {
-    verifyLoaderPath();
+    const hasPrivateMsys = verifyLoaderPaths();
     const thread = context(tid);
     const stack = reg(registers.rsp);
     const caller = remote64(stack);
-    const fromPrivateMsys = state.msys !== undefined && caller >= state.msys.base && caller < state.msys.end;
-    const callerModule = state.modules.find(module => caller >= module.base && caller < module.end)?.name;
+    const callerModule = moduleAt(state.modules, caller);
+    const msys = callerModule?.msys;
     if (slot === 0) {
       const name = wide(processHandle, reg(registers.rcx));
       const attributes = remote64(stack + 0x40n);
@@ -121,13 +148,13 @@ export async function runPrivateBash(options: PrivateBashLaunch): Promise<Privat
       const ownSignalPipe = match !== null && Number(match[2]) === state.pid;
       if (ownSignalPipe) {
         const key = match[1]!.toLowerCase();
-        if (!state.installationPathAdjusted && state.pid === pid) throw new LocalizedError('error.startupNamespaceMissing');
+        if (state.pid === pid && !state.modules.some(module => module.msys?.installationPathAdjusted)) throw new LocalizedError('error.startupNamespaceMissing');
         if (familyKey !== undefined && familyKey !== key) throw new LocalizedError('error.descendantNamespaceChanged');
         familyKey ??= key;
         state.installationKey = key;
       }
-      const trustedForwarder = callerModule === 'kernel32.dll' || callerModule === 'kernelbase.dll';
-      const freshPrivatePipe = ownSignalPipe && state.msys !== undefined && (fromPrivateMsys || trustedForwarder)
+      const trustedForwarder = callerModule?.name === 'kernel32.dll' || callerModule?.name === 'kernelbase.dll';
+      const freshPrivatePipe = ownSignalPipe && hasPrivateMsys && (msys || trustedForwarder)
         && (access & 0x80000) !== 0 && (mode & 8) !== 0 && instances === 1;
       let original: string | undefined;
       if (grantSid && freshPrivatePipe && attributes !== 0n) {
@@ -139,14 +166,14 @@ export async function runPrivateBash(options: PrivateBashLaunch): Promise<Privat
       }
     } else if (slot === 1 && grantSid) {
       const informationClass = Number(reg(registers.rdx));
-      if (fromPrivateMsys && informationClass === 6 && reg(registers.r9) === 8n) {
+      if (msys && informationClass === 6 && reg(registers.r9) === 8n) {
         const original = defaultDaclText(processHandle, reg(registers.r8));
         if (!original.includes(`(A;;GA;;;${grantSid})`)) {
           ctx.write64(registers.r8, grantDefaultDacl(processHandle, original, grantSid));
           defaultDaclAdjusted++;
         }
       }
-    } else if (slot === 2 && grantSid && fromPrivateMsys && remote64(stack + 0x38n) === 0n) {
+    } else if (slot === 2 && grantSid && msys && remote64(stack + 0x38n) === 0n) {
       const attributes = reg(registers.r8);
       let rootName = '';
       let attrs: Buffer | undefined;
@@ -168,7 +195,7 @@ export async function runPrivateBash(options: PrivateBashLaunch): Promise<Privat
           }
         }
       }
-    } else if (slot === 3 && !state.installationPathAdjusted && fromPrivateMsys && reg(registers.r9) === 0n && isPrivateDll(reg(registers.rcx))) {
+    } else if (slot === 3 && msys && !msys.installationPathAdjusted && reg(registers.r9) === 0n && isPrivateDll(reg(registers.rcx))) {
       // MSYS normalizes its DLL pathname before hashing the installation key.
       // Retain a real session junction path in its original buffer, redirecting
       // only this optional normalization's output to private scratch data.
@@ -178,7 +205,7 @@ export async function runPrivateBash(options: PrivateBashLaunch): Promise<Privat
       if (capacity < text.length + 1 || capacity > 32_768) throw new LocalizedError('error.viewBufferTooSmall');
       writeMemory(processHandle, reg(registers.rdx), bytes);
       ctx.write64(registers.rdx, writeData(Buffer.alloc(capacity * 2)));
-      state.installationPathAdjusted = true;
+      msys.installationPathAdjusted = true;
     }
     ctx.resume(thread);
   }
@@ -187,19 +214,20 @@ export async function runPrivateBash(options: PrivateBashLaunch): Promise<Privat
     const { file, base } = event;
     // Image-section handles may report another hardlink name. Prefer the
     // loader's spelling both for module classification and boundary admission.
-    const loadedPath = loaderPath(processHandle, base) || debugLoaderPath(event) || fileName(file);
+    const reportedPath = loaderPath(processHandle, base) || debugLoaderPath(event);
+    const loadedPath = reportedPath || fileName(file);
     if (!loadedPath) throw new LocalizedError('error.unidentifiedModule');
     const name = win32.basename(loadedPath).toLowerCase();
     const { size, x64 } = imageLayout(read(processHandle, base, 4096));
-    state.modules.push({ name, base, end: base + BigInt(size) });
+    const module: LoadedModule = { name, base, end: base + BigInt(size) };
+    state.modules.push(module);
     if (name === 'msys-2.0.dll') {
       if (!x64) throw new LocalizedError('error.x64MsysRequired');
       state.imagePath ??= imagePath(processHandle);
       if (!containsPath(privateRoot, canonicalExistingPath(state.imagePath))) throw new LocalizedError('error.executableOutsideBase');
       if (!file || !sameIdentity(fileIdentity(file), dllIdentity)) throw new LocalizedError('error.moduleIdentityMismatch');
       requireJobMember(processHandle, job);
-      state.msys = { base, end: base + BigInt(size), loaderPath: debugLoaderPath(event) };
-      verifyLoaderPath();
+      module.msys = { pathVerified: verifyLoaderPath(reportedPath, !state.firstBreakpoint) };
       // Forks may create pinfo before sigproc_init; they inherit this family's key.
       if (state.pid !== pid) state.installationKey = familyKey;
     }
@@ -211,7 +239,7 @@ export async function runPrivateBash(options: PrivateBashLaunch): Promise<Privat
       if (!valid(address) || address < localBase || address - localBase >= BigInt(size)) throw new LocalizedError('error.unsupportedSymbol', { symbol: hook.symbol });
       hook.address = base + address - localBase;
     });
-    if (state.msys) for (const tid of state.threads.keys()) arm(tid);
+    if (hasMsys(state.modules)) for (const tid of state.threads.keys()) arm(tid);
   }
 
   function eventOnce(milliseconds: number, cleanup = false): void {
@@ -243,31 +271,21 @@ export async function runPrivateBash(options: PrivateBashLaunch): Promise<Privat
         case 'process': break;
         case 'thread':
           state.threads.set(tid, event.thread);
-          if (state.msys) arm(tid);
+          if (hasMsys(state.modules)) arm(tid);
           break;
         case 'exit-thread': state.threads.delete(tid); state.armed.delete(tid); break;
         case 'module':
           try { admitModule(event); } finally { close(event.file); }
           break;
         case 'unload':
-          if (state.msys?.base === event.base) {
-            // Unload can be part of ordinary process teardown. Withdraw repair
-            // eligibility immediately; a later load must pass admission afresh.
-            state.msys = undefined; state.loaderPathVerified = false; state.installationPathAdjusted = false;
-          }
-          state.modules = state.modules.filter(module => module.base !== event.base);
-          for (const hook of state.hooks) {
-            if (hook.address !== undefined && !state.modules.some(module => hook.address! >= module.base && hook.address! < module.end)) hook.address = undefined;
-          }
-          if (state.msys) for (const id of state.threads.keys()) arm(id);
+          if (unloadModule(state, event.base)) for (const id of state.threads.keys()) arm(id);
           else for (const id of state.armed) { ctx.arm(state.threads.get(id)!, [], true); state.armed.delete(id); }
           break;
         case 'exception': {
           const slot = state.hooks.findIndex(hook => hook.address === event.address);
           if (event.code === 0x80000004 && slot >= 0) onHit(tid, slot);
           else if (event.code === 0x80000003 && state.firstBreakpoint) {
-            verifyLoaderPath(true);
-            if (state.msys && state.hooks.some((hook, i) => (grantSid || i === 0 || i === 3) && hook.address === undefined)) throw new LocalizedError('error.startupHooksUnavailable');
+            if (verifyLoaderPaths(true) && state.hooks.some((hook, i) => (grantSid || i === 0 || i === 3) && hook.address === undefined)) throw new LocalizedError('error.startupHooksUnavailable');
             state.firstBreakpoint = false;
           } else disposition = 0x80010001;
           break;

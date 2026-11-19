@@ -13,7 +13,7 @@ import type { SandboxExecutionPolicy } from '@deepseek-ai/dsh-sandbox';
 import type { ShellExecRequest, ShellExecution } from '@deepseek-ai/dsh-shell';
 import type Subprocess from '@deepseek-ai/dsh-subprocess';
 import type { SubprocessHandle, SubprocessOutcome, SubprocessSpawnSpec } from '@deepseek-ai/dsh-subprocess';
-import { runPrivateBash, type PrivateFamilyExit } from '../src/debugger/process-family.ts';
+import { runPrivateBash, unloadModule, type PrivateFamilyExit } from '../src/debugger/process-family.ts';
 import { debugApi, descriptorText, ThreadContext, wide, writeMemory } from '../src/debugger/native-debug.ts';
 import { extendWin32ProcessBindings, Win32Error, type NativePtr } from '@deepseek-ai/dsh-win32-process';
 import GitBashExecutor from '../src/index.ts';
@@ -692,6 +692,21 @@ await test('local SDDL reading bounds the reported extent and always frees its a
   });
 });
 
+await test('unloading either MSYS mapping keeps the survivor eligible until its own unload', () => {
+  const first = { name: 'msys-2.0.dll', base: 0x1000n, end: 0x2000n, msys: { pathVerified: false } };
+  const second = { name: first.name, base: 0x3000n, end: 0x4000n, msys: { pathVerified: true } };
+  const kernel = { name: 'kernelbase.dll', base: 0x5000n, end: 0x6000n };
+  for (const [removed, survivor] of [[first, second], [second, first]] as const) {
+    const hook = { module: kernel.name, symbol: 'CreateNamedPipeW', address: kernel.base + 16n };
+    const state = { modules: [first, second, kernel], hooks: [hook] };
+    assert.equal(unloadModule(state, removed.base), true);
+    assert.deepEqual(state.modules, [survivor, kernel]);
+    assert.equal(hook.address, kernel.base + 16n);
+    assert.equal(unloadModule(state, survivor.base), false);
+    assert.deepEqual(state.modules, [kernel]);
+  }
+});
+
 await test('repeated arming skips identical live breakpoints and restores changed state', nativeOnly, t => {
   const ctx = new ThreadContext(), thread = 1n as NativePtr;
   t.after(() => ctx.close());
@@ -1024,6 +1039,21 @@ await test('native DSH Bash execution across all modes', nativeOnly, async t => 
     });
   }
   assert.equal(namespaces.size, 6, 'all modes and scoped views need distinct namespaces');
+  await t.test('workspace-write starts iconv and grep in pipelines, substitutions and the final command', async () => {
+    await fsp.writeFile(join(f.workspace, 'icons.bin'), Buffer.from('Adobe Apps', 'utf16le'));
+    const search = String.raw`grep -a -c -P 'A\x00d\x00o\x00b\x00e\x00' icons.bin`;
+    const result = await run('workspace-write', [
+      'set -eo pipefail',
+      'for i in {1..8}; do',
+      '  MSYS_NO_PATHCONV=1 cmd.exe /d /c "echo marker" | iconv -f GBK -t UTF-8 | grep -o marker',
+      `  count=$(${search})`, '  echo "$count"',
+      'done',
+      search,
+    ].join('\n'));
+    assert.equal(result.exitCode, 0, result.stderr.text);
+    assert.equal(result.stderr.text, '');
+    assert.equal(result.stdout.text.replaceAll('\r\n', '\n'), 'marker\n1\n'.repeat(8) + '1\n');
+  });
   await t.test('token and mapping repairs require the exact intended allow ACE', async () => {
     const use = await pin.lease({ mode: 'workspace-write', workspaceRoot: f.workspace }, new AbortController().signal);
     try {

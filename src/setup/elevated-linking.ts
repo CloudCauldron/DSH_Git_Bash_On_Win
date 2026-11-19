@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import z from '@deepseek-ai/schemastery';
@@ -21,7 +21,6 @@ export interface ProvisioningAttempt {
 
 interface ElevationPlan {
   readonly schemaVersion: 1;
-  readonly attemptId: string;
   readonly sourceRoot: string;
   readonly cacheRoot: string;
   readonly generationId: string;
@@ -35,13 +34,16 @@ const path = z.string().min(3).max(32767).required();
 const integer = z.string().pattern(/^\d{1,20}$/).required();
 const identity = z.object({ volumeSerial: integer, fileId: integer }).required();
 const planSchema = z.object({
-  schemaVersion: z.const(1).required(), attemptId: id, sourceRoot: path, cacheRoot: path,
+  schemaVersion: z.const(1).required(), sourceRoot: path, cacheRoot: path,
   generationId: id, baseRoot: path, layout: z.union([z.const('ucrt64'), z.const('mingw64')]).required(),
   identities: z.object({ source: identity, cache: identity, generation: identity, base: identity, lease: identity }).required(),
 }).required();
 export const planByteLimit = 512 * 1024;
 
-export function decodeElevationPlan(value: unknown): ElevationPlan {
+export const planDigest = (value: unknown): string => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+
+export function decodeElevationPlan(value: unknown, digest: string): ElevationPlan {
+  if (planDigest(value) !== digest) throw new LocalizedError('error.setupPlanChanged');
   return (planSchema as unknown as (value: unknown) => ElevationPlan)(value);
 }
 
@@ -106,7 +108,7 @@ export async function provisionRuntime<T>(attempt: ProvisioningAttempt, signal: 
   try {
     const fileIdentity = ({ volumeSerial, fileId }: FileIdentity): FileIdentity => ({ volumeSerial, fileId });
     const plan: ElevationPlan = {
-      schemaVersion: 1, attemptId: randomUUID().replaceAll('-', ''), sourceRoot: attempt.source.path,
+      schemaVersion: 1, sourceRoot: attempt.source.path,
       cacheRoot: attempt.cache.path, generationId: basename(attempt.generation.path), baseRoot: attempt.base.path, layout: attempt.layout,
       identities: {
         source: fileIdentity(attempt.source), cache: fileIdentity(attempt.cache), generation: fileIdentity(attempt.generation),
@@ -116,7 +118,7 @@ export async function provisionRuntime<T>(attempt: ProvisioningAttempt, signal: 
     writeNewMetadata(attempt.generation, 'plan.json', plan);
     signal.throwIfAborted();
     const child = broker = spawn({
-      argv: [process.execPath, fileURLToPath(new URL('./elevation-broker.js', import.meta.url)), join(attempt.generation.path, 'plan.json')],
+      argv: [process.execPath, fileURLToPath(new URL('./elevation-broker.js', import.meta.url)), join(attempt.generation.path, 'plan.json'), planDigest(plan)],
       cwd: attempt.cache.path, graceMs: brokerGraceMs,
       stdio: { stdin: 'ignore', stdout: { maxBytes: 0 }, stderr: { maxBytes: 8192 } },
       env: { NODE_OPTIONS: undefined },

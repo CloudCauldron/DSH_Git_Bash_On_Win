@@ -6,9 +6,9 @@ import { createInterface } from 'node:readline';
 import { pathToFileURL } from 'node:url';
 import { test } from 'node:test';
 import { writeFileAtomic } from '@deepseek-ai/dsh-atomic-write';
-import { chromium, type Locator, type Page } from 'playwright-core';
+import { chromium, type BrowserContext, type Locator, type Page } from 'playwright-core';
 import { installedDsh } from '../scripts/installed-dsh.ts';
-import { localSpawn, runtimeFixture } from './fixtures.ts';
+import { profileEnvironment, localSpawn, runFixtureCommand, runtimeFixture, success } from './fixtures.ts';
 import { purgeRuntimeCache } from '../src/runtime/runtime-cache.ts';
 
 async function checkDiagnostic(dialog: Locator, explanation: string, diagnostic: string) {
@@ -22,9 +22,14 @@ async function checkDiagnostic(dialog: Locator, explanation: string, diagnostic:
   assert.equal(await dialog.locator('pre').count(), 0);
 }
 
+async function newPage(context: BrowserContext) {
+  const page = await context.newPage();
+  await page.addLocatorHandler(page.getByRole('button', { name: /^(继续|Continuer|Continue)$/ }), button => button.click());
+  await page.addLocatorHandler(page.getByRole('dialog', { name: /^(开始使用|Commencez|Get started)$/ }), dialog => dialog.getByRole('button').first().click());
+  return page;
+}
+
 async function openPlugins(page: Page, url: string) {
-  await page.addLocatorHandler(page.getByRole('button', { name: /^(继续|Continuer)$/ }), button => button.click());
-  await page.addLocatorHandler(page.getByRole('dialog', { name: /^(开始使用|Commencez)$/ }), dialog => dialog.getByRole('button').first().click());
   await page.goto(url);
   await page.getByRole('button', { name: /^(插件|Plugins)$/ }).click();
 }
@@ -42,15 +47,14 @@ await test('installed DSH presents link failures and conflicts in native dialogs
   const fixture = await runtimeFixture(t, 'ucrt64', join('home', '.dsh-git-bash-on-win'));
   const valid = fixture.request.gitBashPath!, originalLinks = (await stat(valid)).nlink;
   const home = join(fixture.directory, 'home'), profile = join(home, 'profiles/web');
-  const env = { ...process.env, DSH_HOME: home, DSH_TELEMETRY_DISABLED: '1',
-    TMP: fixture.directory, TEMP: fixture.directory, TMPDIR: fixture.directory };
+  const env = profileEnvironment(fixture.directory, home);
   const cli = join(dirname(runtime.manifest), 'lib/bin.js'), cwd = fixture.workspace;
-  execFileSync(process.execPath, [cli, '--profile', 'web', '--dump-config'], { cwd, env });
+  success(await runFixtureCommand(spawn, [process.execPath, cli, '--profile', 'web', '--dump-config'], cwd, env, t.signal));
   const pnpm = process.env.npm_execpath?.endsWith('.exe') ? process.env.npm_execpath
     : execFileSync('where.exe', ['pnpm.exe'], { encoding: 'utf8' }).trim().split(/\r?\n/)[0]!;
-  await writeFile(join(profile, '.npmrc'), `store-dir=${join(home, 'store').replaceAll('\\', '/')}\nstate-dir=${join(home, 'state').replaceAll('\\', '/')}\n`);
   const repo = resolve(import.meta.dirname, '..');
-  execFileSync(process.execPath, [join(repo, 'scripts/plugin.ts'), pnpm, 'web', 'add', 'file:' + repo.replaceAll('\\', '/')], { cwd, env });
+  success(await runFixtureCommand(spawn, [process.execPath, join(repo, 'scripts/plugin.ts'), pnpm, 'web', 'add',
+    'file:' + repo.replaceAll('\\', '/')], cwd, env, t.signal));
 
   // Extend only this installed fixture with one translated label; the other keys fall back to English.
   const catalogs = await realpath(join(profile, 'node_modules/dsh-git-bash-on-win/locale'));
@@ -70,7 +74,8 @@ await test('installed DSH presents link failures and conflicts in native dialogs
     import timers from 'node:timers/promises';
     import { basename, toNamespacedPath } from 'node:path';
     import { syncBuiltinESMExports } from 'node:module';
-    const original = fs.linkSync, write = fs.writeFileSync;
+    import { NativeHold } from ${JSON.stringify(pathToFileURL(join(catalogs, '../lib/runtime/ntfs-filesystem.js')).href)};
+    const original = NativeHold.prototype.linkTo, open = fs.openSync;
     // Pause at the linker's normal yield so the browser can inspect a real, completed batch.
     const immediate = timers.setImmediate;
     let linkedSample = false;
@@ -78,18 +83,18 @@ await test('installed DSH presents link failures and conflicts in native dialogs
       while (linkedSample && fs.existsSync(${JSON.stringify(progressGate)})) await timers.setTimeout(20);
       return immediate(...args);
     };
-    fs.linkSync = (source, target) => {
-      if (source === toNamespacedPath(${JSON.stringify(join(fixture.source, 'usr/bin/bash.exe'))}) && basename(target) === '.probe' && fs.existsSync(${JSON.stringify(gate)}))
-        throw Object.assign(Error('fixture probe'), { code: 'EPERM' });
-      original(source, target);
-      if (source.startsWith(toNamespacedPath(${JSON.stringify(join(fixture.source, progressPrefix))}))) linkedSample = true;
+    NativeHold.prototype.linkTo = function (parent, name) {
+      if (this.path === ${JSON.stringify(join(fixture.source, 'usr/bin/bash.exe'))} && name === '.probe' && fs.existsSync(${JSON.stringify(gate)}))
+        throw Object.assign(Error('fixture probe'), { win32Code: 5 });
+      original.call(this, parent, name);
+      if (this.path.startsWith(${JSON.stringify(join(fixture.source, progressPrefix))})) linkedSample = true;
     };
-    fs.writeFileSync = (path, ...args) => {
-      if (typeof path === 'string' && basename(path) === 'plan.json' && path.startsWith(toNamespacedPath(${JSON.stringify(fixture.cache)}))) {
-        write(${JSON.stringify(attempts)}, 'plan\\n', { flag: 'a' });
+    fs.openSync = (path, ...args) => {
+      if (args[0] === 'wx' && typeof path === 'string' && basename(path) === 'plan.json' && path.startsWith(toNamespacedPath(${JSON.stringify(fixture.cache)}))) {
+        fs.writeFileSync(${JSON.stringify(attempts)}, 'plan\\n', { flag: 'a' });
         if (!${realConsent}) throw Error('fixture plan creation failed');
       }
-      return write(path, ...args);
+      return open(path, ...args);
     };
     syncBuiltinESMExports();
   `);
@@ -125,7 +130,7 @@ await test('installed DSH presents link failures and conflicts in native dialogs
     const browser = await chromium.launchPersistentContext(join(fixture.directory, 'browser'), { env, locale: 'zh-CN',
       executablePath: process.env.CHROME_PATH ?? join(process.env.ProgramFiles!, 'Google/Chrome/Application/chrome.exe') });
     try {
-      const first = await browser.newPage();
+      const first = await newPage(browser);
       let rebuilds = 0;
       first.on('request', req => { if (req.method() === 'POST' && new URL(req.url()).pathname === '/api/git-bash-on-win/rebuild') rebuilds++; });
       await openPlugins(first, url);
@@ -187,7 +192,7 @@ await test('installed DSH presents link failures and conflicts in native dialogs
       assert.equal(rebuilds, 2);
 
       await input.fill('an unsubmitted draft');
-      const second = await browser.newPage();
+      const second = await newPage(browser);
       const otherInput = await openPlugin(second, url);
       await otherInput.click();
       assert.equal(await otherInput.inputValue(), missing);
@@ -231,9 +236,17 @@ await test('installed DSH presents link failures and conflicts in native dialogs
       assert.equal(await conflict.locator('code').count(), 0);
       assert.equal(rebuilds, 2);
 
+      const unsupported = await browser.browser()!.newContext({ locale: 'it-IT' });
+      try {
+        const page = await newPage(unsupported);
+        await openPlugin(page, url);
+        assert.equal(await page.locator('html').getAttribute('lang'), 'en');
+        await page.getByRole('button', { name: 'Save and link', exact: true }).waitFor();
+      } finally { await unsupported.close(); }
+
       const french = await browser.browser()!.newContext({ locale: 'fr-FR' });
       try {
-        const page = await french.newPage();
+        const page = await newPage(french);
         const path = await openPlugin(page, url);
         assert.equal(await page.locator('html').getAttribute('lang'), 'fr');
         await page.getByRole('paragraph').filter({
@@ -291,7 +304,7 @@ await test('installed DSH presents link failures and conflicts in native dialogs
       await writeFile(gate, '');
       // DSH already holds a hot-reload HTTP/1 stream in each tab. A second streaming GET per tab
       // exhausts Chromium's same-origin pool here, blocking the third settings page and the consent POST.
-      const third = await browser.newPage();
+      const third = await newPage(browser);
       await openPlugin(third, url);
       const priorFailure = second.getByRole('dialog', { name: '链接建立失败', exact: true });
       if (manual !== 'approve') {

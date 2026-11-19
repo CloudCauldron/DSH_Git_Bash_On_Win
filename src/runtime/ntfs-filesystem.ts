@@ -1,6 +1,7 @@
-import { linkSync, lstatSync, mkdirSync, readdirSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
+import koffi from 'koffi';
+import { closeSync, lstatSync, mkdirSync, openSync, readdirSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
 import { realpath } from 'node:fs/promises';
-import { dirname, isAbsolute, join, parse, relative, resolve, sep, toNamespacedPath } from 'node:path';
+import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep, toNamespacedPath } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { closeHandleChecked, extendWin32ProcessBindings, isNullPtr, throwLastError, Win32Error, type NativePtr } from '@deepseek-ai/dsh-win32-process';
 import { LocalizedAggregateError, LocalizedError } from '../localized-error.ts';
@@ -15,9 +16,10 @@ interface FileInformation extends FileIdentity {
 }
 
 const READ = 0x80000000, DELETE = 0x10000;
-const SHARE_ALL = 7, OPEN_EXISTING = 3, CREATE_NEW = 1;
+const SHARE_READ_WRITE = 3, SHARE_ALL = 7, OPEN_EXISTING = 3, CREATE_NEW = 1;
 const NO_FOLLOW = 0x00200000, DIRECTORY = 0x02000000, DELETE_ON_CLOSE = 0x04000000;
 const ATTR_DIRECTORY = 0x10, ATTR_REPARSE = 0x400, ATTR_READONLY = 1;
+const FILE_ADD_FILE = 2;
 const MOUNT_POINT = 0xa0000003, SYMLINK = 0xa000000c;
 
 interface FileBindings {
@@ -27,23 +29,28 @@ interface FileBindings {
   finalPath(handle: NativePtr, buffer: Buffer, size: number, flags: number): number;
   volume(handle: NativePtr, label: null, labelSize: number, serial: null, component: null, flags: null, filesystem: Buffer, size: number): number;
   readBytes(handle: NativePtr, buffer: Buffer, size: number, read: Buffer, overlapped: null): number;
-  deleteFile(path: string): number;
+  setFileInformation(handle: NativePtr, status: Buffer, info: Buffer, size: number, kind: number): number;
+  statusToError(status: number): number;
   removeDirectory(path: string): number;
 }
 
 let bindings: ReturnType<typeof extendWin32ProcessBindings<FileBindings>> | undefined;
 function api() {
   requireWindows();
-  return bindings ??= extendWin32ProcessBindings(({ kernel32, bind }) => ({
-    open: bind(kernel32, 'CreateFileW', 'void *', ['str16', 'uint32', 'uint32', 'void *', 'uint32', 'uint32', 'void *']),
-    information: bind(kernel32, 'GetFileInformationByHandle', 'int', ['void *', 'void *']),
-    informationEx: bind(kernel32, 'GetFileInformationByHandleEx', 'int', ['void *', 'int', 'void *', 'uint32']),
-    finalPath: bind(kernel32, 'GetFinalPathNameByHandleW', 'uint32', ['void *', 'void *', 'uint32', 'uint32']),
-    volume: bind(kernel32, 'GetVolumeInformationByHandleW', 'int', ['void *', 'void *', 'uint32', 'void *', 'void *', 'void *', 'void *', 'uint32']),
-    readBytes: bind(kernel32, 'ReadFile', 'int', ['void *', 'void *', 'uint32', 'void *', 'void *']),
-    deleteFile: bind(kernel32, 'DeleteFileW', 'int', ['str16']),
-    removeDirectory: bind(kernel32, 'RemoveDirectoryW', 'int', ['str16']),
-  }) as FileBindings);
+  return bindings ??= extendWin32ProcessBindings(({ kernel32, bind }) => {
+    const ntdll = koffi.load('ntdll.dll');
+    return {
+      open: bind(kernel32, 'CreateFileW', 'void *', ['str16', 'uint32', 'uint32', 'void *', 'uint32', 'uint32', 'void *']),
+      information: bind(kernel32, 'GetFileInformationByHandle', 'int', ['void *', 'void *']),
+      informationEx: bind(kernel32, 'GetFileInformationByHandleEx', 'int', ['void *', 'int', 'void *', 'uint32']),
+      finalPath: bind(kernel32, 'GetFinalPathNameByHandleW', 'uint32', ['void *', 'void *', 'uint32', 'uint32']),
+      volume: bind(kernel32, 'GetVolumeInformationByHandleW', 'int', ['void *', 'void *', 'uint32', 'void *', 'void *', 'void *', 'void *', 'uint32']),
+      readBytes: bind(kernel32, 'ReadFile', 'int', ['void *', 'void *', 'uint32', 'void *', 'void *']),
+      setFileInformation: bind(ntdll, 'NtSetInformationFile', 'int32', ['void *', 'void *', 'void *', 'uint32', 'uint32']),
+      statusToError: bind(ntdll, 'RtlNtStatusToDosError', 'uint32', ['int32']),
+      removeDirectory: bind(kernel32, 'RemoveDirectoryW', 'int', ['str16']),
+    } as FileBindings;
+  });
 }
 
 export function requireWindows(): void {
@@ -67,7 +74,8 @@ export class DirectoryRollbackError extends LocalizedAggregateError {}
 
 export function hasCloseFailure(error: unknown): boolean {
   return (error instanceof Win32Error && error.api === 'CloseHandle')
-    || (error instanceof AggregateError && error.errors.some(hasCloseFailure));
+    || (error instanceof AggregateError && error.errors.some(hasCloseFailure))
+    || (error instanceof SuppressedError && (hasCloseFailure(error.error) || hasCloseFailure(error.suppressed)));
 }
 
 /** Resource failures must never disappear inside best-effort artifact cleanup. */
@@ -136,6 +144,30 @@ export class NativeHold {
     if (length > size) throw new InvalidMetadataError('error.metadataGrew', { path: this.path });
     return JSON.parse(data.subarray(0, length).toString('utf8')) as unknown;
   }
+
+  /** FileLinkInformation uses the admitted source and destination directory handles. */
+  linkTo(parent: NativeHold, name: string): void {
+    const path = childPath(parent, name);
+    const bytes = Buffer.from(name, 'utf16le');
+    const info = Buffer.alloc(Math.max(24, 20 + bytes.length)); // x64 FILE_LINK_INFORMATION
+    info.writeBigUInt64LE(BigInt(parent.handle), 8);
+    info.writeUInt32LE(bytes.length, 16);
+    bytes.copy(info, 20);
+    this.setInformation(11, info, 'FileLinkInformation', path);
+  }
+
+  deleteEntry(): void {
+    // POSIX disposition removes this name when our handle closes, even with other readers.
+    // Omit IGNORE_READONLY_ATTRIBUTE so an obstruction never alters a shared file.
+    this.setInformation(64, Buffer.from([3, 0, 0, 0]), 'FileDispositionInformationEx', this.path);
+  }
+
+  private setInformation(kind: number, info: Buffer, label: string, path: string): void {
+    const status = api().setFileInformation(this.handle, Buffer.alloc(16), info, info.length, kind);
+    if (status < 0) throw new Win32Error(label, api().statusToError(status), path);
+  }
+
+  [Symbol.dispose](): void { this.close(); }
 
   close(): void {
     if (this.closed) return;
@@ -218,7 +250,7 @@ export function revalidateDirectory(directory: Directory): void {
   directoryHold(directory, 0, SHARE_ALL).close();
 }
 
-export function childPath(parent: Directory, name: string): string {
+export function childPath(parent: Pick<Directory, 'path'>, name: string): string {
   // Enumerated interior names need not be valid generation IDs or conventional
   // Win32 spellings. Preserve one exact component, including trailing dots/spaces.
   if (!name || name === '.' || name === '..' || /[\\/:\0]/.test(name)) throw new LocalizedError('error.invalidChildName', { name });
@@ -240,7 +272,7 @@ function observedDirectory(path: string, info: FileInformation, volumeSerial: st
 }
 
 export function createDirectory(parent: Directory, name: string): Directory {
-  revalidateDirectory(parent);
+  using _parent = pinDirectory(parent);
   return createChildDirectory(parent, name);
 }
 
@@ -258,10 +290,14 @@ function createChildDirectory(parent: Directory, name: string): Directory {
 }
 
 export function ensureDirectory(parent: Directory, name: string): Directory {
-  revalidateDirectory(parent);
+  using _parent = pinDirectory(parent);
   try { return admitChildDirectory(parent, name); }
   catch (error) { if (!isMissing(error)) throw error; }
-  return createChildDirectory(parent, name);
+  try { return createChildDirectory(parent, name); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    return admitChildDirectory(parent, name);
+  }
 }
 
 export function openOrdinaryFile(parent: Directory, name: string, writable = false): NativeHold {
@@ -284,8 +320,15 @@ export function readMetadata(parent: Directory, name: string, maxBytes: number):
 }
 
 export function writeNewMetadata(parent: Directory, name: string, value: unknown): void {
-  revalidateDirectory(parent);
-  writeFileSync(toNamespacedPath(childPath(parent, name)), `${JSON.stringify(value)}\n`, { flag: 'wx', mode: 0o600 });
+  using _parent = pinDirectory(parent);
+  const fd = openSync(toNamespacedPath(childPath(parent, name)), 'wx', 0o600);
+  try {
+    try { writeFileSync(fd, JSON.stringify(value) + '\n'); }
+    finally { closeSync(fd); }
+  } catch (error) {
+    unlinkEntry(parent, name);
+    throw error;
+  }
 }
 
 function directoryHold(directory: Directory, access: number, sharing: number): NativeHold {
@@ -301,13 +344,17 @@ function directoryHold(directory: Directory, access: number, sharing: number): N
   } catch (error) { hold.close(); throw error; }
 }
 
-export function pinDirectory(directory: Directory): NativeHold { return directoryHold(directory, READ, 1); }
-export function claimDirectory(directory: Directory): NativeHold { return directoryHold(directory, DELETE, SHARE_ALL); }
+export function pinDirectory(directory: Directory): NativeHold { return directoryHold(directory, READ, SHARE_READ_WRITE); }
+export function claimDirectory(directory: Directory): NativeHold { return directoryHold(directory, DELETE, SHARE_READ_WRITE); }
 
 /** Exclusive creation, no inheritance, automatically removed on close or death. */
 export function createSetupLease(parent: Directory, name = '.setup-owner'): NativeHold {
-  revalidateDirectory(parent);
-  return open(childPath(parent, name), 0xc0010000, 0, CREATE_NEW, DELETE_ON_CLOSE);
+  let lease: NativeHold | undefined;
+  try {
+    using _parent = pinDirectory(parent);
+    lease = open(childPath(parent, name), 0xc0010000, 0, CREATE_NEW, DELETE_ON_CLOSE);
+    return lease;
+  } catch (error) { lease?.close(); throw error; }
 }
 
 export function requireActiveLease(parent: Directory, expected: FileIdentity): void {
@@ -324,17 +371,34 @@ export function openExclusiveMetadata(parent: Directory, name: string): NativeHo
   catch (error) { hold.close(); throw error; }
 }
 
-export async function acquireWriterLock(directory: Directory, signal: AbortSignal): Promise<NativeHold> {
-  const started = performance.now();
+export async function acquireWriterLock(cachePath: string, signal?: AbortSignal): Promise<NativeHold> {
+  // A sibling lock covers first creation and final removal of the cache root.
+  const directory = admitDirectory(dirname(cachePath)), name = basename(cachePath) + '.writer-lock';
+  const started = performance.now(), path = toNamespacedPath(childPath(directory, name));
+  let retriedAccessDenied = false;
   for (;;) {
-    signal.throwIfAborted();
-    try { return createSetupLease(directory, '.writer-lock'); }
+    signal?.throwIfAborted();
+    try { return createSetupLease(directory, name); }
     catch (error) {
+      if (hasCloseFailure(error)) throw error;
       const code = (error as { win32Code?: number }).win32Code;
-      if (![32, 80, 183].includes(code ?? 0) || performance.now() - started > 120_000) throw error;
-      // A sharing conflict is waitable; an unsafe lock object is not.
-      try { openOrdinaryFile(directory, '.writer-lock').close(); }
-      catch (inspection) { if (!isMissing(inspection)) throw inspection; }
+      if (performance.now() - started > 120_000 || ![5, 32, 80, 183].includes(code ?? 0)) throw error;
+      const entry = lstatSync(path, { throwIfNoEntry: false });
+      if (entry?.isSymbolicLink()) throw new LocalizedError('error.reparsePoint', { path });
+      if (!signal || (entry && !entry.isFile())) throw error;
+      if (entry) {
+        // Live writers deny read sharing. An unlocked ordinary file belongs to someone else.
+        let orphan: NativeHold | undefined;
+        try { orphan = open(path, READ); }
+        catch (inspection) {
+          if (!isBusy(inspection) && !isMissing(inspection) && (inspection as Win32Error).win32Code !== 5) throw inspection;
+        }
+        if (orphan) { orphan.close(); throw error; }
+      }
+      // NTFS can report access denied while the previous lock is delete-pending.
+      // A missing lock and a persistent access denial indicate an unwritable parent.
+      if (code === 5 && !entry && retriedAccessDenied) throw error;
+      retriedAccessDenied = code === 5 && !entry;
       // Timers wrap the abort reason. Preserve it so retirement is distinguishable from a setup failure.
       await delay(25, undefined, { signal }).catch(error => { signal.throwIfAborted(); throw error; });
     }
@@ -343,25 +407,20 @@ export async function acquireWriterLock(directory: Directory, signal: AbortSigna
 
 /** Only the actual link syscall can authorize the later UAC choice. */
 export function createHardlink(sourceParent: Directory, sourceName: string, targetParent: Directory, targetName: string): void {
-  revalidateDirectory(sourceParent);
-  revalidateDirectory(targetParent);
+  using _sourceParent = pinDirectory(sourceParent);
+  using target = directoryHold(targetParent, READ + FILE_ADD_FILE, SHARE_READ_WRITE);
   if (sourceParent.volumeSerial !== targetParent.volumeSerial) throw new LocalizedError('error.hardlinkVolume');
-  const source = openOrdinaryFile(sourceParent, sourceName, true);
-  try {
-    // Keep admission and the syscall in one synchronous operation. Queuing an
-    // async link would let a renamed/junction-replaced parent redirect the write
-    // while it waits in libuv. The caller yields between bounded batches.
-    try { linkSync(toNamespacedPath(source.path), toNamespacedPath(childPath(targetParent, targetName))); }
-    catch (error) {
-      if (['EACCES', 'EPERM'].includes((error as NodeJS.ErrnoException).code ?? '')) Object.assign(error as object, { linkPermissionDenied: true });
-      throw error;
-    }
-  } finally { source.close(); }
+  using source = openOrdinaryFile(sourceParent, sourceName, true);
+  try { source.linkTo(target, targetName); }
+  catch (error) {
+    if ((error as { win32Code?: number }).win32Code === 5) Object.assign(error as object, { linkPermissionDenied: true });
+    throw error;
+  }
 }
 
 export function createJunction(parent: Directory, name: string, target: Directory): string {
-  revalidateDirectory(parent);
-  revalidateDirectory(target);
+  using _parent = pinDirectory(parent);
+  using _target = pinDirectory(target);
   const path = childPath(parent, name);
   symlinkSync(toNamespacedPath(target.path), toNamespacedPath(path), 'junction'); // EEXIST is never adopted.
   try { admitJunction(parent, name, target); }
@@ -401,50 +460,40 @@ export function ordinaryChildDirectory(parent: Directory, name: string): Directo
 }
 
 /** Unlink controls before traversing payload. Never decode their contents. */
-export function unlinkEntry(parent: Directory, name: string): void {
-  revalidateDirectory(parent);
-  const path = childPath(parent, name);
-  let info: FileInformation;
-  try { info = inspect(path); } catch (error) { if (isMissing(error)) return; throw error; }
-  unlinkObserved(path, info);
-}
-
-function unlinkObserved(path: string, info: FileInformation): void {
-  if (info.attributes & ATTR_REPARSE) {
-    if (![MOUNT_POINT, SYMLINK].includes(info.reparseTag)) throw new LocalizedError('error.unsupportedReparseTag', { path });
-    if (info.attributes & ATTR_DIRECTORY) { removeDirectoryName(path); return; }
-  } else if (info.attributes & ATTR_DIRECTORY) {
-    throw new LocalizedError('error.cannotUnlinkDirectory', { path });
-  }
-  // libuv's unlink/rmdir fallback can clear READONLY on the shared file.
-  // Ordinary Win32 deletion reports obstructions without repairing attributes.
-  if (!api().deleteFile(toNamespacedPath(path))) throwLastError(api(), 'DeleteFileW', path);
-}
+export function unlinkEntry(parent: Directory, name: string): void { removeTree(parent, name, false); }
 
 function removeDirectoryName(path: string): void {
   if (!api().removeDirectory(toNamespacedPath(path))) throwLastError(api(), 'RemoveDirectoryW', path);
 }
 
-/** Caller owns any required generation claim; this primitive has no cache policy. */
-export function removeTree(parent: Directory, name: string): void {
+/** Open the entry itself and retain its identity through enumeration or deletion. */
+export function removeTree(parent: Directory, name: string, recursive = true): void {
   revalidateDirectory(parent);
   const path = childPath(parent, name);
-  let info: FileInformation;
-  try { info = inspect(path); } catch (error) { if (isMissing(error)) return; throw error; }
-  if (!(info.attributes & ATTR_DIRECTORY) || info.attributes & ATTR_REPARSE) { unlinkObserved(path, info); return; }
-  const directory = observedDirectory(path, info, parent.volumeSerial);
-  removeDirectoryTree(directory);
+  let entry: NativeHold;
+  try { entry = open(path, DELETE, SHARE_READ_WRITE); }
+  catch (error) { if (isMissing(error)) return; throw error; }
+  using hold = entry;
+  const info = hold.information();
+  if (!samePath(hold.canonicalPath(), path)) throw new LocalizedError('error.directoryRedirected', { path });
+  if (info.attributes & ATTR_REPARSE) {
+    if (![MOUNT_POINT, SYMLINK].includes(info.reparseTag)) throw new LocalizedError('error.unsupportedReparseTag', { path });
+  } else if (info.attributes & ATTR_DIRECTORY) {
+    if (!recursive) throw new LocalizedError('error.cannotUnlinkDirectory', { path });
+    removeDirectoryTree(observedDirectory(path, info, parent.volumeSerial), hold);
+    return;
+  }
+  hold.deleteEntry();
 }
 
-/** Retains the caller's admitted identity, especially while a DELETE claim is held. */
-export function removeDirectoryTree(directory: Directory): void {
+export function removeDirectoryTree(directory: Directory, hold: NativeHold): void {
   for (const child of children(directory)) removeTree(directory, child);
-  removeEmptyDirectory(directory);
+  hold.deleteEntry();
 }
 
 export function removeEmptyDirectory(directory: Directory): void {
-  revalidateDirectory(directory);
-  removeDirectoryName(directory.path);
+  using hold = claimDirectory(directory);
+  hold.deleteEntry();
 }
 
 /** Node enumeration hints are not authoritative for reparse/read-only admission. */

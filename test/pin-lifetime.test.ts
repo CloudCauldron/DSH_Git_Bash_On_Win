@@ -10,7 +10,7 @@ import { nativeOnly, runtimeFixture } from './fixtures.ts';
 import { purgeRuntimeCache } from '../src/runtime/runtime-cache.ts';
 import { anchorPaths } from '../src/runtime/git-installation.ts';
 import {
-  admitDirectory, claimDirectory, createSetupLease, isBusy, NativeHold, openExclusiveMetadata,
+  admitDirectory, claimDirectory, createSetupLease, isBusy, NativeHold, openExclusiveMetadata, openOrdinaryFile,
   pathExists, pinDirectory, removeTree, requireActiveLease, unlinkEntry,
 } from '../src/runtime/ntfs-filesystem.ts';
 
@@ -53,6 +53,43 @@ await test('purge preflight preserves a blocked root and succeeds after its bloc
   await purgeRuntimeCache(fixture.cache);
   assert.equal(pathExists(fixture.cache), false);
   assert.equal(fs.statSync(sourceFile).nlink, links);
+});
+
+await test('purge removes the marker and root names while share-delete observers remain open', nativeOnly, async t => {
+  const fixture = await runtimeFixture(t);
+  await (await fixture.prepare()).release();
+  const observers = new Map<string, () => void>();
+  const marker = join(fixture.cache, '.owner.json');
+  const close = NativeHold.prototype.close;
+  const hook = t.mock.method(NativeHold.prototype, 'close', function (this: NativeHold) {
+    if ((this.path === marker || this.path === fixture.cache) && !observers.has(this.path)) {
+      observers.set(this.path, close.bind(this)); return;
+    }
+    close.call(this);
+  });
+  try {
+    await purgeRuntimeCache(fixture.cache);
+    assert.equal(observers.size, 2);
+    assert.equal(readdirSync(fixture.directory).includes('cache'), false);
+  } finally { hook.mock.restore(); for (const closeObserver of observers.values()) closeObserver(); }
+  assert.equal(pathExists(fixture.cache), false);
+  await purgeRuntimeCache(fixture.cache);
+});
+
+await test('offline purge reports a sibling lock still held by a metadata observer', nativeOnly, async t => {
+  const fixture = await runtimeFixture(t), parent = admitDirectory(fixture.directory);
+  const name = basename(fixture.cache) + '.writer-lock', close = NativeHold.prototype.close;
+  let observer: NativeHold | undefined;
+  const hook = t.mock.method(NativeHold.prototype, 'close', function (this: NativeHold) {
+    if (!observer && this.path === join(parent.path, name)) observer = openOrdinaryFile(parent, name);
+    close.call(this);
+  });
+  try {
+    await assert.rejects(purgeRuntimeCache(fixture.cache), /incomplete/);
+    assert.ok(readdirSync(parent.path).includes(name));
+  } finally { hook.mock.restore(); observer?.close(); }
+  await purgeRuntimeCache(fixture.cache);
+  assert.equal(readdirSync(parent.path).includes(name), false);
 });
 
 await test('purge preflight finds a pin in any generation before deleting controls or payload', nativeOnly, async t => {
@@ -419,7 +456,7 @@ await test('interrupted arbitrary-order GC leaves anchors intact but a delayed r
     const value = originalRead.call(this, maxBytes);
     if (delayed && this.path === join(fixture.cache, 'current.json')) {
       delayed = false;
-      const lock = createSetupLease(admitDirectory(fixture.cache), '.writer-lock');
+      const lock = createSetupLease(admitDirectory(fixture.directory), 'cache.writer-lock');
       try {
         const claim = claimDirectory(admitDirectory(oldPath));
         try { unlinkEntry(admitDirectory(join(oldPath, 'base/usr/lib/perl')), 'module.pm'); }

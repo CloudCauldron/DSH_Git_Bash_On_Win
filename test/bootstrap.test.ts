@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
+import fs, { readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { mkdir, rmdir, symlink, unlink, writeFile } from 'node:fs/promises';
-import { createRequire, findPackageJSON } from 'node:module';
+import { createRequire, findPackageJSON, syncBuiltinESMExports } from 'node:module';
 import { dirname, join, relative, resolve } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -21,7 +21,7 @@ import { readDictionaries } from '../src/locale.ts';
 import GitBashPreset from '../src/preset.ts';
 import * as BashTool from '../src/tool.ts';
 import { findInstalledDshManifest, installedDsh, SUPPORTED_DSH } from '../scripts/installed-dsh.ts';
-import { localSpawn, runtimeFixture, temporaryDirectory, readAclRecords } from './fixtures.ts';
+import { profileEnvironment, localSpawn, runFixtureCommand, success, runtimeFixture, temporaryDirectory, readAclRecords } from './fixtures.ts';
 import { pathExists } from '../src/runtime/ntfs-filesystem.ts';
 import { discoverGitInstallation } from '../src/runtime/git-installation.ts';
 
@@ -129,10 +129,17 @@ await test('catalog discovery requires English and skips unavailable optional tr
   await writeFile(join(directory, 'fr-CA.json'), JSON.stringify({ messages: fr }));
   await writeFile(join(directory, 'zh.json'), 'invalid JSON');
   await writeFile(join(directory, 'de.json'), JSON.stringify({ messages: { label: 42 } }));
+  await mkdir(join(directory, 'it.json')); // An existing entry that cannot be read as a catalog.
   await writeFile(join(directory, 'not_a_locale.json'), JSON.stringify({ messages: fr }));
   assert.throws(() => readDictionaries(url), { code: 'ENOENT' });
+  await writeFile(join(directory, 'en.json'), '{invalid');
+  assert.throws(() => readDictionaries(url), SyntaxError);
   await writeFile(join(directory, 'en.json'), JSON.stringify({ messages: en }));
   assert.deepEqual(readDictionaries(url), { en, 'fr-ca': fr });
+  const listing = t.mock.method(fs, 'readdirSync', () => { throw Object.assign(Error('directory listing denied'), { code: 'EACCES' }); });
+  syncBuiltinESMExports();
+  try { assert.deepEqual(readDictionaries(url), { en }); }
+  finally { listing.mock.restore(); syncBuiltinESMExports(); }
 });
 
 await test('the classic client registers dictionaries and the bundle slot after one locale request', async t => {
@@ -313,7 +320,7 @@ await test('maintained compiler graphs, lint and emitted public exports exclude 
   assert.equal(packageJson.exports['./adapter'], undefined);
   for (const value of Object.values(packageJson.exports)) {
     for (const path of typeof value === 'string' ? [value] : [value.default, value.types]) {
-      for (const file of path.includes('*') ? ['zh', 'en'].map(lang => path.replace('*', lang)) : [path]) {
+      for (const file of path.includes('*') ? filesUnder(join(root, 'locale')).map(name => './locale/' + name) : [path]) {
         assert.ok(readFileSync(resolve(root, file)).length);
       }
     }
@@ -325,9 +332,11 @@ await test('maintained compiler graphs, lint and emitted public exports exclude 
 await test('execution uses native DSH policy and purge refuses an unowned directory', async t => {
   assert.equal(GitBashExecutor.prototype.execute, SandboxBashExecutor.prototype.execute);
   const directory = await temporaryDirectory(t);
-  const sentinel = join(directory, 'owned.txt');
+  const cache = join(directory, '.dsh-git-bash-on-win');
+  await mkdir(cache);
+  const sentinel = join(cache, 'owned.txt');
   await writeFile(sentinel, 'unowned directory must be retained');
-  const purge = spawnSync(process.execPath, [join(root, 'lib/purge-runtime-cache.js'), directory], { encoding: 'utf8', timeout: 30_000 });
+  const purge = spawnSync(process.execPath, [join(root, 'lib/purge-runtime-cache.js'), cache], { encoding: 'utf8', timeout: 30_000 });
   assert.equal(purge.error, undefined);
   assert.equal(purge.status, 1);
   assert.match(purge.stderr, /uninstallation are incomplete/);
@@ -342,7 +351,7 @@ await test('execution uses native DSH policy and purge refuses an unowned direct
     assert.equal(plugin.status, 1);
     assert.match(plugin.stderr, /Usage: node scripts\/plugin.ts/);
   }
-  assert.deepEqual(filesUnder(directory), ['owned.txt']);
+  assert.deepEqual(filesUnder(directory), ['.dsh-git-bash-on-win/owned.txt']);
   assert.equal(readFileSync(sentinel, 'utf8'), 'unowned directory must be retained');
 });
 
@@ -365,23 +374,8 @@ await test('checkout install, offline recovery and removal preserve shared Shell
   const patches = [{ id: 'pwsh-sandbox', config: { ...shared, gitBashPath: fixture.request.gitBashPath } }];
   await writeFile(patchPath, JSON.stringify(patches)); // JSON is a valid native YAML patch.
   // Keep package-manager state and all profile changes inside this fixture.
-  await writeFile(join(profile, '.npmrc'), `store-dir=${join(fixture.directory, 'store').replaceAll('\\', '/')}\nstate-dir=${join(fixture.directory, 'state').replaceAll('\\', '/')}\n`);
-  const run = async (argv: string[], cwd = fixture.directory) => {
-    const child = spawn({ argv, cwd, env: { ...process.env, DSH_HOME: home, DSH_TELEMETRY_DISABLED: '1' },
-      signal: AbortSignal.timeout(180_000), graceMs: 500,
-      stdio: { stdin: 'ignore', stdout: { maxBytes: 128 * 1024 }, stderr: { maxBytes: 128 * 1024 } } });
-    try {
-      const outcome = await child.done;
-      assert.equal(await child.waitForExit(AbortSignal.timeout(5000)), true);
-      return { ...outcome, stdout: child.collected.stdout!.readFrom(0).text, stderr: child.collected.stderr!.readFrom(0).text };
-    } finally {
-      child.terminate();
-      assert.equal(await child.waitForExit(AbortSignal.timeout(5000)), true, 'package fixture must join its entire managed range');
-    }
-  };
-  const success = (result: { exitCode: number | null; stdout: string; stderr: string }) => {
-    assert.equal(result.exitCode, 0, result.stdout + result.stderr);
-  };
+  const env = profileEnvironment(fixture.directory, home);
+  const run = (argv: string[], cwd = fixture.directory) => runFixtureCommand(spawn, argv, cwd, env, t.signal);
   const checkout = 'file:' + resolve(root).replaceAll('\\', '/');
   const operation = (verb: 'add' | 'remove', target: string, ...flags: string[]) => run([process.execPath, join(root, 'scripts/plugin.ts'), pnpm, 'integration', verb, target, ...flags]);
   success(await operation('add', checkout));
@@ -403,20 +397,25 @@ await test('checkout install, offline recovery and removal preserve shared Shell
   const localeFiles = filesUnder(join(root, 'locale'));
   assert.deepEqual(filesUnder(join(packageRoot, 'locale')), localeFiles);
   for (const file of localeFiles) assert.deepEqual(readFileSync(join(packageRoot, 'locale', file)), readFileSync(join(root, 'locale', file)));
-  const placeholders = (messages: Record<string, string>) => Object.fromEntries(Object.entries(messages)
-    .map(([key, value]) => [key, value.match(/{[a-zA-Z0-9_]+}/g)?.sort() ?? []]));
-  const [zh, en] = ['zh', 'en'].map(lang => {
-    const path = profileRequire.resolve(`dsh-git-bash-on-win/locale/${lang}.json`);
-    const contents = readFileSync(path, 'utf8');
-    assert.equal(contents, readFileSync(join(root, 'locale', lang + '.json'), 'utf8'));
-    const { meta, messages } = JSON.parse(contents) as { meta: { title: string; description: string; detail: string }; messages: Record<string, string> };
-    assert.equal(meta.title, 'DSH Git Bash on Windows');
-    assert.ok(meta.description.trim());
-    assert.equal(meta.detail, lang === 'zh' ? 'README_CN.md' : 'README.md');
-    assert.deepEqual(readFileSync(join(packageRoot, meta.detail)), readFileSync(join(root, meta.detail)));
-    return placeholders(messages);
-  });
-  assert.deepEqual(zh, en);
+  const english = readDictionaries().en!;
+  const placeholders = (value: string) => value.match(/{[a-zA-Z0-9_]+}/g)?.sort() ?? [];
+  for (const file of localeFiles) {
+    const path = profileRequire.resolve('dsh-git-bash-on-win/locale/' + file);
+    assert.equal(realpathSync(path), join(packageRoot, 'locale', file));
+    const { meta, messages } = JSON.parse(readFileSync(path, 'utf8')) as {
+      meta?: { title: string; description: string; detail: string }; messages: Record<string, string>;
+    };
+    if (file === 'en.json' || file === 'zh.json') {
+      assert.equal(meta?.title, 'DSH Git Bash on Windows');
+      assert.ok(meta.description.trim());
+      assert.equal(meta.detail, file === 'zh.json' ? 'README_CN.md' : 'README.md');
+      assert.deepEqual(readFileSync(join(packageRoot, meta.detail)), readFileSync(join(root, meta.detail)));
+    }
+    for (const [key, value] of Object.entries(messages)) {
+      assert.ok(Object.hasOwn(english, key), key);
+      assert.deepEqual(placeholders(value), placeholders(english[key]!), key);
+    }
+  }
   assert.equal(realpathSync(profileRequire.resolve('dsh-git-bash-on-win/client')), join(packageRoot, 'lib', 'client.js'));
   // Exercise DSH's real profile resolver: adding standalone dependencies must
   // not split the host's Cordis service or native Shell schema identities.
@@ -505,7 +504,8 @@ await test('checkout install, offline recovery and removal preserve shared Shell
       const feedbackUrl = 'http://localhost/api/git-bash-on-win/feedback';
       for (const method of ['GET', 'POST']) assert.equal((await routes.fetch(new Request(feedbackUrl, { method }),
         { principal: { kind: 'other' } })).status, 403);
-      const denied = mock.method(fs, 'linkSync', () => { throw Object.assign(new Error('fixture probe denial'), { code: 'EPERM' }); });
+      const { NativeHold } = await import(${JSON.stringify(pathToFileURL(join(packageRoot, 'lib/runtime/ntfs-filesystem.js')).href)});
+      const denied = mock.method(NativeHold.prototype, 'linkTo', () => { throw Object.assign(new Error('fixture probe denial'), { win32Code: 5 }); });
       syncBuiltinESMExports();
       try {
         await assert.rejects(ctx.shell.execute(ctx.shell.resolve({ command: 'true', sandboxPolicy: { mode: 'read-only', workspaceRoot: home } })), error => {
@@ -576,7 +576,7 @@ await test('checkout install, offline recovery and removal preserve shared Shell
   // No repository node_modules junction or custom module resolver hides omissions.
   const invalidHelper = await run([process.execPath, join(packageRoot, 'lib/setup/link-helper.js')]);
   assert.notEqual(invalidHelper.exitCode, 0);
-  assert.match(invalidHelper.stderr, /Expected one setup plan path/);
+  assert.match(invalidHelper.stderr, /Expected a setup plan path and digest/);
   const invalidLauncher = await run([process.execPath, join(packageRoot, 'lib/bash-launcher.js')]);
   assert.notEqual(invalidLauncher.exitCode, 0);
   assert.match(invalidLauncher.stderr, /Invalid private Git Bash invocation/);

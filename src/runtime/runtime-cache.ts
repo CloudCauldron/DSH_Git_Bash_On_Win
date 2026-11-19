@@ -75,23 +75,19 @@ const currentSchema = z.object({
   anchors: z.object(Object.fromEntries(anchorNames.map(name => [name, stampSchema]))).required(),
 }).required();
 
+function writeOwnerMarker(root: Directory): void {
+  writeNewMetadata(root, markerName, { schemaVersion: 1, owner: 'dsh-git-bash-on-win',
+    rootPath: root.path, volumeSerial: root.volumeSerial, fileId: root.fileId });
+}
+
 /** A marker authorizes the whole interior, but never an external reparse target. */
 function admitRoot(path: string, create: boolean): Directory | undefined {
   path = absolutePath(path);
   if (!pathExists(path)) {
     if (!create) { admitDirectory(dirname(path)); return undefined; }
     const parent = admitDirectory(dirname(path));
-    let root: Directory;
-    try { root = createDirectory(parent, basename(path)); }
-    catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-      // Another process may have completed ownership while mkdir was pending.
-      // Reuse normal admission; an incomplete or unknown marker still fails F1.
-      const competing = admitRoot(path, false);
-      if (competing) return competing;
-      throw error;
-    }
-    try { writeNewMetadata(root, markerName, { schemaVersion: 1, owner: 'dsh-git-bash-on-win', rootPath: root.path, volumeSerial: root.volumeSerial, fileId: root.fileId }); }
+    const root = createDirectory(parent, basename(path));
+    try { writeOwnerMarker(root); }
     catch (error) { bestEffort(() => removeEmptyDirectory(root)); throw error; }
     return root;
   }
@@ -192,19 +188,29 @@ async function preparePass(request: RuntimePreparation, signal: AbortSignal, app
   if (parent.volumeSerial !== sourceDirectory.volumeSerial) {
     throw new LocalizedError('error.sameVolume', undefined, { fallback: 'Git and cache must share an NTFS volume.' });
   }
-  const root = admitRoot(cachePath, true)!;
-  if (overlaps(root.path, source.root)) throw new LocalizedError('error.cacheOverlap', undefined, { fallback: 'Git source and cache paths must not overlap.' });
-  if (root.volumeSerial !== sourceDirectory.volumeSerial) {
-    throw new LocalizedError('error.sameVolume', undefined, { fallback: 'Git and cache must share an NTFS volume.' });
-  }
+  const admitCache = (create: boolean) => {
+    const root = admitRoot(cachePath, create);
+    if (root && overlaps(root.path, source.root)) throw new LocalizedError('error.cacheOverlap');
+    if (root && root.volumeSerial !== sourceDirectory.volumeSerial) throw new LocalizedError('error.sameVolume');
+    return root;
+  };
   if (!request.rebuild) {
-    const warm = await tryWarm(root, source, signal);
-    if (warm && warm !== 'sourceChanged') return warm;
+    try {
+      const root = admitCache(false);
+      if (root) {
+        const warm = await tryWarm(root, source, signal);
+        if (warm && warm !== 'sourceChanged') return warm;
+      }
+    } catch (error) {
+      // Another process may be writing the first marker. Recheck under its lock.
+      if (!isMissing(error) && !(error instanceof SyntaxError)) throw error;
+    }
   }
-  const lock = await acquireWriterLock(root, signal);
   let pin: GenerationPin | undefined;
   try {
-    revalidateRoot(root);
+    using lock = await acquireWriterLock(cachePath, signal);
+    const root = admitCache(true)!;
+    using _root = pinDirectory(root);
     const warm = request.rebuild ? undefined : await tryWarm(root, source, signal);
     if (warm && warm !== 'sourceChanged') {
       pin = warm;
@@ -216,14 +222,10 @@ async function preparePass(request: RuntimePreparation, signal: AbortSignal, app
       if (!pin) return { source: sourceDirectory, layout: source.layout, sourceChanged: warm === 'sourceChanged' };
     }
     return pin;
-  } finally { await closePreparationLock(lock, pin); }
-}
-
-async function closePreparationLock(lock: NativeHold, pin: GenerationPin | undefined): Promise<void> {
-  try { lock.close(); }
-  catch (error) {
-    // A successful factory result cannot escape if closing its writer failed.
+  } catch (error) {
+    // The pin transfers only after both the root and writer have closed successfully.
     await pin?.release();
+    if (error instanceof SuppressedError && error.suppressed === signal.reason) throw error.error;
     throw error;
   }
 }
@@ -249,13 +251,14 @@ async function buildFresh(root: Directory, generations: Directory, source: GitIn
     // A permission check can end here without starting a rebuild. Collect only once it may proceed.
     const selected = currentRecord(root)?.generationId;
     for (const name of children(generations)) {
-      if (name !== selected && name !== id) bestEffort(() => collectGeneration(generations, name));
+      if (name.toLowerCase() !== selected && name.toLowerCase() !== id) bestEffort(() => collectGeneration(generations, name));
     }
     const base = createDirectory(generation, 'base');
     const validate = () => {
       signal.throwIfAborted();
       request.onProgress?.('checking');
       createJunction(base, 'bin', admitChildDirectory(admitChildDirectory(base, 'usr'), 'bin'));
+      revalidateDirectory(sourceDirectory);
       const anchors = captureAnchors(source.root, base.path, source.layout);
       admitBase(generation, source.layout);
       revalidateRoot(root);
@@ -281,9 +284,7 @@ async function buildFresh(root: Directory, generations: Directory, source: GitIn
       } finally { watcher?.close(); }
     } else {
       const files = await inventoryGitFiles(source.root, () => signal.throwIfAborted());
-      revalidateDirectory(sourceDirectory);
-      revalidateDirectory(base);
-      await linkFreshTree({ sourceRoot: source.root, baseRoot: base.path, files }, () => signal.throwIfAborted(), request.onProgress);
+      await linkFreshTree({ source: sourceDirectory, base, files }, () => signal.throwIfAborted(), request.onProgress);
       anchors = validate();
     }
     // Final admission and checked lease closure precede ordinary plan cleanup.
@@ -321,48 +322,61 @@ function collectGeneration(generations: Directory, name: string): void {
   const claim = claimDirectory(directory);
   try {
     unlinkPlan(directory);
-    removeDirectoryTree(directory);
+    removeDirectoryTree(directory, claim);
   } finally { claim.close(); }
 }
 
 /** Offline only. Preflight every generation before unpublication or payload deletion. */
 export async function purgeRuntimeCache(cacheDirectory: string): Promise<void> {
-  const root = admitRoot(cacheDirectory, false);
-  if (!root) return;
-  const lock = await acquireWriterLock(root, new AbortController().signal);
+  const path = absolutePath(cacheDirectory);
+  using lock = await acquireWriterLock(path);
+  const root = admitRoot(path, false);
+  if (root) purgeOwnedRoot(root);
+  lock.close();
+  // A metadata observer can keep a delete-on-close lock name pending.
+  const rootName = basename(path).toLowerCase(), lockName = basename(lock.path).toLowerCase();
+  if (children(admitDirectory(dirname(path))).some(name => [rootName, lockName].includes(name.toLowerCase()))) {
+    throw new LocalizedError('error.purgeIncomplete');
+  }
+}
+
+function purgeOwnedRoot(root: Directory): void {
   const claims: Array<{ directory: Directory; hold: NativeHold }> = [];
-  let rootHold: NativeHold | undefined;
+  using rootHold = claimDirectory(root);
   try {
-    try {
-      revalidateRoot(root);
-      rootHold = claimDirectory(root);
-      const generations = pathExists(join(root.path, 'generations')) ? ordinaryChildDirectory(root, 'generations') : undefined;
-      if (generations) {
-        for (const name of children(generations)) {
-          const directory = ordinaryChildDirectory(generations, name);
-          if (directory) claims.push({ directory, hold: claimDirectory(directory) });
-        }
+    const generations = pathExists(join(root.path, 'generations')) ? ordinaryChildDirectory(root, 'generations') : undefined;
+    if (generations) {
+      for (const name of children(generations)) {
+        const directory = ordinaryChildDirectory(generations, name);
+        if (directory) claims.push({ directory, hold: claimDirectory(directory) });
       }
-      for (const { directory } of claims) unlinkPlan(directory);
-      removeTree(root, 'current.json');
-      if (generations) {
-        for (const { directory, hold } of claims) {
-          removeDirectoryTree(directory);
-          hold.close();
-        }
-        for (const name of children(generations)) {
-          if (ordinaryChildDirectory(generations, name)) throw new LocalizedError('error.generationAfterPreflight', { name });
-          unlinkEntry(generations, name);
-        }
-        removeEmptyDirectory(generations);
-      }
-      for (const name of children(root)) if (name !== markerName && name !== '.writer-lock') removeTree(root, name);
-      unlinkEntry(root, markerName);
-    } finally {
-      closePurgeHolds([...claims.map(claim => claim.hold), lock]);
     }
-    removeEmptyDirectory(root);
-  } finally { rootHold?.close(); }
+    for (const { directory } of claims) unlinkPlan(directory);
+    removeTree(root, 'current.json');
+    if (generations) {
+      for (const { directory, hold } of claims) {
+        removeDirectoryTree(directory, hold);
+        hold.close();
+      }
+      for (const name of children(generations)) {
+        if (ordinaryChildDirectory(generations, name)) throw new LocalizedError('error.generationAfterPreflight', { name });
+        unlinkEntry(generations, name);
+      }
+      removeEmptyDirectory(generations);
+    }
+    const entries = children(root);
+    const marker = entries.includes(markerName) ? markerName : entries.find(name => name.toLowerCase() === markerName);
+    for (const name of entries) if (name !== marker) removeTree(root, name);
+  } finally {
+    closePurgeHolds(claims.map(claim => claim.hold));
+  }
+  unlinkEntry(root, markerName);
+  try { rootHold.deleteEntry(); }
+  catch (error) {
+    rootHold.close();
+    writeOwnerMarker(root);
+    throw error;
+  }
 }
 
 function closePurgeHolds(holds: readonly NativeHold[]): void {

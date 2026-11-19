@@ -1,6 +1,6 @@
 # Backend design decisions
 
-The backend design took shape on 15–17 November 2026. It lets a DSH profile run Git Bash on native Windows x64 under DSH's selected execution policy. The supported host is DSH 0.2.2-rc.2 with Node 26 or newer. An installation can use the `ucrt64` or `mingw64` Git for Windows layout.
+The backend design took shape on 15–17 November 2026. It lets a DSH profile run Git Bash on native Windows x64 under DSH's selected execution policy. The supported host is DSH 0.2.2-rc.5 with Node 26 or newer. An installation can use the `ucrt64` or `mingw64` Git for Windows layout.
 
 Four observations drove the design. Stock Git Bash failed to start its Unix compatibility runtime, MSYS, in read-only and workspace-write modes. The first working executor scanned the source and three runtime trees on every command. Its cleanup could delete existing files in a directory it mistook for its cache, and its elevation worker could mistake a failed wait for helper exit. The backend kept the working DSH integration and changed how it starts Bash, owns storage and confirms completion.
 
@@ -30,14 +30,14 @@ A **pin** keeps one generation available to an executor. A command leases a **vi
 
 ## Root ownership and confined setup
 
-The cache may create a new root exclusively or reuse a root with a valid ownership marker. The marker binds the schema and owner to the canonical path, volume and directory identity. Setup rejects a pre-existing unrecognized directory, including an empty one. It rechecks ownership after acquiring the writer lock. The generations container must be an ordinary directory on the admitted volume.
+The cache may create a new root exclusively or reuse a root with a valid ownership marker. The marker binds the schema and owner to the canonical path, volume and directory identity. Setup rejects a pre-existing unrecognized directory, including an empty one. The delete-on-close writer lock is a sibling of the cache under the DSH home, so it serializes ownership-marker creation through final root removal. Offline purge refuses a held writer lock. The generations container must be an ordinary directory on the admitted volume.
 
 Everything inside the recognized root is disposable plugin storage. A list of individual files would add a second ownership record that could become incomplete during a crash. The filesystem walker descends only into ordinary directories, unlinks hardlink names, and removes recognized junctions and symbolic links as objects. Unknown reparse types and access errors stop strict removal. Cleanup never changes permissions or attributes to make a deletion succeed.
 
 For a new generation the writer holds the cache lock through setup and publication.
 
 1. Allocate a fresh generation ID at its final path. Try one hardlink from the admitted `usr/bin/bash.exe` to a temporary sibling of the future base. Unlink a successful probe before inventory. A permission denial at this specific link is the only automatic route to elevation.
-2. Create the empty base and enumerate the selected source files in the process that will link them. The local and elevated paths share the same linker. It validates relative names and file types, creates parents in order, and links in bounded batches without overwriting existing names.
+2. Create the empty base and enumerate the selected source files in the process that will link them. The local and elevated paths share the same linker. It validates relative names and file types, creates parents in order, and links in bounded batches. Each native link operation names the open source file, the open destination directory and one child name. An existing name fails the operation.
 3. If linking fails after the probe, stop scheduling and drain the work already issued. The candidate stays unpublished and can be collected. Retrying partway through with elevation would repeat inventory and give a partially built tree a second lifetime.
 4. After linking, create the internal `bin` junction, check the base layout, and open the six source/base anchor pairs. Each pair must identify the same ordinary file on the same volume. Record the identity, size and last-write time observed through the base handle.
 5. Finish helper cleanup if elevation was used, open the new pin, and atomically replace `current.json` using DSH's public atomic writer. That replacement publishes the generation. A caller cancelled during the write may release the resulting pin. It never rolls the selector back.
@@ -73,11 +73,11 @@ Manual rebuilds send progress over the existing owner feedback stream. The ordin
 
 ## Elevation and cancellation
 
-The Windows User Account Control (UAC) consent dialog can block a native call. Terminating a JavaScript worker may still wait for that call. A small unelevated broker runs it in a DSH-owned process so local shutdown can stop and join the broker. Only the fixed link helper receives elevation.
+The Windows User Account Control (UAC) consent dialog can block a native call. Terminating a JavaScript worker may still wait for that call. A small unelevated broker runs it in a DSH-owned process so local shutdown can stop and join the broker. Only the fixed link helper receives elevation. Approval trusts the installed Node executable, plugin code and its dependencies. Profiles sharing the cache belong to the same Windows user.
 
 When automatic setup needs elevation, it releases the writer lock before requesting confirmation from an interactive DSH owner. On confirmation it rechecks the source directory identity, layout and current cache. Another instance may already have finished. A headless user gets a command for the installed profile. An explicit linking action supplies the user's request to proceed to Windows consent.
 
-Two temporary files have different lifetimes. The controller owns a non-inherited, delete-on-close setup lease. Its identity is bound into the plan and closing it revokes the attempt. The helper opens the existing plan exclusively, checks the source, cache, generation, empty base, layout and lease, then keeps the plan handle through inventory and linking. It rechecks the lease between bounded batches. This keeps a late or interrupted helper tied to the original attempt.
+Two temporary files have different lifetimes. The controller owns a non-inherited, delete-on-close setup lease. Its identity is bound into the plan and closing it revokes the attempt. The controller passes the plan’s SHA-256 digest to the broker and helper as a separate argument. The helper opens the existing plan exclusively, verifies that digest, checks the source, cache, generation, empty base, layout and lease, then keeps the plan handle through inventory and linking. It rechecks the lease between bounded batches. This keeps a late or interrupted helper tied to the original attempt.
 
 Success requires the helper to finish and close its plan handle, the broker to observe the helper's zero exit status and close its process handle, and DSH to confirm the broker's process group has settled. The native wait and close operations have separate error checks. A failed wait leaves exit unconfirmed. The parent closes the lease and removes the plan before publishing. Exit status and bounded error output are sufficient for this exchange.
 
@@ -96,7 +96,7 @@ Profile removal leaves the shared cache available. Complete removal from the hom
 3. Purge the home's `.dsh-git-bash-on-win` cache once. A blocked or interrupted purge reports failure.
 4. After the purge succeeds, remove the plugin using DSH's official package operation. The repository's removal wrapper performs the purge before it calls DSH when invoked with `--purge-cache`.
 
-Purge validates ownership, takes the writer lock, and claims delete access to the root and every ordinary generation. It unlinks helper plans and removes the selector before deleting payload, so an interruption cannot leave a partially deleted generation selected. It removes interior entries without following link targets, keeps the ownership marker until payload cleanup succeeds, and checks handle closure and removal of the root itself.
+Purge takes the writer lock, validates ownership, and claims delete access to the root and every ordinary generation. It unlinks helper plans and removes the selector before deleting payload, so an interruption cannot leave a partially deleted generation selected. It removes interior entries without following link targets, keeps the ownership marker until payload cleanup succeeds, and verifies that both the root and its sibling writer lock have disappeared.
 
 Offline recovery uses the packaged purge entry with the absolute shared cache path, followed by a Bash call after restart. It retains the package and Shell settings. Removing all cache names restores the source files' hardlink counts. NTFS records link creation and removal in change times, archive bits and journals. The plugin leaves those records to the filesystem.
 

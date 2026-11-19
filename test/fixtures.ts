@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import assert from 'node:assert/strict';
 import koffi from 'koffi';
-import { closeHandleChecked, extendWin32ProcessBindings, type NativePtr } from '@deepseek-ai/dsh-win32-process';
+import { closeHandleChecked, extendWin32ProcessBindings, Win32Error, type NativePtr } from '@deepseek-ai/dsh-win32-process';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import type { TestContext } from 'node:test';
@@ -11,7 +11,7 @@ import type { Context } from '@deepseek-ai/cordis';
 import type { SandboxProvider } from '@deepseek-ai/dsh-sandbox';
 import type Subprocess from '@deepseek-ai/dsh-subprocess';
 import { findInstalledDshManifest, installedDsh } from '../scripts/installed-dsh.ts';
-import { admitDirectory, removeTree } from '../src/runtime/ntfs-filesystem.ts';
+import { admitDirectory, NativeHold, removeTree } from '../src/runtime/ntfs-filesystem.ts';
 import { prepareRuntime, purgeRuntimeCache, type GenerationPin, type RuntimePreparation } from '../src/runtime/runtime-cache.ts';
 import { anchorPaths, discoverGitInstallation, inventoryGitFiles, type AnchorStamps, type GitLayout } from '../src/runtime/git-installation.ts';
 
@@ -86,6 +86,39 @@ export async function runtimeFixture(t: TestContext, layout: GitLayout = 'ucrt64
       };
     },
   };
+}
+
+export function profileEnvironment(directory: string, home: string): NodeJS.ProcessEnv {
+  return { ...process.env, DSH_HOME: home, DSH_TELEMETRY_DISABLED: '1',
+    TMP: directory, TEMP: directory, TMPDIR: directory,
+    PNPM_CONFIG_STORE_DIR: join(directory, 'pnpm-store'), PNPM_CONFIG_CACHE_DIR: join(directory, 'pnpm-cache'),
+    PNPM_CONFIG_STATE_DIR: join(directory, 'pnpm-state') };
+}
+
+export async function runFixtureCommand(spawn: Subprocess['spawn'], argv: string[], cwd: string, env: NodeJS.ProcessEnv, signal: AbortSignal) {
+  const child = spawn({ argv, cwd, env, graceMs: 500, signal: AbortSignal.any([signal, AbortSignal.timeout(180_000)]),
+    stdio: { stdin: 'ignore', stdout: { maxBytes: 128 * 1024 }, stderr: { maxBytes: 128 * 1024 } } });
+  try {
+    const outcome = await child.done;
+    assert.equal(await child.waitForExit(AbortSignal.timeout(5000)), true);
+    return { ...outcome, stdout: child.collected.stdout!.readFrom(0).text, stderr: child.collected.stderr!.readFrom(0).text };
+  } finally {
+    child.terminate();
+    assert.equal(await child.waitForExit(AbortSignal.timeout(5000)), true, 'fixture command must release its managed range');
+  }
+}
+
+export function success(result: { exitCode: number | null; stdout: string; stderr: string }) {
+  assert.equal(result.exitCode, 0, result.stdout + result.stderr);
+}
+
+export function denyProbe(t: TestContext, hold = NativeHold) {
+  const link = hold.prototype.linkTo;
+  const mock = t.mock.method(hold.prototype, 'linkTo', function (this: NativeHold, parent: NativeHold, name: string) {
+    if (name === '.probe') throw new Win32Error('FileLinkInformation', 5, 'fixture probe denial');
+    link.call(this, parent, name);
+  });
+  return () => mock.mock.restore();
 }
 
 /** An isolated installed provider, with no Loader, settings or personal profile. */

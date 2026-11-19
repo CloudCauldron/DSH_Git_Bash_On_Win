@@ -117,7 +117,8 @@
     "error.leaseIdentityChanged": "安装租约的文件身份已改变。",
     "error.nonemptyElevatedBase": "提权安装需要空的基目录。",
     "error.planOutsideGeneration": "安装计划不在预期的运行时代目录内。",
-    "error.setupPlanArgument": "需要且只能提供一个安装计划路径。",
+    "error.setupPlanChanged": "安装计划在准备后发生了变化。",
+    "error.setupPlanArgument": "需要提供安装计划路径及其摘要。",
     "error.sourcePlanMismatch": "源目录布局与安装计划不一致。",
     "error.unexpectedPlanBase": "计划中的基目录必须是该运行时代的 base 目录。",
 

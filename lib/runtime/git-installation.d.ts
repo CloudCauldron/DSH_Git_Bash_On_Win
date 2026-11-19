@@ -1,12 +1,12 @@
-import { type FileIdentity } from './ntfs-filesystem.ts';
+import { type Directory, type FileIdentity } from './ntfs-filesystem.ts';
 export type GitLayout = 'ucrt64' | 'mingw64';
 export interface GitInstallation {
     readonly root: string;
     readonly layout: GitLayout;
 }
 export interface FreshLinkTree {
-    readonly sourceRoot: string;
-    readonly baseRoot: string;
+    readonly source: Directory;
+    readonly base: Directory;
     readonly files: readonly string[];
 }
 export interface FileStamp extends FileIdentity {

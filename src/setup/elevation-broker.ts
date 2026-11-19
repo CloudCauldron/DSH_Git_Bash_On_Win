@@ -11,10 +11,10 @@ import { LocalizedError } from '../localized-error.ts';
 const quote = (argument: string) => '"' + argument.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/, '$1$1') + '"';
 
 /** Modal COM/UAC stays in this unelevated DSH-owned process. */
-export async function runElevationBroker(planPath: string): Promise<void> {
+export async function runElevationBroker(planPath: string, digest: string): Promise<void> {
   requireWindows();
   const generation = planGeneration(planPath);
-  const plan = decodeElevationPlan(readMetadata(generation, 'plan.json', planByteLimit));
+  const plan = decodeElevationPlan(readMetadata(generation, 'plan.json', planByteLimit), digest);
   const api = loadWin32ProcessBindings();
   const info = koffi.struct({
     cbSize: 'uint32', fMask: 'uint32', hwnd: 'void *', lpVerb: 'str16', lpFile: 'str16',
@@ -28,7 +28,7 @@ export async function runElevationBroker(planPath: string): Promise<void> {
   const uninitialize = ole.func('__stdcall', 'CoUninitialize', 'void', []) as () => void;
   const request = {
     cbSize: info.size, fMask: 0x140, hwnd: null, lpVerb: 'runas', lpFile: process.execPath,
-    lpParameters: [fileURLToPath(new URL('./link-helper.js', import.meta.url)), planPath].map(quote).join(' '),
+    lpParameters: [fileURLToPath(new URL('./link-helper.js', import.meta.url)), planPath, digest].map(quote).join(' '),
     lpDirectory: fileURLToPath(new URL('.', import.meta.url)), nShow: 0, hInstApp: null, lpIDList: null,
     lpClass: null, hkeyClass: null, dwHotKey: 0, hIcon: null, hProcess: null as NativePtr | null,
   };
@@ -51,8 +51,8 @@ export async function runElevationBroker(planPath: string): Promise<void> {
 if (import.meta.main) {
   process.exitCode = 1;
   try {
-    if (process.argv.length !== 3) throw new LocalizedError('error.setupPlanArgument');
-    await runElevationBroker(process.argv[2]!);
+    if (process.argv.length !== 4) throw new LocalizedError('error.setupPlanArgument');
+    await runElevationBroker(process.argv[2]!, process.argv[3]!);
     process.exitCode = 0;
   } catch (error) { console.error(String(error).slice(0, 8192)); }
 }

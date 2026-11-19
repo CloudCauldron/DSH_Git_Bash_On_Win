@@ -117,7 +117,8 @@
     "error.leaseIdentityChanged": "Setup lease identity changed.",
     "error.nonemptyElevatedBase": "Elevated setup requires an empty base.",
     "error.planOutsideGeneration": "Plan is outside its expected generation.",
-    "error.setupPlanArgument": "Expected one setup plan path.",
+    "error.setupPlanChanged": "The setup plan has changed since preparation.",
+    "error.setupPlanArgument": "Expected a setup plan path and digest.",
     "error.sourcePlanMismatch": "Source layout disagrees with the setup plan.",
     "error.unexpectedPlanBase": "Plan base must be exactly the generation base.",
 

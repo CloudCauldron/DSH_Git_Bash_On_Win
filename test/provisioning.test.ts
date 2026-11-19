@@ -11,14 +11,14 @@ import koffi from 'koffi';
 import { loadWin32ProcessBindings, Win32Error, type NativePtr } from '@deepseek-ai/dsh-win32-process';
 import type Subprocess from '@deepseek-ai/dsh-subprocess';
 import type { SubprocessHandle, SubprocessOutcome } from '@deepseek-ai/dsh-subprocess';
-import { localSpawn, nativeOnly, runtimeFixture, readAclRecords } from './fixtures.ts';
+import { denyProbe, localSpawn, nativeOnly, runtimeFixture, readAclRecords } from './fixtures.ts';
 import { prepareRuntime, purgeRuntimeCache, type GenerationPin, type LinkProgress } from '../src/runtime/runtime-cache.ts';
 import { anchorPaths } from '../src/runtime/git-installation.ts';
 import {
   admitDirectory, children, createSetupLease, isBusy, isMissing, NativeHold, openExclusiveMetadata, openOrdinaryFile, pathExists, pinDirectory,
   requireActiveLease, unlinkEntry,
 } from '../src/runtime/ntfs-filesystem.ts';
-import { decodeElevationPlan } from '../src/setup/elevated-linking.ts';
+import { decodeElevationPlan, planDigest } from '../src/setup/elevated-linking.ts';
 import { runLinkHelper } from '../src/setup/link-helper.ts';
 import { runElevationBroker } from '../src/setup/elevation-broker.ts';
 
@@ -40,20 +40,6 @@ function brokerHandle(done: Promise<SubprocessOutcome>, overrides: Partial<Subpr
     stdin: undefined, stdout: undefined, stderr: undefined, control: undefined, collected: {}, done,
     terminate() {}, async waitForExit() { await done.catch(() => {}); return true; }, ...overrides,
   };
-}
-
-function replaceLinks(t: TestContext, action: typeof fs.linkSync) {
-  const mock = t.mock.method(fs, 'linkSync', action);
-  syncBuiltinESMExports();
-  return () => { mock.mock.restore(); syncBuiltinESMExports(); };
-}
-
-function denyProbe(t: TestContext) {
-  const link = fs.linkSync;
-  return replaceLinks(t, (source, target) => {
-    if (basename(String(target)) === '.probe') throw Object.assign(new Error('fixture probe denial'), { code: 'EPERM' });
-    link(source, target);
-  });
 }
 
 await test('local probe is removed before inventory and creates no elevation controls', nativeOnly, async t => {
@@ -80,7 +66,7 @@ await test('automatic consent releases the writer and re-admits another writerâ€
   const request = { ...f.request, elevation: async (source: string, changed: boolean) => {
     assert.equal(source, f.source);
     assert.equal(changed, [false, true, false, true][confirmations++]);
-    assert.equal(pathExists(join(f.cache, '.writer-lock')), false);
+    assert.equal(pathExists(f.cache + '.writer-lock'), false);
     assert.ok(readdirSync(join(f.cache, 'generations')).every(id => !pathExists(join(f.cache, 'generations', id, 'plan.json'))));
     if (obsolete) assert.ok(pathExists(obsolete), 'the permission probe must leave old generations alone');
     restore();
@@ -152,7 +138,7 @@ await test('probe denial joins helper work and keeps its setup lease through fin
     started = true;
     const planPath = spec.argv[2]!;
     generation = dirname(planPath);
-    plan = decodeElevationPlan(JSON.parse(readFileSync(planPath, 'utf8')));
+    plan = decodeElevationPlan(JSON.parse(readFileSync(planPath, 'utf8')), spec.argv[3]!);
     assert.equal('files' in plan, false);
     assert.deepEqual(readdirSync(plan.baseRoot), []);
     assert.equal(pathExists(join(generation, '.probe')), false);
@@ -161,7 +147,7 @@ await test('probe denial joins helper work and keeps its setup lease through fin
       expected.add(join(plan.sourceRoot, path)); expected.add(join(plan.baseRoot, path));
     }
     expected.add(join(fixture.cache, '.owner.json'));
-    const done = runLinkHelper(planPath).then(() => { helperFinished = true; linked.resolve(); return success; });
+    const done = runLinkHelper(planPath, spec.argv[3]!).then(() => { helperFinished = true; linked.resolve(); return success; });
     return brokerHandle(done, { waitForExit: () => range.promise });
   };
   try {
@@ -188,13 +174,13 @@ await test('probe denial joins helper work and keeps its setup lease through fin
 await test('probe non-permission, structural, read-only and cleanup failures never request UAC', nativeOnly, async t => {
   for (const kind of ['io', 'source-directory', 'read-only', 'probe-cleanup'] as const) await t.test(kind, async t => {
     const fixture = await runtimeFixture(t), bash = join(fixture.source, 'usr/bin/bash.exe');
-    const link = fs.linkSync;
+    const link = NativeHold.prototype.linkTo;
     let blocker: NativeHold | undefined;
-    const restore = replaceLinks(t, (source, target) => {
+    const mockLink = t.mock.method(NativeHold.prototype, 'linkTo', function (this: NativeHold, parent: NativeHold, name: string) {
       if (kind === 'io') throw Object.assign(new Error('fixture link IO failure'), { code: 'EIO' });
-      link(source, target);
-      if (kind === 'probe-cleanup' && basename(String(target)) === '.probe') {
-        blocker = openExclusiveMetadata(admitDirectory(dirname(String(target).replace(/^\\\\\?\\/, ''))), '.probe');
+      link.call(this, parent, name);
+      if (kind === 'probe-cleanup' && name === '.probe') {
+        blocker = openExclusiveMetadata(admitDirectory(parent.path), '.probe');
       }
     });
     try {
@@ -204,26 +190,24 @@ await test('probe non-permission, structural, read-only and cleanup failures nev
       if (kind === 'probe-cleanup') assert.ok(blocker, 'the actual probe handle must block ordinary unlink');
       assert.equal(pathExists(join(fixture.cache, 'current.json')), false);
     } finally {
-      blocker?.close(); restore();
+      blocker?.close(); mockLink.mock.restore();
       if (kind === 'read-only') fs.chmodSync(bash, 0o666);
     }
   });
 });
 
 await test('later link denial never resets base or escalates, and guarded GC reclaims the candidate', nativeOnly, async t => {
-  const fixture = await runtimeFixture(t), link = fs.linkSync;
+  const fixture = await runtimeFixture(t), link = NativeHold.prototype.linkTo;
   let hold: NativeHold | undefined, generation = '', baseId = 0;
-  const restore = replaceLinks(t, (source, target) => {
-    if (String(target).endsWith('sh.exe') && !String(target).endsWith('bash.exe')) {
-      generation = dirname(dirname(dirname(dirname(String(target)))));
-      // Strip the Node namespace spelling before boundary admission.
-      generation = generation.replace(/^\\\\\?\\/, '');
+  const mockLink = t.mock.method(NativeHold.prototype, 'linkTo', function (this: NativeHold, parent: NativeHold, name: string) {
+    if (name === 'sh.exe') {
+      generation = dirname(dirname(dirname(parent.path)));
       const base = join(generation, 'base');
       baseId = fs.statSync(base).ino;
       hold = pinDirectory(admitDirectory(generation));
       throw Object.assign(new Error('fixture later link denial'), { code: 'EACCES' });
     }
-    link(source, target);
+    link.call(this, parent, name);
   });
   try {
     await assert.rejects(fixture.prepare(), /fixture later link denial/);
@@ -231,19 +215,19 @@ await test('later link denial never resets base or escalates, and guarded GC rec
     assert.ok(pathExists(join(generation, 'base/etc/profile')));
     assert.equal(pathExists(join(generation, 'plan.json')), false);
     assert.equal(pathExists(join(fixture.cache, 'current.json')), false);
-  } finally { hold?.close(); restore(); }
+  } finally { hold?.close(); mockLink.mock.restore(); }
   const pin = await fixture.prepare(); await pin.release();
   assert.equal(pathExists(generation), false);
 });
 
 await test('helper independently rejects changed identities, wrong layout/path, and populated base', nativeOnly, async t => {
-  for (const kind of ['schema', 'identity', 'layout', 'base-path', 'populated', 'reparse', 'read-only'] as const) await t.test(kind, async t => {
+  for (const kind of ['digest', 'schema', 'identity', 'layout', 'base-path', 'populated', 'reparse', 'read-only'] as const) await t.test(kind, async t => {
     const fixture = await runtimeFixture(t), restore = denyProbe(t);
     const bash = join(fixture.source, 'usr/bin/bash.exe');
     const spawn: Subprocess['spawn'] = spec => {
       const planPath = spec.argv[2]!, plan = JSON.parse(readFileSync(planPath, 'utf8')) as Record<string, unknown>;
       const base = String(plan.baseRoot);
-      if (kind === 'schema') delete plan.attemptId;
+      if (kind === 'schema') delete plan.generationId;
       if (kind === 'identity') (plan.identities as Record<string, unknown>).source = { volumeSerial: '0', fileId: '0' };
       if (kind === 'layout') plan.layout = 'mingw64';
       if (kind === 'base-path') plan.baseRoot = fixture.workspace;
@@ -251,7 +235,7 @@ await test('helper independently rejects changed identities, wrong layout/path, 
       if (kind === 'reparse') { fs.rmdirSync(base); fs.symlinkSync(fixture.workspace, base, 'junction'); }
       if (kind === 'read-only') fs.chmodSync(bash, 0o444);
       writeFileSync(planPath, JSON.stringify(plan));
-      return brokerHandle(runLinkHelper(planPath).then(() => success));
+      return brokerHandle(runLinkHelper(planPath, kind === 'digest' ? '0'.repeat(64) : planDigest(plan)).then(() => success));
     };
     try {
       await assert.rejects(prepareRuntime({ ...fixture.request, spawn }, signal()));
@@ -274,7 +258,7 @@ await test('cancelled inventory drains before the exclusive helper plan handle c
   syncBuiltinESMExports();
   const spawn: Subprocess['spawn'] = spec => {
     planPath = spec.argv[2]!;
-    helperDone = runLinkHelper(planPath).then(() => success, () => ({ exitCode: 1, signal: null }));
+    helperDone = runLinkHelper(planPath, spec.argv[3]!).then(() => success, () => ({ exitCode: 1, signal: null }));
     return brokerHandle(helperDone);
   };
   const preparation = prepareRuntime({ ...fixture.request, spawn }, controller.signal);
@@ -320,7 +304,7 @@ await test('both link callers reject source/base replacement across inventory be
     }) as typeof fsp.readdir);
     syncBuiltinESMExports();
     const spawn: Subprocess['spawn'] = caller === 'local' ? fixture.request.spawn : spec => brokerHandle((async () => {
-      try { await runLinkHelper(spec.argv[2]!); return success; }
+      try { await runLinkHelper(spec.argv[2]!, spec.argv[3]!); return success; }
       catch (error) { helperFailure = error; return { exitCode: 1, signal: null }; }
     })());
     try {
@@ -338,11 +322,11 @@ await test('both link callers reject source/base replacement across inventory be
 await test('lease revocation stops helper link batches while its plan still excludes deletion', nativeOnly, async t => {
   const fixture = await runtimeFixture(t), controller = new AbortController();
   for (let i = 0; i < 80; i++) writeFileSync(join(fixture.source, `usr/bin/extra-${i}.dll`), 'owned');
-  const link = fs.linkSync;
+  const link = NativeHold.prototype.linkTo;
   let planPath = '', linked = 0, afterAbort = 0;
-  const restore = replaceLinks(t, (source, target) => {
-    if (basename(String(target)) === '.probe') throw Object.assign(new Error('probe denial'), { code: 'EPERM' });
-    link(source, target); linked++;
+  const mockLink = t.mock.method(NativeHold.prototype, 'linkTo', function (this: NativeHold, parent: NativeHold, name: string) {
+    if (name === '.probe') throw new Win32Error('FileLinkInformation', 5, 'probe denial');
+    link.call(this, parent, name); linked++;
     if (controller.signal.aborted) afterAbort++;
     else {
       controller.abort();
@@ -351,20 +335,21 @@ await test('lease revocation stops helper link batches while its plan still excl
   });
   const spawn: Subprocess['spawn'] = spec => {
     planPath = spec.argv[2]!;
-    return brokerHandle(runLinkHelper(planPath).then(() => success, () => ({ exitCode: 1, signal: null })));
+    return brokerHandle(runLinkHelper(planPath, spec.argv[3]!).then(() => success, () => ({ exitCode: 1, signal: null })));
   };
   try {
     await assert.rejects(prepareRuntime({ ...fixture.request, spawn }, controller.signal), { name: 'AbortError' });
     assert.ok(linked > 0 && linked <= 32 && afterAbort < 32, 'only the issued bounded batch may drain');
     assert.equal(pathExists(join(fixture.cache, 'current.json')), false);
-  } finally { restore(); }
+  } finally { mockLink.mock.restore(); }
 });
 
 await test('blocked plan cleanup preserves payload, but a new attempt never reauthorizes a revoked plan', nativeOnly, async t => {
   const fixture = await runtimeFixture(t), restore = denyProbe(t), controller = new AbortController();
-  let planPath = '', reader: NativeHold | undefined;
+  let planPath = '', originalDigest = '', reader: NativeHold | undefined;
   const spawn: Subprocess['spawn'] = spec => {
     planPath = spec.argv[2]!;
+    originalDigest = spec.argv[3]!;
     reader = openExclusiveMetadata(admitDirectory(dirname(planPath)), 'plan.json');
     writeFileSync(join(dirname(planPath), 'base/sentinel'), 'still protected');
     controller.abort();
@@ -382,14 +367,14 @@ await test('blocked plan cleanup preserves payload, but a new attempt never reau
         const oldBase = admitDirectory(join(dirname(planPath), 'base'));
         unlinkEntry(oldBase, 'sentinel');
         assert.deepEqual(children(oldBase), [], 'late admission must fail on the revoked lease, not a populated base');
-        await assert.rejects(runLinkHelper(planPath), error => isMissing(error) && String(error).includes('.setup-owner'));
+        await assert.rejects(runLinkHelper(planPath, originalDigest), error => isMissing(error) && String(error).includes('.setup-owner'));
         assert.deepEqual(children(oldBase), [], 'the revoked helper must not mutate its empty base');
-        await runLinkHelper(spec.argv[2]!);
+        await runLinkHelper(spec.argv[2]!, spec.argv[3]!);
         return success;
       })());
     };
     const pin = await prepareRuntime({ ...fixture.request, spawn: nextSpawn }, signal()); await pin.release();
-    await assert.rejects(runLinkHelper(planPath));
+    await assert.rejects(runLinkHelper(planPath, originalDigest));
   } finally { reader?.close(); restore(); }
 });
 
@@ -413,7 +398,7 @@ await test('failed final plan unlink and checked helper/lease closes prevent pub
         throw new Win32Error('CloseHandle', 6, 'fixture checked close failure');
       }
     });
-    const spawn: Subprocess['spawn'] = spec => brokerHandle(runLinkHelper(spec.argv[2]!).then(() => {
+    const spawn: Subprocess['spawn'] = spec => brokerHandle(runLinkHelper(spec.argv[2]!, spec.argv[3]!).then(() => {
       if (kind === 'unlink') reader = openExclusiveMetadata(admitDirectory(dirname(spec.argv[2]!)), 'plan.json');
       return success;
     }));
@@ -442,7 +427,7 @@ await test('a delete-pending setup lease is inactive even while a metadata reade
 await test('final source/base anchors require ordinary matching identities after helper success', nativeOnly, async t => {
   for (const kind of ['replacement', 'directory'] as const) await t.test(kind, async t => {
     const fixture = await runtimeFixture(t), restore = denyProbe(t);
-    const spawn: Subprocess['spawn'] = spec => brokerHandle(runLinkHelper(spec.argv[2]!).then(() => {
+    const spawn: Subprocess['spawn'] = spec => brokerHandle(runLinkHelper(spec.argv[2]!, spec.argv[3]!).then(() => {
       const profile = join(dirname(spec.argv[2]!), 'base/etc/profile');
       fs.unlinkSync(profile);
       if (kind === 'replacement') writeFileSync(profile, 'different identity'); else fs.mkdirSync(profile);
@@ -498,7 +483,7 @@ await test('fixed scripts default to failure on invalid input', nativeOnly, () =
   for (const entry of [helperEntry, brokerEntry]) {
     const child = spawnSync(process.execPath, [entry], { encoding: 'utf8', windowsHide: true });
     assert.equal(child.status, 1, child.stderr);
-    assert.match(child.stderr, /Expected one setup plan path/);
+    assert.match(child.stderr, /Expected a setup plan path and digest/);
   }
 });
 
@@ -530,8 +515,8 @@ await test('F4 broker requires a process handle, helper zero, successful wait an
     admitDirectory(fixture.source); // Establish the real filesystem bindings before native wait faults.
     const verifyClose = brokerFault(t, fault);
     const spawn: Subprocess['spawn'] = spec => brokerHandle((async () => {
-      if (fault === 'success') { await runElevationBroker(spec.argv[2]!); await runLinkHelper(spec.argv[2]!); }
-      else await assert.rejects(runElevationBroker(spec.argv[2]!), fault === 'wait' ? /WaitForSingleObject/ : fault === 'close' ? /CloseHandle/ : /ShellExecuteExW|no process handle|exited with code/);
+      if (fault === 'success') { await runElevationBroker(spec.argv[2]!, spec.argv[3]!); await runLinkHelper(spec.argv[2]!, spec.argv[3]!); }
+      else await assert.rejects(runElevationBroker(spec.argv[2]!, spec.argv[3]!), fault === 'wait' ? /WaitForSingleObject/ : fault === 'close' ? /CloseHandle/ : /ShellExecuteExW|no process handle|exited with code/);
       return fault === 'success' ? success : { exitCode: 1, signal: null };
     })());
     try {
@@ -544,7 +529,9 @@ await test('F4 broker requires a process handle, helper zero, successful wait an
 
 await test('native broker launch and wait join through DSH before cache publication without consent', nativeOnly, async t => {
   const spawn = await localSpawn(t); if (!spawn) return;
-  const fixture = await runtimeFixture(t), restore = denyProbe(t);
+  const fixture = await runtimeFixture(t);
+  const { NativeHold: builtHold } = await import(pathToFileURL(join(root, 'lib/runtime/ntfs-filesystem.js')).href);
+  const restore = denyProbe(t, builtHold);
   const bash = join(fixture.source, 'usr/bin/bash.exe');
   const content = readFileSync(bash), links = fs.statSync(bash).nlink;
   const acl = readAclRecords(bash);
@@ -601,7 +588,8 @@ if (process.env.DSH_GIT_BASH_UAC_TEST) {
     console.error(choice === 'late'
       ? 'Leave consent pending for 10 seconds. Approve only after LOCAL SHUTDOWN COMPLETED appears below; finish any prompt within the following 20 seconds.'
       : `Respond ${choice === 'approve' ? 'Yes' : 'No'} to the Windows consent prompt.`);
-    const restore = denyProbe(t);
+    const { NativeHold: builtHold } = await import(pathToFileURL(join(root, 'lib/runtime/ntfs-filesystem.js')).href);
+    const restore = denyProbe(t, builtHold);
     try {
       const started = performance.now();
       // Keep ownership even if an unexpected consent response fulfils a promise

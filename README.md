@@ -56,13 +56,13 @@ If you edit the profile's `cordis.patch.yml` manually, be sure to preserve the e
 <span style="margin-left:2em;">&#8203;</span>Please keep the following points in mind when using or troubleshooting the plugin:
 
 1. **Git and the DSH home must be on the same NTFS volume**
-   Windows hard links cannot be created across drive letters, and non-NTFS filesystems such as FAT32 and exFAT are not supported. The Git installation and `DSH_HOME` must reside on the same NTFS volume.
+   Windows hard links cannot be created across drive letters, and the Git installation and `DSH_HOME` must reside on the same NTFS volume.
 2. **Do not combine with other shell-replacing plugins in the same profile**
    The plugin directly reuses the native `pwsh-sandbox`, `tool-pwsh`, `preset-standard`, `preset-ptc`, and `preset-cordis` entries. Do not mix it with other shell-replacement plugins or modify those module names.
 3. **Source directory, cache directory, and workspace must not overlap**
    Profiles share `DSH_HOME/.dsh-git-bash-on-win`. The Git source directory, cache directory, and command workspace must not be identical or contain one another, and paths along the way should avoid passing through junctions or symbolic links.
 4. **Source Git files must not be marked "Read-only"**
-   If files in a portable Git installation carry the Windows "Read-only" attribute, clear the read-only attribute before creating links or running cleanup.
+   Choose a Git installation whose runtime files allow hard-link creation and removal. A read-only attribute applies to every link to the same file.
 5. **Cache size and file updates**
    Hard links share on-disk data with the source files, so the size reported in File Explorer does not represent additional disk usage; modifying source files in place takes effect across the links as well. After upgrading Git or if supporting files are missing, click **Save and link** on the plugin page to rebuild.
 6. **Run with standard privileges and do not recursively delete the cache directly**
@@ -91,7 +91,7 @@ If you edit the profile's `cordis.patch.yml` manually, be sure to preserve the e
     - To install into **DSH Desktop**, replace `web` with `desktop`; if multiple DSH installations exist, you can set `DSH_PACKAGE_JSON` to the absolute path of the target `@deepseek-ai/dsh/package.json`.
     - If DSH can resolve `pnpm` by name, you can also run `dsh plugin --profile web add "file:$(cygpath -m "$PWD")" --ignore-scripts` directly.
 
-2. Restart DSH with standard privileges to begin using it (installation or updates preserve any existing cache).
+2. For an update, close all hosts sharing this DSH home and update the plugin in each installed profile before restarting. Start DSH with standard privileges.
 
 ### **6.2 - Offline Cache Cleanup and Troubleshooting**
 
@@ -108,16 +108,16 @@ Troubleshooting common obstructions:
 | Ownership cannot be verified or path contains a reparse point | Verify that the path points to `.dsh-git-bash-on-win` under `DSH_HOME` |
 | Directory is in use or has active references | Close all DSH processes sharing this DSH home and retry |
 | Active elevation plan has not exited or is blocking cleanup | Wait for the elevated helper process to release its handles and retry cleanup |
-| Access denied or blocked by read-only files | Clear the read-only attribute or release locks on the affected path and retry |
+| Access denied or blocked by read-only files | Close the process holding the file (for read-only payloads, check the source installation before retrying cleanup) |
 | Interrupted linking or source directory issue | Verify the integrity of the source Git installation, then click **Save and link** to retry |
 
 After cleanup succeeds, restart DSH to rebuild on demand, or click **Save and link** to rebuild immediately.
 
 ### **6.3 - Complete Uninstallation**
 
-<span style="margin-left:2em;">&#8203;</span>When removing the plugin from one profile, close hosts using that profile and omit `--purge-cache` from the command below. Other profiles can continue using the cache. To completely uninstall the plugin and restore the original hard link counts on source files, follow these steps in order:
+<span style="margin-left:2em;">&#8203;</span>When removing the plugin from one profile, clear that profile’s override as in step 1, close its hosts, and omit `--purge-cache` from the command below. Other profiles can continue using the cache. To completely uninstall the plugin and restore the original hard link counts on source files, follow these steps in order:
 
-1. **Remove the configuration entry**: In the native config editor or `cordis.patch.yml`, delete only `gitBashPath` under `pwsh-sandbox` (keep shared settings such as `timeoutMs`, `maxOutputBytes`, and `graceMs`; if a manually added entry becomes empty, you may remove it as well).
+1. **Remove the configuration entry**: For each profile being uninstalled, use the native config editor or `cordis.patch.yml` to delete only `gitBashPath` under `pwsh-sandbox` (keep shared settings such as `timeoutMs`, `maxOutputBytes`, and `graceMs`; if a manually added entry becomes empty, you may remove it as well).
 2. **Close related DSH instances**: Exit all DSH processes sharing this DSH home (including idle instances) to prevent the cache from being rebuilt in the background.
 3. **Clean up the cache and uninstall the plugin**: Run the uninstall script in **native Windows Git Bash** (it automatically cleans up the cache before uninstalling):
 

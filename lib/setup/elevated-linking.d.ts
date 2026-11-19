@@ -11,7 +11,6 @@ export interface ProvisioningAttempt {
 }
 interface ElevationPlan {
     readonly schemaVersion: 1;
-    readonly attemptId: string;
     readonly sourceRoot: string;
     readonly cacheRoot: string;
     readonly generationId: string;
@@ -20,7 +19,8 @@ interface ElevationPlan {
     readonly identities: Readonly<Record<'source' | 'cache' | 'generation' | 'base' | 'lease', FileIdentity>>;
 }
 export declare const planByteLimit: number;
-export declare function decodeElevationPlan(value: unknown): ElevationPlan;
+export declare const planDigest: (value: unknown) => string;
+export declare function decodeElevationPlan(value: unknown, digest: string): ElevationPlan;
 /** Both entries take only the fixed control path, never an executable or file list. */
 export declare function planGeneration(planPath: string): Directory;
 /** Independently bind the input to existing objects before any privileged mutation. */

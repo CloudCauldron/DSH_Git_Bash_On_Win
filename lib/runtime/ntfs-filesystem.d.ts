@@ -34,6 +34,11 @@ export declare class NativeHold {
     canonicalPath(): string;
     requireNtfs(): void;
     readJson(maxBytes: number): unknown;
+    /** FileLinkInformation uses the admitted source and destination directory handles. */
+    linkTo(parent: NativeHold, name: string): void;
+    deleteEntry(): void;
+    private setInformation;
+    [Symbol.dispose](): void;
     close(): void;
 }
 export declare function absolutePath(path: string): string;
@@ -47,7 +52,7 @@ export declare function overlaps(a: string, b: string): boolean;
 /** Walk ancestors before opening a target; cache/source policy stays with callers. */
 export declare function admitDirectory(path: string, expected?: FileIdentity): Directory;
 export declare function revalidateDirectory(directory: Directory): void;
-export declare function childPath(parent: Directory, name: string): string;
+export declare function childPath(parent: Pick<Directory, 'path'>, name: string): string;
 /** An already admitted parent is reused during a bounded inventory/link pass. */
 export declare function admitChildDirectory(parent: Directory, name: string, expected?: FileIdentity): Directory;
 export declare function createDirectory(parent: Directory, name: string): Directory;
@@ -61,7 +66,7 @@ export declare function claimDirectory(directory: Directory): NativeHold;
 export declare function createSetupLease(parent: Directory, name?: string): NativeHold;
 export declare function requireActiveLease(parent: Directory, expected: FileIdentity): void;
 export declare function openExclusiveMetadata(parent: Directory, name: string): NativeHold;
-export declare function acquireWriterLock(directory: Directory, signal: AbortSignal): Promise<NativeHold>;
+export declare function acquireWriterLock(cachePath: string, signal?: AbortSignal): Promise<NativeHold>;
 /** Only the actual link syscall can authorize the later UAC choice. */
 export declare function createHardlink(sourceParent: Directory, sourceName: string, targetParent: Directory, targetName: string): void;
 export declare function createJunction(parent: Directory, name: string, target: Directory): string;
@@ -72,10 +77,9 @@ export declare function children(directory: Directory): string[];
 export declare function ordinaryChildDirectory(parent: Directory, name: string): Directory | undefined;
 /** Unlink controls before traversing payload. Never decode their contents. */
 export declare function unlinkEntry(parent: Directory, name: string): void;
-/** Caller owns any required generation claim; this primitive has no cache policy. */
-export declare function removeTree(parent: Directory, name: string): void;
-/** Retains the caller's admitted identity, especially while a DELETE claim is held. */
-export declare function removeDirectoryTree(directory: Directory): void;
+/** Open the entry itself and retain its identity through enumeration or deletion. */
+export declare function removeTree(parent: Directory, name: string, recursive?: boolean): void;
+export declare function removeDirectoryTree(directory: Directory, hold: NativeHold): void;
 export declare function removeEmptyDirectory(directory: Directory): void;
 /** Node enumeration hints are not authoritative for reparse/read-only admission. */
 export declare function ordinaryFileExists(parent: Directory, name: string): boolean;

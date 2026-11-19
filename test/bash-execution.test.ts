@@ -22,7 +22,7 @@ import { admitDirectory, claimDirectory, createDirectory, createJunction, isBusy
 import { purgeRuntimeCache } from '../src/runtime/runtime-cache.ts';
 import type { RebuildFeedback } from '../src/rebuild-feedback.ts';
 import type { ConnectionFetchRoute } from '@deepseek-ai/dsh-client-connection';
-import { executionFixture, nativeOnly, runtimeFixture } from './fixtures.ts';
+import { denyProbe, executionFixture, nativeOnly, runtimeFixture } from './fixtures.ts';
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -184,12 +184,7 @@ await test('losing the last owner cancels automatic consent and late confirmatio
   const f = await executorFixture(t), ui = await feedbackClient(f.ctx);
   const first = await ui.subscribe(), second = await ui.subscribe();
   await Promise.all([first.next(), second.next()]);
-  const original = fs.linkSync;
-  const denied = t.mock.method(fs, 'linkSync', (source: fs.PathLike, target: fs.PathLike) => {
-    if (basename(String(target)) === '.probe') throw Object.assign(Error('fixture denial'), { code: 'EPERM' });
-    original(source, target);
-  });
-  syncBuiltinESMExports();
+  const restore = denyProbe(t);
   try {
     const shell = f.run(), sibling = f.run();
     const a = (await first.next()).confirmation!, b = (await second.next()).confirmation!;
@@ -204,7 +199,7 @@ await test('losing the last owner cancels automatic consent and late confirmatio
     assert.equal(snapshot.confirmation, undefined);
     assert.match(snapshot.failure!.reason.error, /link-runtime-cache\.js/);
     await back.close();
-  } finally { denied.mock.restore(); syncBuiltinESMExports(); }
+  } finally { restore(); }
 });
 
 await test('automatic publication failure after a shell deadline stays visible until an owner dismisses it', nativeOnly, async t => {
@@ -257,12 +252,12 @@ await test('rebuild supersedes unfinished initialization and becomes shared read
 });
 
 await test('failed readiness is retained until an explicit rebuild', nativeOnly, async t => {
-  const f = await executorFixture(t), original = fs.linkSync;
+  const f = await executorFixture(t), original = NativeHold.prototype.linkTo;
   const failure = new Error('fixture cold link failure');
-  const mock = t.mock.method(fs, 'linkSync', () => { throw failure; }); syncBuiltinESMExports();
+  const mock = t.mock.method(NativeHold.prototype, 'linkTo', () => { throw failure; });
   try { await assert.rejects(f.run(), error => error === failure); }
-  finally { mock.mock.restore(); syncBuiltinESMExports(); }
-  assert.equal(fs.linkSync, original);
+  finally { mock.mock.restore(); }
+  assert.equal(NativeHold.prototype.linkTo, original);
   await assert.rejects(f.run(), error => error === failure);
   assert.equal(f.spawned.length, 0);
   await f.executor.rebuildRuntime();
@@ -273,12 +268,12 @@ await test('a failed shared rebuild gives displaced and new waiters the same ret
   const f = await executorFixture(t), blocked = f.holdInventory();
   const first = f.run(); await blocked.entered;
   const failure = new Error('fixture rebuild link failure');
-  const mock = t.mock.method(fs, 'linkSync', () => { throw failure; }); syncBuiltinESMExports();
+  const mock = t.mock.method(NativeHold.prototype, 'linkTo', () => { throw failure; });
   try {
     const rebuilding = f.executor.rebuildRuntime(), joining = f.run();
     const outcomes = Promise.all([first, rebuilding, joining].map(operation => assert.rejects(operation, error => error === failure)));
     blocked.resume(); await outcomes;
-  } finally { mock.mock.restore(); syncBuiltinESMExports(); }
+  } finally { mock.mock.restore(); }
   await assert.rejects(f.run(), error => error === failure);
   assert.equal(f.spawned.length, 0);
   assert.equal(pathExists(join(f.cache, 'current.json')), false);
@@ -324,19 +319,16 @@ await test('a selection change cancels a manual rebuild while a previous ready p
 
 await test('UAC denial during rebuilding preserves a ready pin and its current selection', nativeOnly, async t => {
   const f = await executorFixture(t), existing = await f.run();
-  const before = await f.current(), original = fs.linkSync;
+  const before = await f.current();
   const client = await (await feedbackClient(f.ctx)).subscribe();
   assert.equal((await client.next()).progress, undefined);
-  const mock = t.mock.method(fs, 'linkSync', (source: fs.PathLike, target: fs.PathLike) => {
-    if (basename(String(target)) === '.probe') throw Object.assign(new Error('fixture link denial'), { code: 'EPERM' });
-    original(source, target);
-  }); syncBuiltinESMExports();
+  const restore = denyProbe(t);
   f.controls.setup = () => ({
     stdin: undefined, stdout: undefined, stderr: undefined, control: undefined, collected: {},
     done: Promise.resolve({ exitCode: 1, signal: null }), terminate() {}, async waitForExit() { return true; },
   });
   try { await assert.rejects(f.executor.rebuildRuntime(), /Elevated setup failed/); }
-  finally { mock.mock.restore(); syncBuiltinESMExports(); }
+  finally { restore(); }
   assert.equal((await client.next()).progress, 'preparing');
   assert.equal((await client.next()).progress, 'elevation');
   assert.equal((await client.next()).progress, undefined);
@@ -402,7 +394,7 @@ await test('a selection observed just after commit releases the stale pin withou
   let changed: Promise<void> | undefined;
   const mock = t.mock.method(NativeHold.prototype, 'close', function (this: NativeHold) {
     original.call(this);
-    if (!changed && this.path === join(f.cache, '.writer-lock') && pathExists(join(f.cache, 'current.json'))) {
+    if (!changed && this.path === f.cache + '.writer-lock' && pathExists(join(f.cache, 'current.json'))) {
       changed = f.select('invalid selection after commit');
     }
   });
@@ -424,7 +416,7 @@ await test('retiring preparation close failure blocks replacement setup and rema
   let injected = false;
   const mock = t.mock.method(NativeHold.prototype, 'close', function (this: NativeHold) {
     original.call(this); // Close the real fixture handle before injecting failure.
-    if (!injected && this.path === join(f.cache, '.writer-lock')) { injected = true; throw failure; }
+    if (!injected && this.path === f.cache + '.writer-lock') { injected = true; throw failure; }
   });
   const logged: unknown[][] = [];
   const log = t.mock.method(f.providerContext.logger, 'error', (...args: unknown[]) => { logged.push(args); });
@@ -446,7 +438,7 @@ await test('an already rejected preparation retains its native close failure acr
   let injected = false;
   const mock = t.mock.method(NativeHold.prototype, 'close', function (this: NativeHold) {
     original.call(this); // Do not leak a real fixture handle to simulate a fault.
-    if (!injected && this.path === join(f.cache, '.writer-lock') && pathExists(join(f.cache, 'current.json'))) {
+    if (!injected && this.path === f.cache + '.writer-lock' && pathExists(join(f.cache, 'current.json'))) {
       injected = true; throw failure;
     }
   });
@@ -464,12 +456,9 @@ await test('an already rejected preparation retains its native close failure acr
 });
 
 await test('a rejected broker outcome with an empty range permits explicit rebuilding and clean disposal', nativeOnly, async t => {
-  const f = await executorFixture(t), original = fs.linkSync;
+  const f = await executorFixture(t);
   const failure = new Error('fixture broker target failed to start');
-  const mock = t.mock.method(fs, 'linkSync', (source: fs.PathLike, target: fs.PathLike) => {
-    if (basename(String(target)) === '.probe') throw Object.assign(new Error('fixture probe denial'), { code: 'EPERM' });
-    original(source, target);
-  }); syncBuiltinESMExports();
+  const restore = denyProbe(t);
   f.controls.setup = () => ({
     stdin: undefined, stdout: undefined, stderr: undefined, control: undefined, collected: {},
     done: Promise.reject(failure), terminate() {},
@@ -481,21 +470,18 @@ await test('a rejected broker outcome with an empty range permits explicit rebui
     await assert.rejects(f.executor.rebuildRuntime(), error => error === failure);
     assert.equal(f.spawned.length, 0);
     assert.equal(pathExists(join(f.cache, 'current.json')), false);
-    mock.mock.restore(); syncBuiltinESMExports();
+    restore();
     await f.executor.rebuildRuntime();
     const execution = await f.run(); f.spawned[0]!.finish(); await execution.done;
     await f.dispose();
     assert.deepEqual(logged, []);
-  } finally { mock.mock.restore(); syncBuiltinESMExports(); log.mock.restore(); }
+  } finally { restore(); log.mock.restore(); }
 });
 
 await test('an already rejected broker shutdown remains a local resource failure at rebuild and disposal', nativeOnly, async t => {
-  const f = await executorFixture(t), original = fs.linkSync;
+  const f = await executorFixture(t);
   const failure = new Error('fixture broker range cannot be observed');
-  const mock = t.mock.method(fs, 'linkSync', (source: fs.PathLike, target: fs.PathLike) => {
-    if (basename(String(target)) === '.probe') throw Object.assign(new Error('fixture probe denial'), { code: 'EPERM' });
-    original(source, target);
-  }); syncBuiltinESMExports();
+  const restore = denyProbe(t);
   let launches = 0;
   f.controls.setup = () => {
     launches++;
@@ -514,7 +500,7 @@ await test('an already rejected broker shutdown remains a local resource failure
     assert.equal(pathExists(join(f.cache, 'current.json')), false);
     await f.dispose();
     assert.ok(logged.flat().some(value => value instanceof AggregateError && /owned resources/.test(value.message)));
-  } finally { mock.mock.restore(); syncBuiltinESMExports(); log.mock.restore(); }
+  } finally { restore(); log.mock.restore(); }
 });
 
 await test('ordinary source IO failure during supersession drains without poisoning shared rebuilding', nativeOnly, async t => {

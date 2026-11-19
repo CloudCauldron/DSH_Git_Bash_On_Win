@@ -14,8 +14,11 @@ function readMessages(file: URL): Messages {
 
 export function readDictionaries(directory = new URL('../locale/', import.meta.url)): Record<string, Messages> {
   const dictionaries: Record<string, Messages> = { en: readMessages(new URL('en.json', directory)) };
-  for (const file of readdirSync(directory)) {
-    if (file === 'en.json' || !/^[a-z]{2,8}(?:-[a-z0-9]{1,8})*\.json$/i.test(file)) continue;
+  let files: string[];
+  try { files = readdirSync(directory); }
+  catch { return dictionaries; } // A known en.json may be readable without directory-list permission.
+  for (const file of files) {
+    if (file.toLowerCase() === 'en.json' || !/^[a-z]{2,8}(?:-[a-z0-9]{1,8})*\.json$/i.test(file)) continue;
     try { dictionaries[file.slice(0, -5).toLowerCase()] = readMessages(new URL(file, directory)); }
     catch { /* DSH uses English when an optional translation is unavailable. */ }
   }

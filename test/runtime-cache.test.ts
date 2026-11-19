@@ -1,17 +1,18 @@
 import assert from 'node:assert/strict';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFile, execFileSync, spawnSync } from 'node:child_process';
 import fs, { readFileSync, readdirSync } from 'node:fs';
 import fsp from 'node:fs/promises';
 import { link, mkdir, readFile, rename, stat, symlink, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join, toNamespacedPath } from 'node:path';
 import { syncBuiltinESMExports } from 'node:module';
+import { promisify } from 'node:util';
 import { test } from 'node:test';
 import { nativeOnly, runtimeFixture, readAclRecords } from './fixtures.ts';
 import { prepareRuntime, purgeRuntimeCache } from '../src/runtime/runtime-cache.ts';
 import { anchorPaths, discoverGitInstallation, inventoryGitFiles, linkFreshTree } from '../src/runtime/git-installation.ts';
 import {
   absolutePath, acquireWriterLock, admitDirectory, createDirectory, createJunction, NativeHold,
-  isBusy, pathExists, removeTree, unlinkEntry,
+  isBusy, openExclusiveMetadata, pathExists, removeTree, unlinkEntry,
 } from '../src/runtime/ntfs-filesystem.ts';
 
 await test('F1 refuses markerless and unrecognized roots before mutation or purge', nativeOnly, async t => {
@@ -57,25 +58,37 @@ await test('successive native path reads retain exact Unicode and shorter string
 });
 
 await test('cancelling a contended writer preserves the reason used to retire shared preparation', nativeOnly, async t => {
-  const f = await runtimeFixture(t);
-  const root = admitDirectory(f.directory), controller = new AbortController();
-  const owner = await acquireWriterLock(root, controller.signal);
+  const fixture = await runtimeFixture(t), controller = new AbortController();
+  const owner = await acquireWriterLock(fixture.cache, controller.signal);
   try {
+    await assert.rejects(purgeRuntimeCache(fixture.cache));
+    assert.equal(pathExists(fixture.cache), false);
     const reason = new Error('selection superseded');
-    const waiting = acquireWriterLock(root, controller.signal);
+    const waiting = acquireWriterLock(fixture.cache, controller.signal);
     controller.abort(reason);
     await assert.rejects(waiting, error => error === reason);
   } finally { owner.close(); }
+});
+
+await test('preparation promptly refuses an unlocked writer-lock file and preserves it', nativeOnly, async t => {
+  const fixture = await runtimeFixture(t), lockPath = fixture.cache + '.writer-lock';
+  await writeFile(lockPath, 'unowned');
+  try {
+    await assert.rejects(prepareRuntime(fixture.request, AbortSignal.timeout(2000)),
+      error => [80, 183].includes((error as { win32Code: number }).win32Code));
+    assert.equal(await readFile(lockPath, 'utf8'), 'unowned');
+    assert.equal(pathExists(fixture.cache), false);
+  } finally { await unlink(lockPath); }
 });
 
 await test('an unsafe writer-lock object is refused without a contention wait or target cleanup', nativeOnly, async t => {
   const fixture = await runtimeFixture(t), pin = await fixture.prepare();
   await pin.release();
   await writeFile(join(fixture.workspace, 'sentinel'), 'keep');
-  await symlink(fixture.workspace, join(fixture.cache, '.writer-lock'), 'junction');
+  await symlink(fixture.workspace, fixture.cache + '.writer-lock', 'junction');
   await assert.rejects(purgeRuntimeCache(fixture.cache), /reparse/);
   assert.equal(await readFile(join(fixture.workspace, 'sentinel'), 'utf8'), 'keep');
-  unlinkEntry(admitDirectory(fixture.cache), '.writer-lock');
+  unlinkEntry(admitDirectory(fixture.directory), 'cache.writer-lock');
 });
 
 await test('source inventory retains distinct hardlink names and the fixed selection policy', nativeOnly, async t => {
@@ -86,11 +99,12 @@ await test('source inventory retains distinct hardlink names and the fixed selec
   assert.ok(files.includes('usr/lib/perl/module.pm'));
   assert.equal(files.some(path => path.includes('ignored') || path.endsWith('winpty.lib')), false);
   const parent = admitDirectory(fixture.directory), base = createDirectory(parent, 'links');
-  await linkFreshTree({ sourceRoot: fixture.source, baseRoot: base.path, files }, () => {});
+  const source = admitDirectory(fixture.source);
+  await linkFreshTree({ source, base, files }, () => {});
   assert.equal((await stat(join(base.path, 'usr/bin/bash.exe'))).ino, (await stat(join(fixture.source, 'usr/bin/bash.exe'))).ino);
-  await assert.rejects(linkFreshTree({ sourceRoot: fixture.source, baseRoot: base.path, files }, () => {}), /EEXIST/);
+  await assert.rejects(linkFreshTree({ source, base, files }, () => {}), /EEXIST/);
   for (const paths of [['../outside'], ['usr/bin/bash.exe', 'usr/bin/BASH.EXE'], ['usr/bin/../escape']]) {
-    await assert.rejects(linkFreshTree({ sourceRoot: fixture.source, baseRoot: base.path, files: paths }, () => {}), /Invalid|Duplicate/);
+    await assert.rejects(linkFreshTree({ source, base, files: paths }, () => {}), /Invalid|Duplicate/);
   }
   const cancelled = new AbortController(); cancelled.abort();
   await assert.rejects(inventoryGitFiles(fixture.source, () => cancelled.signal.throwIfAborted()), { name: 'AbortError' });
@@ -161,7 +175,7 @@ await test('ordinary paths require a volume root and current metadata keeps cano
 await test('root creation unwinds an empty directory when its ownership-marker write fails', nativeOnly, async t => {
   const fixture = await runtimeFixture(t), original = fs.writeFileSync;
   const mock = t.mock.method(fs, 'writeFileSync', (...args: Parameters<typeof fs.writeFileSync>) => {
-    if (args[0] === toNamespacedPath(join(fixture.cache, '.owner.json'))) throw new Error('fixture ownership write failure');
+    if (typeof args[0] === 'number') { original(args[0], '{'); throw new Error('fixture ownership write failure'); }
     return original(...args);
   });
   syncBuiltinESMExports();
@@ -245,7 +259,7 @@ await test('cold commit, ownerless warm reuse, immutable expectations and explic
   assert.equal((await stat(sourceFile)).nlink, links + 2);
   await cold.release();
   const before = readdirSync(fixture.cache).sort();
-  const root = admitDirectory(fixture.cache), writer = await acquireWriterLock(root, new AbortController().signal);
+  const writer = await acquireWriterLock(fixture.cache, new AbortController().signal);
   const started = performance.now();
   let warm;
   try { warm = await fixture.prepare(false, AbortSignal.timeout(5000)); }
@@ -308,7 +322,7 @@ await test('cancellation before atomic publication preserves the selected genera
   assert.ok(cancelled, 'cancellation must reach the last pre-publication boundary');
   assert.deepEqual(await fixture.current(), before);
   assert.deepEqual(readdirSync(join(fixture.cache, 'generations')), [before.generationId]);
-  assert.equal(pathExists(join(fixture.cache, '.writer-lock')), false);
+  assert.equal(pathExists(fixture.cache + '.writer-lock'), false);
   await purgeRuntimeCache(fixture.cache);
 });
 
@@ -336,7 +350,7 @@ await test('atomic publication returns its pinned generation despite cancellatio
       assert.ok(entered && controller.signal.aborted);
       const published = await fixture.current();
       assert.notEqual(published.generationId, before?.generationId);
-      assert.equal(pathExists(join(fixture.cache, '.writer-lock')), false);
+      assert.equal(pathExists(fixture.cache + '.writer-lock'), false);
       const use = await pin.lease({ mode: 'read-only', workspaceRoot: fixture.workspace }, new AbortController().signal);
       try { assert.equal(use.baseRoot, join(fixture.cache, 'generations', published.generationId, 'base')); }
       finally { await use.release(); }
@@ -383,44 +397,72 @@ await test('concurrent preparations recheck under the writer lock and own indepe
   try { assert.equal((await fixture.current()).generationId, id); } finally { await alias.release(); }
 });
 
-await test('a competing process can finish root ownership before the losing mkdir resumes', nativeOnly, async t => {
-  const fixture = await runtimeFixture(t), original = fs.mkdirSync;
-  let competed = false;
-  const mock = t.mock.method(fs, 'mkdirSync', (...args: Parameters<typeof fs.mkdirSync>) => {
-    if (!competed && args[0] === toNamespacedPath(fixture.cache)) {
-      competed = true;
-      const program = `
-        const [module, cacheDirectory, gitBashPath] = process.argv.slice(1);
-        const { prepareRuntime } = await import(module);
-        const pin = await prepareRuntime({ cacheDirectory, gitBashPath, elevation: 'manual',
-          spawn() { throw new Error('Unexpected subprocess'); } }, new AbortController().signal);
-        await pin.release();
-      `;
-      execFileSync(process.execPath, ['--input-type=module', '-e', program,
-        new URL('../src/runtime/runtime-cache.ts', import.meta.url).href, fixture.cache, fixture.request.gitBashPath!], { timeout: 10_000 });
-    }
-    return original(...args);
+await test('independent processes share the first generation and create separate views', nativeOnly, async t => {
+  const fixture = await runtimeFixture(t);
+  const program = `
+    const [module, cacheDirectory, gitBashPath, workspaceRoot] = process.argv.slice(1);
+    const { prepareRuntime } = await import(module);
+    const signal = AbortSignal.timeout(15_000);
+    const pin = await prepareRuntime({ cacheDirectory, gitBashPath, elevation: 'manual',
+      spawn() { throw new Error('Unexpected subprocess'); } }, signal);
+    try {
+      const use = await pin.lease({ mode: 'read-only', workspaceRoot, sessionId: 'shared-id' }, signal);
+      try { console.log(JSON.stringify([pin.freshlyBuilt, use.baseRoot, use.installationRoot])); }
+      finally { await use.release(); }
+    } finally { await pin.release(); }
+  `;
+  const worker = () => promisify(execFile)(process.execPath, ['--input-type=module', '-e', program,
+    new URL('../src/runtime/runtime-cache.ts', import.meta.url).href, fixture.cache, fixture.request.gitBashPath!, fixture.workspace],
+  { timeout: 20_000 });
+  const results = await Promise.allSettled([worker(), worker()]);
+  const [first, second] = results.map(result => {
+    if (result.status === 'rejected') throw result.reason;
+    return JSON.parse(result.value.stdout) as [boolean, string, string];
   });
-  syncBuiltinESMExports();
-  try {
-    const pin = await fixture.prepare();
-    assert.equal(competed, true);
-    assert.equal(readdirSync(join(fixture.cache, 'generations')).length, 1);
-    await pin.release();
-  } finally { mock.mock.restore(); syncBuiltinESMExports(); }
+  assert.notEqual(first![0], second![0]);
+  assert.equal(first![1], second![1]);
+  assert.notEqual(first![2], second![2]);
+  assert.deepEqual(readdirSync(join(fixture.cache, 'generations')), [(await fixture.current()).generationId]);
 });
 
-await test('a writer-close failure reports failure and does not leak the unpublished return value', nativeOnly, async t => {
-  const fixture = await runtimeFixture(t), original = NativeHold.prototype.close;
-  let injected = false;
-  const mock = t.mock.method(NativeHold.prototype, 'close', function (this: NativeHold) {
-    original.call(this);
-    if (!injected && this.path.endsWith('\\.writer-lock')) { injected = true; throw new Error('injected checked-close failure'); }
+await test('a failed guard close releases the pending lease or generation pin', nativeOnly, async t => {
+  for (const guard of ['lock parent', 'root', 'writer']) await t.test(guard, async t => {
+    const fixture = await runtimeFixture(t), original = NativeHold.prototype.close;
+    const lock = fixture.cache + '.writer-lock', current = join(fixture.cache, 'current.json');
+    let injected = false;
+    const mock = t.mock.method(NativeHold.prototype, 'close', function (this: NativeHold) {
+      original.call(this);
+      const ready = guard === 'lock parent' ? this.path === fixture.directory && pathExists(lock)
+        : this.path === (guard === 'writer' ? lock : fixture.cache) && pathExists(current);
+      if (!injected && ready) { injected = true; throw new Error('fixture checked-close failure'); }
+    });
+    try { await assert.rejects(fixture.prepare(), /checked-close failure/); }
+    finally { mock.mock.restore(); }
+    assert.equal(injected, true);
+    assert.equal(pathExists(lock), false);
+    await purgeRuntimeCache(fixture.cache);
   });
-  await assert.rejects(fixture.prepare(), /checked-close failure/);
-  mock.mock.restore();
-  assert.equal(injected, true);
-  // Publication may already have committed, but the rejected operation owns no pin.
+});
+
+await test('case-only renames preserve ownership and the selected generation through failed operations', nativeOnly, async t => {
+  const fixture = await runtimeFixture(t);
+  await (await fixture.prepare()).release();
+  const current = await fixture.current(), generations = join(fixture.cache, 'generations');
+  const selected = join(generations, current.generationId.toUpperCase());
+  await rename(join(generations, current.generationId), selected);
+  await rename(join(fixture.cache, '.owner.json'), join(fixture.cache, '.OWNER.JSON'));
+  const failure = new Error('fixture validation failed');
+  await assert.rejects(prepareRuntime({ ...fixture.request, rebuild: true, onProgress(progress) {
+    if (progress === 'checking') throw failure;
+  } }, new AbortController().signal), error => error === failure);
+  assert.deepEqual(await fixture.current(), current);
+  assert.ok(pathExists(join(selected, 'base/usr/bin/bash.exe')));
+  await writeFile(join(fixture.cache, 'zz-busy'), 'held');
+  const blocker = openExclusiveMetadata(admitDirectory(fixture.cache), 'zz-busy');
+  try {
+    await assert.rejects(purgeRuntimeCache(fixture.cache), isBusy);
+    assert.ok(pathExists(join(fixture.cache, '.OWNER.JSON')));
+  } finally { blocker.close(); }
   await purgeRuntimeCache(fixture.cache);
 });
 
@@ -556,7 +598,7 @@ await test('cancellation during a bounded linking batch drains before cleanup an
   await assert.rejects(fixture.prepare(false, controller.signal), { name: 'AbortError' });
   mock.mock.restore();
   assert.equal(pathExists(join(fixture.cache, 'current.json')), false);
-  assert.equal(pathExists(join(fixture.cache, '.writer-lock')), false);
+  assert.equal(pathExists(fixture.cache + '.writer-lock'), false);
   assert.deepEqual(readdirSync(join(fixture.cache, 'generations')), []);
   assert.ok(Object.values(anchorPaths('ucrt64')).every(path => pathExists(join(fixture.source, path))));
   // Cancellation does not retain a failed-readiness slot at the factory boundary.

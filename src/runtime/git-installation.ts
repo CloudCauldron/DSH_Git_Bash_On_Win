@@ -4,13 +4,13 @@ import { basename, dirname, isAbsolute, join, posix, resolve } from 'node:path';
 import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
 import {
   admitChildDirectory, admitDirectory, createDirectory, createHardlink, isMissing,
-  openOrdinaryFile, ordinaryFileExists, pathExists, sameIdentity, type Directory, type FileIdentity,
+  openOrdinaryFile, ordinaryFileExists, pathExists, pinDirectory, revalidateDirectory, sameIdentity, type Directory, type FileIdentity,
 } from './ntfs-filesystem.ts';
 import { LocalizedError } from '../localized-error.ts';
 
 export type GitLayout = 'ucrt64' | 'mingw64';
 export interface GitInstallation { readonly root: string; readonly layout: GitLayout }
-export interface FreshLinkTree { readonly sourceRoot: string; readonly baseRoot: string; readonly files: readonly string[] }
+export interface FreshLinkTree { readonly source: Directory; readonly base: Directory; readonly files: readonly string[] }
 export interface FileStamp extends FileIdentity { readonly size: string; readonly lastWriteTime: string }
 export const anchorNames = ['bash', 'sh', 'msys', 'git', 'profile', 'installOptions'] as const;
 export type AnchorName = typeof anchorNames[number];
@@ -146,7 +146,9 @@ export async function linkFreshTree(tree: FreshLinkTree, checkActive: () => void
   onLinked?: (file: { path: string; completed: number; total: number }) => void): Promise<void> {
   checkActive();
   validateFiles(tree.files);
-  const source = admitDirectory(tree.sourceRoot), base = admitDirectory(tree.baseRoot);
+  const { source, base } = tree;
+  revalidateDirectory(source);
+  using _base = pinDirectory(base);
   if (source.volumeSerial !== base.volumeSerial) {
     throw new LocalizedError('error.sameVolume', undefined, { fallback: 'Git and runtime base must share an NTFS volume.' });
   }
@@ -162,9 +164,12 @@ export async function linkFreshTree(tree: FreshLinkTree, checkActive: () => void
   }
   for (let offset = 0; offset < tree.files.length; offset += 32) {
     checkActive();
-    for (const file of tree.files.slice(offset, offset + 32)) {
-      const parent = posix.dirname(file), name = posix.basename(file);
-      createHardlink(directoryAt(source, parent, sources), name, targets.get(parent)!, name);
+    {
+      using _source = pinDirectory(source);
+      for (const file of tree.files.slice(offset, offset + 32)) {
+        const parent = posix.dirname(file), name = posix.basename(file);
+        createHardlink(directoryAt(source, parent, sources), name, targets.get(parent)!, name);
+      }
     }
     if (onLinked) {
       const completed = Math.min(offset + 32, tree.files.length);

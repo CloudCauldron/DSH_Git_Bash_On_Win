@@ -56,13 +56,13 @@
 <span style="margin-left:2em;">&#8203;</span>使用和排错时请注意以下事项：
 
 1. **Git 与 DSH 主目录须位于同一 NTFS 分区**
-   Windows 硬链接无法跨盘符创建，也不支持 FAT32 / exFAT 等非 NTFS 文件系统。Git 安装目录与 `DSH_HOME` 必须处于同一 NTFS 卷。
+   Windows 硬链接无法跨盘符创建，Git 安装目录与 `DSH_HOME` 必须处于同一 NTFS 卷。
 2. **勿在同一配置中混用其他改写 Shell 的插件**
    插件直接复用原生 `pwsh-sandbox`、`tool-pwsh` 与 `preset-standard`、`preset-ptc`、`preset-cordis` 条目，请勿混用其他 Shell 替换插件或改动对应模块名。
 3. **源目录、缓存目录与工作区不得重叠**
    各配置共享 `DSH_HOME/.dsh-git-bash-on-win`。Git 源目录、缓存目录与命令工作区三者不可相同或互相包含，路径沿途应避免经过 Junction 或符号链接。
 4. **源 Git 文件不可设为「只读」**
-   部分便携版 Git 文件若带有 Windows「只读」属性，请先取消只读属性后再建链或清理。
+   请选择运行时文件允许创建和移除硬链接的 Git 安装。同一文件的所有硬链接共享 Windows「只读」属性。
 5. **缓存体积与文件更新**
    硬链接共享源文件磁盘数据，文件管理器显示的体积并非额外占用；原地修改源文件会同步生效。升级 Git 或附属文件缺失时，在插件页点击 **「保存并链接」** 即可重建。
 6. **普通权限运行，勿直接递归删除缓存**
@@ -91,7 +91,7 @@
     - 若安装到 **DSH Desktop**，将 `web` 改为 `desktop`；若有多个 DSH 安装，可用 `DSH_PACKAGE_JSON` 指定目标 `@deepseek-ai/dsh/package.json` 绝对路径。
     - 若 DSH 可按名称解析 `pnpm`，也可直接运行 `dsh plugin --profile web add "file:$(cygpath -m "$PWD")" --ignore-scripts`。
 
-2. 以普通权限重启 DSH 即可使用（安装或更新会保留现有缓存）。
+2. 更新时，请先关闭共用该主目录的所有宿主，更新各个已安装此插件的配置，再以普通权限重启 DSH。
 
 ### **6.2 - 离线清理缓存与故障排查**
 
@@ -108,16 +108,16 @@ node '<已安装插件目录>/lib/purge-runtime-cache.js' '<DSH 主目录绝对�
 | 无法确认所有权或含重解析点 | 核对路径是否为 `DSH_HOME` 下的 `.dsh-git-bash-on-win` |
 | 目录被占用或存在活动引用 | 关闭所有共用该主目录的 DSH 进程后重试 |
 | 存在未退出的提权计划或阻塞 | 等待提权辅助进程释放句柄后重新清理 |
-| 拒绝访问或只读文件阻碍 | 解除对应路径的只读属性或占用后重试 |
+| 拒绝访问或只读文件阻碍 | 关闭占用文件的进程（若文件为只读，请先检查源 Git 安装再重试） |
 | 链接中断或源目录异常 | 检查源 Git 完整性后点击 **「保存并链接」** 重试 |
 
 清理成功后重启 DSH 即可按需重建，或点击 **「保存并链接」** 立即重建。
 
 ### **6.3 - 彻底卸载插件**
 
-<span style="margin-left:2em;">&#8203;</span>若只从一个配置移除插件，请关闭使用该配置的宿主，并省略下方命令中的 `--purge-cache`，其他配置可继续使用缓存。如需彻底卸载插件并还原源文件硬链接计数，请按顺序操作：
+<span style="margin-left:2em;">&#8203;</span>若只从一个配置移除插件，请按第 1 步清除该配置的覆盖项，关闭使用它的宿主，并省略下方命令中的 `--purge-cache`，其他配置可继续使用缓存。如需彻底卸载插件并还原源文件硬链接计数，请按顺序操作：
 
-1. **移除配置项**：在原生配置编辑器或 `cordis.patch.yml` 中仅删去 `pwsh-sandbox` 下的 `gitBashPath`（保留 `timeoutMs`、`maxOutputBytes`、`graceMs` 等共享设置；若手动添加的条目已为空可一并删除）。
+1. **移除配置项**：针对每个要卸载插件的配置，在原生配置编辑器或 `cordis.patch.yml` 中仅删去 `pwsh-sandbox` 下的 `gitBashPath`（保留 `timeoutMs`、`maxOutputBytes`、`graceMs` 等共享设置；若手动添加的条目已为空可一并删除）。
 2. **关闭相关 DSH 实例**：退出所有共用该主目录的 DSH 进程（含空闲实例），防止后台重建缓存。
 3. **清理缓存并卸载插件**：在 **Windows 原生 Git Bash** 中执行卸载脚本（自动先清缓存再卸载）：
 

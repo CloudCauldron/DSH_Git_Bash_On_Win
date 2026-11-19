@@ -1,18 +1,19 @@
 import { statSync } from 'node:fs';
-import { isAbsolute, join } from 'node:path';
+import { isAbsolute } from 'node:path';
 import { installedDsh } from './installed-dsh.ts';
-import { purgeRuntimeCache } from '../src/runtime/runtime-cache.ts';
+import { purgeRuntimeCache, sharedCacheDirectory } from '../src/runtime/runtime-cache.ts';
 import { LocalizedError } from '../src/localized-error.ts';
 
 // Arbitrary pnpm flags could redirect removal or bypass the cache purge.
 // DSH owns package compatibility and bundle reconciliation.
 const [pnpm, profile, operation, target, ...extra] = process.argv.slice(2);
 const packageName = 'dsh-git-bash-on-win';
-if (!pnpm || !isAbsolute(pnpm) || !profile || extra.length
+const purge = operation === 'remove' && extra.length === 1 && extra[0] === '--purge-cache';
+if (!pnpm || !isAbsolute(pnpm) || !profile || (extra.length && !purge)
   || !(operation === 'add' && target?.startsWith('file:') && isAbsolute(target.slice(5))
     && statSync(target.slice(5), { throwIfNoEntry: false })?.isDirectory()
     || operation === 'remove' && target === packageName)) {
-  throw new LocalizedError('error.pluginUsage', { command: 'node scripts/plugin.ts <absolute pnpm.exe> <profile> <add file:<absolute checkout> | remove dsh-git-bash-on-win>' });
+  throw new LocalizedError('error.pluginUsage', { command: 'node scripts/plugin.ts <absolute pnpm.exe> <profile> <add file:<absolute checkout> | remove dsh-git-bash-on-win [--purge-cache]>' });
 }
 const runtime = installedDsh();
 const { resolveProfileDir } = await runtime.load(runtime.cliRequire, '@deepseek-ai/dsh-app-boot') as {
@@ -24,9 +25,10 @@ const { runPluginCommand } = await runtime.load(runtime.cliRequire, '@deepseek-a
       onOutput(text: string, stream: 'stdout' | 'stderr'): void }): Promise<{ exitCode: number | null }>;
 };
 const dir = resolveProfileDir(profile);
-if (operation === 'remove') {
-  // Close every instance using the profile; an idle one could recreate the cache.
-  try { await purgeRuntimeCache(join(dir, '.git-bash-on-win')); }
+if (purge) {
+  // Full-home cleanup is explicit: removing one profile must preserve other profiles' links.
+  const { resolveDshHome } = await runtime.load(runtime.cliRequire, '@deepseek-ai/dsh-home-paths') as { resolveDshHome(): string };
+  try { await purgeRuntimeCache(sharedCacheDirectory(resolveDshHome())); }
   catch (cause) {
     throw new LocalizedError('error.removalBlocked', undefined, { cause });
   }

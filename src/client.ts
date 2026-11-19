@@ -47,7 +47,7 @@ window.__ModuleLoader__.load({
     interface ClientContext extends Pick<import('@deepseek-ai/cordis').Context, 'fiber' | 'effect' | 'configForms'> {
       remote: Pick<import('@deepseek-ai/dsh-typert-protocol').TypertClientRemote, '$mount'>;
       get(name: 'remote.gitBashFeedback'): { watch(signal: AbortSignal): AsyncIterable<RebuildNotice> };
-      locale: { register(ns: string, lang: string, messages: Messages): () => void };
+      locale: { register(ns: string, dictionaries: Record<string, Messages>): () => void };
       slots: {
         inject(name: string, setup: () => void): void;
         register<P>(entry: { name: string; key?: string; id?: string; locale: string; inject?(): object },
@@ -191,14 +191,14 @@ window.__ModuleLoader__.load({
             localized: { key: 'error.localeHttp', params: { status: String(response.status) } },
           });
         }
-        const data = await response.json() as { ok?: boolean; dictionaries?: { zh?: unknown; en?: unknown } } | null;
+        const data = await response.json() as { ok?: boolean; dictionaries?: Record<string, unknown> } | null;
         if (ctx.fiber.uid === null) return;
-        const { zh, en } = data?.dictionaries ?? {};
-        if (data?.ok !== true || !isDictionary(zh) || !isDictionary(en)) {
+        const dictionaries = data?.dictionaries;
+        if (data?.ok !== true || !dictionaries || !isDictionary(dictionaries.en)) {
           throw Object.assign(new Error('Invalid Git Bash locale dictionaries.'), { localized: { key: 'error.invalidLocaleDictionaries' } });
         }
-        ctx.effect(() => ctx.locale.register(ns, 'zh', zh));
-        ctx.effect(() => ctx.locale.register(ns, 'en', en));
+        const catalogs = Object.fromEntries(Object.entries(dictionaries).filter((entry): entry is [string, Messages] => isDictionary(entry[1])));
+        ctx.effect(() => ctx.locale.register(ns, catalogs));
         const progress = createSnapshotStore<RebuildNotice['progress']>(undefined);
         const notices = createSnapshotStore<(Feedback & { id: number }) | null>(null);
         let sequence = 0;

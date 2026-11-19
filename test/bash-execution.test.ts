@@ -34,7 +34,7 @@ async function executorFixture(t: TestContext) {
   let dispose = async () => {};
   const unblock = new Set<() => void>();
   t.after(async () => { for (const resume of unblock) resume(); await dispose(); });
-  const fixture = await runtimeFixture(t, 'ucrt64', '.git-bash-on-win');
+  const fixture = await runtimeFixture(t, 'ucrt64', '.dsh-git-bash-on-win');
   const ctx = new Context();
   const spawned: Array<{ spec: SubprocessSpawnSpec; finish: (exitCode?: number) => void }> = [];
   const policy: SandboxExecutionPolicy = { mode: 'read-only', workspaceRoot: fixture.workspace };
@@ -61,7 +61,7 @@ async function executorFixture(t: TestContext) {
       };
     },
   };
-  ctx.provide('profileContext', { dir: fixture.directory });
+  ctx.provide('profileContext', { dir: fixture.directory, home: fixture.directory });
   ctx.provide('subprocess', provider);
   ctx.provide('sandboxPolicy', { defaultMode: policy.mode, resolve: () => policy });
   ctx.provide('sandbox', { confine: (argv: string[]) => controls.confine(argv) });

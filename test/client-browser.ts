@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { access, readFile, stat, unlink, writeFile } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import { access, readFile, realpath, stat, unlink, writeFile } from 'node:fs/promises';
+import { dirname, join, resolve, sep } from 'node:path';
 import { createInterface } from 'node:readline';
 import { pathToFileURL } from 'node:url';
 import { test } from 'node:test';
+import { writeFileAtomic } from '@deepseek-ai/dsh-atomic-write';
 import { chromium, type Locator, type Page } from 'playwright-core';
 import { installedDsh } from '../scripts/installed-dsh.ts';
 import { localSpawn, runtimeFixture } from './fixtures.ts';
@@ -34,11 +35,11 @@ async function openPlugin(page: Page, url: string) {
   return page.getByRole('textbox', { name: /^(Git Bash 路径|Git Bash path)$/ });
 }
 
-await test('installed DSH presents link failures and conflicts in native dialogs and success in a native toast', async t => {
+await test('installed DSH presents link failures and conflicts in native dialogs and success in a native toast', { timeout: 300_000 }, async t => {
   const runtime = installedDsh();
   const spawn = await localSpawn(t);
   assert.ok(spawn);
-  const fixture = await runtimeFixture(t, 'ucrt64', join('home', 'profiles', 'web', '.git-bash-on-win'));
+  const fixture = await runtimeFixture(t, 'ucrt64', join('home', '.dsh-git-bash-on-win'));
   const valid = fixture.request.gitBashPath!, originalLinks = (await stat(valid)).nlink;
   const home = join(fixture.directory, 'home'), profile = join(home, 'profiles/web');
   const env = { ...process.env, DSH_HOME: home, DSH_TELEMETRY_DISABLED: '1',
@@ -50,6 +51,11 @@ await test('installed DSH presents link failures and conflicts in native dialogs
   await writeFile(join(profile, '.npmrc'), `store-dir=${join(home, 'store').replaceAll('\\', '/')}\nstate-dir=${join(home, 'state').replaceAll('\\', '/')}\n`);
   const repo = resolve(import.meta.dirname, '..');
   execFileSync(process.execPath, [join(repo, 'scripts/plugin.ts'), pnpm, 'web', 'add', 'file:' + repo.replaceAll('\\', '/')], { cwd, env });
+
+  // Extend only this installed fixture with one translated label; the other keys fall back to English.
+  const catalogs = await realpath(join(profile, 'node_modules/dsh-git-bash-on-win/locale'));
+  assert.ok(catalogs.startsWith(await realpath(fixture.directory) + sep));
+  await writeFileAtomic(join(catalogs, 'fr.json'), JSON.stringify({ messages: { 'action.saveLink': 'Enregistrer et lier' } }), { mode: 0o600 });
 
   const gate = join(home, 'deny-probe'), attempts = join(home, 'elevation-attempts'), manual = process.env.DSH_GIT_BASH_UAC_TEST;
   const progressPrefix = 'etc/' + 'long-name-'.repeat(15);
@@ -106,7 +112,7 @@ await test('installed DSH presents link failures and conflicts in native dialogs
   await writeFile(patch, JSON.stringify([{ insert: [{ id: 'fixture-command', name: pathToFileURL(driver).href }] }]));
   const host = spawn({ argv: [process.execPath, '--import', pathToFileURL(preload).href, cli, 'web', '--patch', patch,
     '--no-open', '--host', '127.0.0.1', '--port', '0'],
-    cwd, env, graceMs: 500, signal: AbortSignal.timeout(realConsent ? 300_000 : 120_000),
+    cwd, env, graceMs: 500, signal: t.signal,
     stdio: { stdin: 'ignore', stdout: 'pipe', stderr: { maxBytes: 32_768 } } });
   try {
     const output = createInterface({ input: host.stdout! });
@@ -234,7 +240,7 @@ await test('installed DSH presents link failures and conflicts in native dialogs
           hasText: /^Run commands with Git Bash on Windows x64 under DSH's current sandbox policy\.$/,
         }).waitFor();
         await path.fill(missing);
-        const save = page.getByRole('button', { name: 'Save and link', exact: true });
+        const save = page.getByRole('button', { name: 'Enregistrer et lier', exact: true });
         await save.click();
         const dialog = page.getByRole('dialog', { name: 'Path saved, but link creation failed' });
         await dialog.waitFor();

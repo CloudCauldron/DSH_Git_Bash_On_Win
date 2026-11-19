@@ -14,8 +14,8 @@
   在 `read-only`、`workspace-write` 与 `danger-full-access` 下均可直接运行 Git Bash，无需放宽沙箱或改用 WSL，支持管道、子 Shell、原生子进程与多会话并发。
 - **单份硬链接共享，几乎不额外占用磁盘空间**
   通过 NTFS 硬链接复用本机 Git 文件，全模式共用同一份基础目录，无需复制额外副本。
-- **隔离于 DSH 配置目录，不侵入宿主环境**
-  运行时文件与硬链接均保存在 DSH 配置的缓存目录中，不修改 Windows 注册表、全局 `PATH`、环境变量及源 Git / DSH 的文件内容与权限（ACL），日常 Git Bash 与 WSL 不受影响。彻底卸载清理后可还原源文件硬链接计数（创建或移除硬链接可能更新 NTFS 变更时间、存档位及日志或审计记录）。
+- **同一 DSH 主目录内共享运行时缓存**
+  运行时文件与硬链接均保存在 DSH 主目录的共享缓存中，不修改 Windows 注册表、全局 `PATH`、环境变量及源 Git / DSH 的文件内容与权限（ACL），日常 Git Bash 与 WSL 不受影响。彻底卸载清理后可还原源文件硬链接计数（创建或移除硬链接可能更新 NTFS 变更时间、存档位及日志或审计记录）。
 
 ## **3 - 使用指南**
 
@@ -48,25 +48,25 @@
 - **无头模式（`dsh headless`）**：无交互窗口且需提权时，终端会中止并打印修复命令；在 Windows Git Bash 中运行后重启 DSH 重试即可：
 
     ```bash
-    node '<已安装插件目录>/lib/link-runtime-cache.js' '<DSH 配置目录绝对路径>' '<bash.exe 绝对路径>' ['<DSH 安装锚点路径>']
+    node '<已安装插件目录>/lib/link-runtime-cache.js' '<DSH 主目录绝对路径>' '<DSH 配置目录绝对路径>' '<bash.exe 绝对路径>' ['<DSH 安装锚点路径>']
     ```
 
 ## **4 - 注意事项**
 
 <span style="margin-left:2em;">&#8203;</span>使用和排错时请注意以下事项：
 
-1. **Git 与 DSH 配置须位于同一 NTFS 分区**
-   Windows 硬链接无法跨盘符创建，也不支持 FAT32 / exFAT 等非 NTFS 文件系统。Git 安装目录与 DSH 配置目录（默认 `.dsh\profiles\<配置名>`，可通过 `DSH_HOME` 调整）必须处于同一 NTFS 卷。
+1. **Git 与 DSH 主目录须位于同一 NTFS 分区**
+   Windows 硬链接无法跨盘符创建，也不支持 FAT32 / exFAT 等非 NTFS 文件系统。Git 安装目录与 `DSH_HOME` 必须处于同一 NTFS 卷。
 2. **勿在同一配置中混用其他改写 Shell 的插件**
    插件直接复用原生 `pwsh-sandbox`、`tool-pwsh` 与 `preset-standard`、`preset-ptc`、`preset-cordis` 条目，请勿混用其他 Shell 替换插件或改动对应模块名。
 3. **源目录、缓存目录与工作区不得重叠**
-   缓存固定位于 `<配置目录>/.git-bash-on-win`（不支持更改）。Git 源目录、缓存目录与命令工作区三者不可相同或互相包含，路径沿途应避免经过 Junction 或符号链接。
+   各配置共享 `DSH_HOME/.dsh-git-bash-on-win`。Git 源目录、缓存目录与命令工作区三者不可相同或互相包含，路径沿途应避免经过 Junction 或符号链接。
 4. **源 Git 文件不可设为「只读」**
    部分便携版 Git 文件若带有 Windows「只读」属性，请先取消只读属性后再建链或清理。
 5. **缓存体积与文件更新**
    硬链接共享源文件磁盘数据，文件管理器显示的体积并非额外占用；原地修改源文件会同步生效。升级 Git 或附属文件缺失时，在插件页点击 **「保存并链接」** 即可重建。
 6. **普通权限运行，勿直接递归删除缓存**
-   安装、更新及日常使用请以普通权限启动 DSH；切勿用 `rm -rf` 或文件管理器强删 `.git-bash-on-win`，清理时须先关闭所有相关 DSH 实例再执行第 6.2 节命令。
+   安装、更新及日常使用请以普通权限启动 DSH；切勿用 `rm -rf` 或文件管理器强删 `.dsh-git-bash-on-win`，清理时须先关闭所有相关 DSH 实例再执行第 6.2 节命令。
 
 ## **5 - 环境要求**
 
@@ -95,18 +95,18 @@
 
 ### **6.2 - 离线清理缓存与故障排查**
 
-<span style="margin-left:2em;">&#8203;</span>需要重置缓存或清理残留时，请**先关闭所有使用该配置的 DSH 实例**（含后台空闲实例），再运行离线清理命令：
+<span style="margin-left:2em;">&#8203;</span>需要重置缓存或清理残留时，请**先关闭所有共用该主目录的 DSH 实例**（含后台空闲实例），再运行离线清理命令：
 
 ```bash
-node '<已安装插件目录>/lib/purge-runtime-cache.js' '<DSH 配置目录绝对路径>/.git-bash-on-win'
+node '<已安装插件目录>/lib/purge-runtime-cache.js' '<DSH 主目录绝对路径>/.dsh-git-bash-on-win'
 ```
 
 常见阻碍排查：
 
 | 遇到的问题 | 处理方式 |
 | :---: | :---: |
-| 无法确认所有权或含重解析点 | 核对路径是否为该配置下的 `.git-bash-on-win` |
-| 目录被占用或存在活动引用 | 关闭所有使用该配置的 DSH 进程后重试 |
+| 无法确认所有权或含重解析点 | 核对路径是否为 `DSH_HOME` 下的 `.dsh-git-bash-on-win` |
+| 目录被占用或存在活动引用 | 关闭所有共用该主目录的 DSH 进程后重试 |
 | 存在未退出的提权计划或阻塞 | 等待提权辅助进程释放句柄后重新清理 |
 | 拒绝访问或只读文件阻碍 | 解除对应路径的只读属性或占用后重试 |
 | 链接中断或源目录异常 | 检查源 Git 完整性后点击 **「保存并链接」** 重试 |
@@ -115,18 +115,18 @@ node '<已安装插件目录>/lib/purge-runtime-cache.js' '<DSH 配置目录绝�
 
 ### **6.3 - 彻底卸载插件**
 
-<span style="margin-left:2em;">&#8203;</span>如需彻底卸载插件并还原源文件硬链接计数，请按顺序操作：
+<span style="margin-left:2em;">&#8203;</span>若只从一个配置移除插件，请关闭使用该配置的宿主，并省略下方命令中的 `--purge-cache`，其他配置可继续使用缓存。如需彻底卸载插件并还原源文件硬链接计数，请按顺序操作：
 
 1. **移除配置项**：在原生配置编辑器或 `cordis.patch.yml` 中仅删去 `pwsh-sandbox` 下的 `gitBashPath`（保留 `timeoutMs`、`maxOutputBytes`、`graceMs` 等共享设置；若手动添加的条目已为空可一并删除）。
-2. **关闭相关 DSH 实例**：退出所有使用该配置的 DSH 进程（含空闲实例），防止后台重建缓存。
+2. **关闭相关 DSH 实例**：退出所有共用该主目录的 DSH 进程（含空闲实例），防止后台重建缓存。
 3. **清理缓存并卸载插件**：在 **Windows 原生 Git Bash** 中执行卸载脚本（自动先清缓存再卸载）：
 
     ```bash
     gitbash_pnpm="$(cygpath -m "$(type -P pnpm.exe)")"
-    node scripts/plugin.ts "$gitbash_pnpm" web remove dsh-git-bash-on-win
+    node scripts/plugin.ts "$gitbash_pnpm" web remove dsh-git-bash-on-win --purge-cache
     ```
 
-    若直接使用原生 CLI，需**先**运行第 6.2 节清理命令，再执行 `dsh plugin --profile web remove dsh-git-bash-on-win --ignore-scripts`（多配置共用同一包时需逐个清理各配置缓存）。
+    若直接使用原生 CLI，需**先**运行第 6.2 节清理命令，再执行 `dsh plugin --profile web remove dsh-git-bash-on-win --ignore-scripts`（多个配置使用此包时请逐个卸载，共享缓存只需清理一次）。
 
 ## **7 - 开发与测试**
 

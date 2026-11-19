@@ -1,4 +1,4 @@
 tmp/
 node_modules/
 test/results/
-.git-bash-on-win/
+.dsh-git-bash-on-win/

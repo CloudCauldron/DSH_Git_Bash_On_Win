@@ -31,6 +31,7 @@ export interface RuntimeUse {
 }
 /** Preserve local resource failures without treating source/setup errors as leaks. */
 export declare function hasRuntimeCleanupFailure(error: unknown): boolean;
+export declare const sharedCacheDirectory: (home: string) => string;
 export declare function prepareRuntime(request: RuntimePreparation, signal: AbortSignal): Promise<GenerationPin>;
 /** Offline only. Preflight every generation before unpublication or payload deletion. */
 export declare function purgeRuntimeCache(cacheDirectory: string): Promise<void>;

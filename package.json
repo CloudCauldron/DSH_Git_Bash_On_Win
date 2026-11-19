@@ -1,6 +1,6 @@
 {
   "name": "dsh-git-bash-on-win",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "Run commands with Git Bash on Windows x64 under DSH's current sandbox policy.",

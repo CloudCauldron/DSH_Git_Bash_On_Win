@@ -46,7 +46,7 @@
     "error.purgeIncomplete": "运行时清理和卸载未完成。",
     "error.purgeUsage": "用法：{command}",
     "error.linkProfile": "此 DSH 配置必须已安装并启用 DSH Git Bash on Windows 插件的当前副本：{path}",
-    "error.removalBlocked": "运行时清理未完成，尚未开始移除包。请关闭使用此配置的所有 DSH 实例，排除报告的阻碍后重试。",
+    "error.removalBlocked": "运行时清理未完成，尚未开始移除包。请关闭共用该 DSH 主目录的所有实例，排除报告的阻碍后重试。",
 
     "error.customizedModule": "无法适配已自定义的 {id} 模块，Shell 未被替换。",
     "error.profileRequired": "Git Bash 需要 DSH 配置上下文。",

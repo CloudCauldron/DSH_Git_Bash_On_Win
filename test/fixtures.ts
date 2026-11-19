@@ -117,7 +117,7 @@ export async function executionFixture(t: TestContext) {
     throw error;
   }
   const directory = await mkdtemp(join(tmpdir(), 'dsh-git-bash-execution-'));
-  const source = join(directory, 'source'), workspace = join(directory, 'workspace 含空格'), cache = join(directory, '.git-bash-on-win');
+  const source = join(directory, 'source'), workspace = join(directory, 'workspace 含空格'), cache = join(directory, '.dsh-git-bash-on-win');
   const { Context: InstalledContext } = await runtime.load(runtime.baseRequire, '@deepseek-ai/cordis') as typeof import('@deepseek-ai/cordis');
   const { LocalSubprocessRuntime } = await runtime.load(runtime.baseRequire, '@deepseek-ai/dsh-subprocess-local') as { LocalSubprocessRuntime: new (ctx: Context) => Subprocess };
   const { LocalSandboxProvider } = await runtime.load(runtime.baseRequire, '@deepseek-ai/dsh-sandbox-local') as { LocalSandboxProvider: new (ctx: Context, config: object) => SandboxProvider };
@@ -160,7 +160,7 @@ export async function executionFixture(t: TestContext) {
     if (spec.argv.some(arg => basename(arg) === 'elevation-broker.js')) throw new Error('Automated execution fixtures must never request UAC.');
     return spawn(spec);
   };
-  ctx.provide('profileContext', { dir: directory });
+  ctx.provide('profileContext', { dir: directory, home: directory });
   ctx.provide('sandboxPolicy', { defaultMode: 'read-only', resolve: () => ({ mode: 'read-only', workspaceRoot: workspace }) });
   const request: RuntimePreparation = { cacheDirectory: cache, gitBashPath: join(source, 'usr/bin/bash.exe'), elevation: 'manual', spawn: ctx.subprocess.spawn.bind(ctx.subprocess) };
   return { ctx, directory, source, workspace, cache, installed, request,

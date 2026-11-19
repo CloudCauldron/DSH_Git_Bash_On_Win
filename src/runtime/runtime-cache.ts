@@ -57,6 +57,8 @@ interface CurrentRuntime {
   readonly anchors: AnchorStamps;
 }
 
+export const sharedCacheDirectory = (home: string): string => join(home, '.dsh-git-bash-on-win');
+
 const markerName = '.owner.json';
 const generationId = z.string().pattern(/^[a-f0-9]{32}$/).required();
 const pathSchema = z.string().min(3).max(32767).required();

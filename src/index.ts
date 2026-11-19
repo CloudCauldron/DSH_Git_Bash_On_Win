@@ -6,14 +6,16 @@ import { SandboxBashExecutor } from '@deepseek-ai/dsh-bash-sandbox';
 import type { Config as BashConfig } from '@deepseek-ai/dsh-bash-local';
 import type { ShellExecSpec, ShellExecution } from '@deepseek-ai/dsh-shell';
 import type Subprocess from '@deepseek-ai/dsh-subprocess';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { hasRuntimeCleanupFailure, prepareRuntime, type GenerationPin, type RuntimeUse } from './runtime/runtime-cache.ts';
+import { hasRuntimeCleanupFailure, prepareRuntime, sharedCacheDirectory, type GenerationPin, type RuntimeUse } from './runtime/runtime-cache.ts';
 import { commandReceiver } from './adapter.ts';
 import { LocalizedAggregateError, LocalizedError } from './localized-error.ts';
 import { describeFailure, RebuildFeedback } from './rebuild-feedback.ts';
 
 export interface Config extends BashConfig { gitBashPath: Volatile<string | undefined> }
+
+interface Profile { dir: string; home: string; installAnchor?: string }
 
 interface PreparationSlot {
   readonly selection: string | undefined;
@@ -40,8 +42,7 @@ export default class GitBashExecutor extends SandboxBashExecutor {
   }) as unknown as typeof SandboxBashExecutor.Config;
 
   declare readonly config: Config;
-  private readonly cacheDirectory: string;
-  private readonly installAnchor?: string;
+  private readonly profile: Profile;
   private readonly feedback: RebuildFeedback;
   private readonly setupSpawn: Subprocess['spawn'];
   private slot?: PreparationSlot;
@@ -54,13 +55,11 @@ export default class GitBashExecutor extends SandboxBashExecutor {
 
   constructor(ctx: Context, config: Config) {
     if (process.platform !== 'win32' || process.arch !== 'x64') throw new LocalizedError('error.pluginPlatform');
-    const profile = ctx.get('profileContext') as { dir: string; installAnchor?: string } | undefined;
+    const profile = ctx.get('profileContext') as Profile | undefined;
     if (!profile) throw new LocalizedError('error.profileRequired');
-    const cacheDirectory = join(profile.dir, '.git-bash-on-win');
     super(ctx, config);
-    this.cacheDirectory = cacheDirectory;
+    this.profile = profile;
     this.feedback = new RebuildFeedback(ctx);
-    this.installAnchor = profile.installAnchor;
     this.setupSpawn = ctx.subprocess.spawn.bind(ctx.subprocess);
     ctx.on('loader/volatile-update', () => {
       if (this.rebuildOp || (this.slot && !this.slot.pin)) this.observeSelection();
@@ -138,7 +137,7 @@ export default class GitBashExecutor extends SandboxBashExecutor {
         this.observeSelection();
         controller.signal.throwIfAborted();
         this.stopping.signal.throwIfAborted();
-        const pin = await prepareRuntime({ cacheDirectory: this.cacheDirectory, gitBashPath: selection, rebuild, spawn: this.setupSpawn,
+        const pin = await prepareRuntime({ cacheDirectory: sharedCacheDirectory(this.profile.home), gitBashPath: selection, rebuild, spawn: this.setupSpawn,
           onProgress: rebuild ? progress => {
             if (this.rebuildOp === slot && !controller.signal.aborted) this.feedback.setProgress(progress);
           } : undefined,
@@ -166,8 +165,8 @@ export default class GitBashExecutor extends SandboxBashExecutor {
 
   private confirmElevation(source: string, changed: boolean, signal: AbortSignal): Promise<void> {
     this.observeSelection();
-    const args = [process.execPath, fileURLToPath(new URL('./link-runtime-cache.js', import.meta.url)), dirname(this.cacheDirectory), join(source, 'usr/bin/bash.exe')];
-    if (this.installAnchor) args.push(this.installAnchor);
+    const args = [process.execPath, fileURLToPath(new URL('./link-runtime-cache.js', import.meta.url)), this.profile.home, this.profile.dir, join(source, 'usr/bin/bash.exe')];
+    if (this.profile.installAnchor) args.push(this.profile.installAnchor);
     // Print literal arguments for Windows Git Bash, including paths with quotes or shell metacharacters.
     const command = args.map(arg => "'" + arg.replaceAll('\\', '/').replaceAll("'", "'\\''") + "'").join(' ');
     return this.feedback.confirm(changed, new LocalizedError('error.confirmationUnavailable', { command }), signal);

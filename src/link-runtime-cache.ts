@@ -6,13 +6,13 @@ import { Context } from '@deepseek-ai/cordis';
 import { LocalSubprocessRuntime } from '@deepseek-ai/dsh-subprocess-local';
 import { LocalizedError } from './localized-error.ts';
 import { admitDirectory, samePath } from './runtime/ntfs-filesystem.ts';
-import { prepareRuntime } from './runtime/runtime-cache.ts';
+import { prepareRuntime, sharedCacheDirectory } from './runtime/runtime-cache.ts';
 
 // An explicit operator invocation. Only the fixed broker/helper may elevate.
-const [profile, gitBashPath, installAnchor, ...extra] = process.argv.slice(2);
+const [home, profile, gitBashPath, installAnchor, ...extra] = process.argv.slice(2);
 if (process.platform !== 'win32' || process.arch !== 'x64') throw new LocalizedError('error.runtimePlatform');
-if (!profile || !isAbsolute(profile) || !gitBashPath || !isAbsolute(gitBashPath) || (installAnchor !== undefined && !isAbsolute(installAnchor)) || extra.length) {
-  throw new LocalizedError('error.pluginUsage', { command: 'node lib/link-runtime-cache.js <absolute DSH profile directory> <absolute bash.exe> [absolute DSH installation anchor]' });
+if (!home || !isAbsolute(home) || !profile || !isAbsolute(profile) || !gitBashPath || !isAbsolute(gitBashPath) || (installAnchor !== undefined && !isAbsolute(installAnchor)) || extra.length) {
+  throw new LocalizedError('error.pluginUsage', { command: 'node lib/link-runtime-cache.js <absolute DSH home> <absolute DSH profile directory> <absolute bash.exe> [absolute DSH installation anchor]' });
 }
 const directory = admitDirectory(profile).path;
 const manifest = join(directory, 'package.json'), name = 'dsh-git-bash-on-win';
@@ -38,7 +38,7 @@ process.once('SIGINT', cancel);
 process.once('SIGTERM', cancel);
 try {
   await ctx.plugin(LocalSubprocessRuntime);
-  const pin = await prepareRuntime({ cacheDirectory: join(directory, '.git-bash-on-win'), gitBashPath, elevation: 'manual',
+  const pin = await prepareRuntime({ cacheDirectory: sharedCacheDirectory(home), gitBashPath, elevation: 'manual',
     spawn: ctx.subprocess.spawn.bind(ctx.subprocess) }, controller.signal);
   await pin.release();
 } finally {

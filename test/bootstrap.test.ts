@@ -17,6 +17,7 @@ import ts from 'typescript';
 import { parse } from 'yaml';
 import GitBashExecutor, { type Config } from '../src/index.ts';
 import * as Adapter from '../src/adapter.ts';
+import { readDictionaries } from '../src/locale.ts';
 import GitBashPreset from '../src/preset.ts';
 import * as BashTool from '../src/tool.ts';
 import { findInstalledDshManifest, installedDsh, SUPPORTED_DSH } from '../scripts/installed-dsh.ts';
@@ -122,6 +123,18 @@ await test('bundle adaptation preserves Loader entry/config identity and restore
   assert.deepEqual(packageJson.dsh.bundle, { patch: './cordis.patch.yml', platforms: ['win32'] });
 });
 
+await test('catalog discovery requires English and skips unavailable optional translations', async t => {
+  const directory = await temporaryDirectory(t), url = pathToFileURL(directory + '/');
+  const en = { label: 'English', hint: 'English hint' }, fr = { label: 'Français' };
+  await writeFile(join(directory, 'fr-CA.json'), JSON.stringify({ messages: fr }));
+  await writeFile(join(directory, 'zh.json'), 'invalid JSON');
+  await writeFile(join(directory, 'de.json'), JSON.stringify({ messages: { label: 42 } }));
+  await writeFile(join(directory, 'not_a_locale.json'), JSON.stringify({ messages: fr }));
+  assert.throws(() => readDictionaries(url), { code: 'ENOENT' });
+  await writeFile(join(directory, 'en.json'), JSON.stringify({ messages: en }));
+  assert.deepEqual(readDictionaries(url), { en, 'fr-ca': fr });
+});
+
 await test('the classic client registers dictionaries and the bundle slot after one locale request', async t => {
   const ns = 'dsh-git-bash-on-win', slot = 'plugins.bundle.config';
   assert.deepEqual(packageJson.dsh.client, { platform: 'web', inject: [
@@ -130,7 +143,7 @@ await test('the classic client registers dictionaries and the bundle slot after 
   type ClientPlugin = { inject: string[]; apply(ctx: unknown): Promise<void> };
   type Registration = { id: string; factory(require: (name: string) => unknown): ClientPlugin };
   const load = t.mock.fn<(entry: Registration) => void>();
-  const dictionaries = { zh: { 'path.label': 'Git Bash 路径' }, en: { 'path.label': 'Git Bash path' } };
+  const dictionaries = { zh: { 'path.label': 'Git Bash 路径' }, en: { 'path.label': 'Git Bash path' }, fr: { 'path.label': 'Chemin Git Bash' } };
   const request = t.mock.fn(async (url: string, options: RequestInit) => {
     assert.equal(url, 'api/git-bash-on-win/locales');
     assert.deepEqual({ ...options }, { cache: 'no-store', redirect: 'error' });
@@ -157,7 +170,7 @@ await test('the classic client registers dictionaries and the bundle slot after 
   const fiber = ctx.plugin(() => {});
   await fiber;
   const disposeLocale = t.mock.fn();
-  const registerLocale = t.mock.fn<(ns: string, lang: string, messages: unknown) => () => void>(() => disposeLocale);
+  const registerLocale = t.mock.fn<(ns: string, dictionaries: Record<string, unknown>) => () => void>(() => disposeLocale);
   const form = {};
   const get = t.mock.fn<(id: string) => object>(() => form);
   type SlotEntry = { name: string; key?: string; id?: string; locale: string; inject(): { shellForm: unknown; hooks: { shellForm: unknown }; notify: unknown } };
@@ -183,7 +196,7 @@ await test('the classic client registers dictionaries and the bundle slot after 
   assert.equal(register.mock.callCount(), 0);
   await plugin.apply(context);
   assert.equal(request.mock.callCount(), 3, 'one request per activation');
-  assert.deepEqual(structuredClone(registerLocale.mock.calls.map(call => call.arguments)), [[ns, 'zh', dictionaries.zh], [ns, 'en', dictionaries.en]]);
+  assert.deepEqual(structuredClone(registerLocale.mock.calls.map(call => call.arguments)), [[ns, dictionaries]]);
   assert.deepEqual(get.mock.calls.map(call => call.arguments[0]), ['pwsh-sandbox']);
   assert.equal(register.mock.callCount(), 2);
   const [overlay, overlayComponent] = register.mock.calls[0]!.arguments;
@@ -202,9 +215,16 @@ await test('the classic client registers dictionaries and the bundle slot after 
   await fiber.dispose();
   respond(new Response(null, { status: 503 }));
   await pending;
-  assert.equal(registerLocale.mock.callCount(), 2);
-  assert.equal(disposeLocale.mock.callCount(), 2);
+  assert.equal(registerLocale.mock.callCount(), 1);
+  assert.equal(disposeLocale.mock.callCount(), 1);
   assert.equal(register.mock.callCount(), 2);
+
+  const englishOnly = ctx.plugin(() => {});
+  await englishOnly;
+  request.mock.mockImplementationOnce(async () => Response.json({ ok: true, dictionaries: { en: dictionaries.en } }));
+  await plugin.apply({ ...context, fiber: englishOnly, effect: englishOnly.effect.bind(englishOnly) });
+  assert.deepEqual(structuredClone(registerLocale.mock.calls.at(-1)!.arguments), [ns, { en: dictionaries.en }]);
+  await englishOnly.dispose();
 });
 
 await test('public pinned dependencies resolve and atomic-write is usable', async t => {
@@ -330,7 +350,7 @@ await test('checkout install, offline recovery and removal preserve shared Shell
   skip: !nativeWindows && 'Requires native Windows x64, pinned DSH and pnpm.',
 }, async t => {
   const spawn = await localSpawn(t); if (!spawn) return;
-  const runtime = installedDsh(), fixture = await runtimeFixture(t);
+  const runtime = installedDsh(), fixture = await runtimeFixture(t, 'ucrt64', join('home', '.dsh-git-bash-on-win'));
   const pnpm = realpathSync(process.env.npm_execpath?.endsWith('.exe') ? process.env.npm_execpath
     : execFileSync('where.exe', ['pnpm.exe'], { encoding: 'utf8' }).trim().split(/\r?\n/)[0]!);
   const home = join(fixture.directory, 'home'), profile = join(home, 'profiles', 'integration');
@@ -363,7 +383,7 @@ await test('checkout install, offline recovery and removal preserve shared Shell
     assert.equal(result.exitCode, 0, result.stdout + result.stderr);
   };
   const checkout = 'file:' + resolve(root).replaceAll('\\', '/');
-  const operation = (verb: 'add' | 'remove', target: string) => run([process.execPath, join(root, 'scripts/plugin.ts'), pnpm, 'integration', verb, target]);
+  const operation = (verb: 'add' | 'remove', target: string, ...flags: string[]) => run([process.execPath, join(root, 'scripts/plugin.ts'), pnpm, 'integration', verb, target, ...flags]);
   success(await operation('add', checkout));
   const manifest = () => JSON.parse(readFileSync(join(profile, 'package.json'), 'utf8')) as {
     dependencies?: Record<string, string>; dsh: { profile: { bundles: string[] } };
@@ -380,7 +400,9 @@ await test('checkout install, offline recovery and removal preserve shared Shell
     assert.deepEqual(readFileSync(join(packageRoot, file)), readFileSync(join(root, file)), file);
   }
   assert.deepEqual(JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8')), packageJson);
-  assert.deepEqual(filesUnder(join(packageRoot, 'locale')), ['en.json', 'zh.json']);
+  const localeFiles = filesUnder(join(root, 'locale'));
+  assert.deepEqual(filesUnder(join(packageRoot, 'locale')), localeFiles);
+  for (const file of localeFiles) assert.deepEqual(readFileSync(join(packageRoot, 'locale', file)), readFileSync(join(root, 'locale', file)));
   const placeholders = (messages: Record<string, string>) => Object.fromEntries(Object.entries(messages)
     .map(([key, value]) => [key, value.match(/{[a-zA-Z0-9_]+}/g)?.sort() ?? []]));
   const [zh, en] = ['zh', 'en'].map(lang => {
@@ -447,15 +469,15 @@ await test('checkout install, offline recovery and removal preserve shared Shell
       const url = 'http://localhost/api/git-bash-on-win/locales';
       const get = (method = 'GET', peer = ctx.connection.browserPeer) => routes.fetch(new Request(url, { method }), peer);
       assert.equal((await get()).status, 404, 'no route outside a profile');
-      const profileScope = ctx.plugin(scope => { scope.provide('profileContext', { dir, installAnchor }); });
+      const profileScope = ctx.plugin(scope => { scope.provide('profileContext', { dir, home, installAnchor }); });
       await profileScope;
       await ctx.loader.await();
       assert.equal((await get('POST')).status, 404);
       assert.equal((await get('GET', { principal: { kind: 'other' } })).status, 403);
       const response = await get();
       assert.equal(response.status, 200);
-      const messages = lang => require('dsh-git-bash-on-win/locale/' + lang + '.json').messages;
-      assert.deepEqual(await response.json(), { ok: true, dictionaries: { zh: messages('zh'), en: messages('en') } });
+      const dictionaries = ${JSON.stringify(readDictionaries())};
+      assert.deepEqual(await response.json(), { ok: true, dictionaries });
       const rebuild = (method = 'POST', peer = ctx.connection.browserPeer) =>
         routes.fetch(new Request('http://localhost/api/git-bash-on-win/rebuild', { method }), peer);
       assert.equal((await rebuild()).status, 404, 'only a live executor owns the rebuild route');
@@ -468,7 +490,7 @@ await test('checkout install, offline recovery and removal preserve shared Shell
       await ctx.loader.await();
       assert.equal((await rebuild('GET')).status, 404);
       assert.equal((await rebuild('POST', { principal: { kind: 'other' } })).status, 403);
-      assert.equal(existsSync(join(dir, '.git-bash-on-win')), false, 'discovery and dictionary reads leave the runtime cold');
+      assert.equal(existsSync(join(home, '.dsh-git-bash-on-win')), false, 'discovery and dictionary reads leave the runtime cold');
       const patchFile = join(dir, 'cordis.patch.yml');
       const beforeRead = readFileSync(patchFile, 'utf8');
       // Observe the configured executable's existence check with the real executor active.
@@ -476,7 +498,7 @@ await test('checkout install, offline recovery and removal preserve shared Shell
       syncBuiltinESMExports();
       const probed = () => stat.mock.calls.some(call => call.arguments[0] === toNamespacedPath(shellConfig.gitBashPath));
       const rebuilds = mock.method(Executor.prototype, 'rebuildRuntime');
-      assert.deepEqual(await (await get()).json(), { ok: true, dictionaries: { zh: messages('zh'), en: messages('en') } });
+      assert.deepEqual(await (await get()).json(), { ok: true, dictionaries });
       assert.equal(probed(), false);
       assert.equal(rebuilds.mock.callCount(), 0);
       assert.equal(readFileSync(patchFile, 'utf8'), beforeRead);
@@ -508,7 +530,7 @@ await test('checkout install, offline recovery and removal preserve shared Shell
       for (const [name, field] of Object.entries(SandboxBashExecutor.Config.dict)) assert.equal(Executor.Config.dict[name], field);
     } finally { mock.restoreAll(); syncBuiltinESMExports(); await ctx.fiber.dispose(); }
   `);
-  const cache = join(profile, '.git-bash-on-win');
+  const cache = fixture.cache;
   const purge = () => run([process.execPath, join(packageRoot, 'lib/purge-runtime-cache.js'), cache]);
   try {
     success(await run([process.execPath, identityEntry, profile, home, runtime.manifest]));
@@ -521,14 +543,12 @@ await test('checkout install, offline recovery and removal preserve shared Shell
   const recovery = readFileSync(join(home, 'recovery-command'), 'utf8');
   assert.ok(recovery.endsWith("/package.json'"), 'the command includes the DSH installation anchor');
   const git = discoverGitInstallation(process.env.DSH_TEST_GIT_BASH);
-  try {
-    success(await run([join(git.root, 'bin/bash.exe'), '--noprofile', '--norc', '-c', 'PATH=/usr/bin\n' + recovery]));
-    assert.equal(statSync(join(cache, 'current.json')).isFile(), true);
-  } finally { success(await purge()); }
-  assert.equal(statSync(sourceFile).nlink, before.links);
+  success(await run([join(git.root, 'bin/bash.exe'), '--noprofile', '--norc', '-c', 'PATH=/usr/bin\n' + recovery]));
+  const sharedGeneration = readFileSync(join(cache, 'current.json'), 'utf8');
+  const sharedLinks = statSync(sourceFile).nlink;
   // Application-owned profiles can live anywhere. DSH selects an installation bundle before a profile-local copy.
   const appProfile = join(home, 'application-data'), install = join(home, 'application-installation');
-  const name = 'dsh-git-bash-on-win', appCache = join(appProfile, '.git-bash-on-win');
+  const name = 'dsh-git-bash-on-win';
   initProfile(appProfile, [name]);
   const appAnchor = join(install, 'package.json');
   const scoped = join(install, 'node_modules', '@deepseek-ai');
@@ -540,15 +560,16 @@ await test('checkout install, offline recovery and removal preserve shared Shell
   await mkdir(otherCopy, { recursive: true });
   await writeFile(join(otherCopy, 'package.json'), JSON.stringify({ name }));
   const appRecovery = (anchor: string) => run([process.execPath, join(packageRoot, 'lib/link-runtime-cache.js'),
-    appProfile, sourceFile, anchor]);
+    home, appProfile, sourceFile, anchor]);
   const mismatch = await appRecovery(runtime.manifest);
   assert.notEqual(mismatch.exitCode, 0);
   assert.match(mismatch.stderr, /this copy of DSH Git Bash on Windows/);
-  assert.equal(pathExists(appCache), false);
+  assert.equal(readFileSync(join(cache, 'current.json'), 'utf8'), sharedGeneration);
   try {
     success(await appRecovery(appAnchor));
-    assert.equal(JSON.parse(readFileSync(join(appCache, 'current.json'), 'utf8')).sourceRoot, fixture.source);
-  } finally { success(await run([process.execPath, join(packageRoot, 'lib/purge-runtime-cache.js'), appCache])); }
+    assert.equal(readFileSync(join(cache, 'current.json'), 'utf8'), sharedGeneration, 'both profiles reuse the published generation');
+    assert.equal(statSync(sourceFile).nlink, sharedLinks);
+  } finally { success(await purge()); }
   assert.equal(statSync(sourceFile).nlink, before.links);
   const prepare = () => fixture.prepare(false, new AbortController().signal, cache);
   // Standalone script imports must resolve with native profile autoInstallPeers:false.
@@ -562,26 +583,30 @@ await test('checkout install, offline recovery and removal preserve shared Shell
 
   const pin = await prepare();
   try {
-    const blocked = await operation('remove', 'dsh-git-bash-on-win');
+    const blocked = await operation('remove', 'dsh-git-bash-on-win', '--purge-cache');
     assert.notEqual(blocked.exitCode, 0);
     assert.match(blocked.stderr, /package removal was not started/);
     assert.ok(manifest().dependencies?.['dsh-git-bash-on-win']);
-    assert.ok(pathExists(join(cache, 'current.json')));
+    const selected = readFileSync(join(cache, 'current.json'), 'utf8');
+    success(await operation('remove', 'dsh-git-bash-on-win'));
+    assert.equal(manifest().dependencies?.['dsh-git-bash-on-win'], undefined);
+    assert.equal(readFileSync(join(cache, 'current.json'), 'utf8'), selected);
+    success(await operation('add', checkout));
   } finally { await pin.release(); }
   const current = readFileSync(join(cache, 'current.json'), 'utf8');
   success(await operation('add', checkout));
-  assert.equal(readFileSync(join(cache, 'current.json'), 'utf8'), current, 'package installation retains the profile cache');
+  assert.equal(readFileSync(join(cache, 'current.json'), 'utf8'), current, 'package installation retains the shared cache');
   success(await purge());
   assert.equal(pathExists(cache), false);
   assert.deepEqual(parse(readFileSync(patchPath, 'utf8')), patches, 'offline rebuild retains the override and package');
   assert.equal(statSync(sourceFile).nlink, before.links);
 
-  // Unowned profile contents block removal before the package manager runs.
+  // Unowned cache contents block removal before the package manager runs.
   await mkdir(cache);
   const sentinel = join(cache, 'unowned.txt');
   try {
     await writeFile(sentinel, 'Do not delete unowned contents.');
-    const refused = await operation('remove', 'dsh-git-bash-on-win');
+    const refused = await operation('remove', 'dsh-git-bash-on-win', '--purge-cache');
     assert.notEqual(refused.exitCode, 0); assert.match(refused.stderr, /package removal was not started/);
     assert.equal(readFileSync(sentinel, 'utf8'), 'Do not delete unowned contents.');
     assert.ok(manifest().dependencies?.['dsh-git-bash-on-win']);
@@ -597,7 +622,7 @@ await test('checkout install, offline recovery and removal preserve shared Shell
   const dump = () => run([process.execPath, join(dirname(runtime.manifest), 'lib/bin.js'), '--profile', 'integration', '--dump-config']);
   const enabled = await dump(); success(enabled); assert.match(enabled.stdout, /git-bash-adapter/);
   await (await prepare()).release();
-  success(await operation('remove', 'dsh-git-bash-on-win'));
+  success(await operation('remove', 'dsh-git-bash-on-win', '--purge-cache'));
   assert.equal(manifest().dependencies?.['dsh-git-bash-on-win'], undefined);
   assert.equal(manifest().dsh.profile.bundles.includes('dsh-git-bash-on-win'), false);
   assert.equal(pathExists(cache), false);

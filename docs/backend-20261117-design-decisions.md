@@ -20,9 +20,9 @@ The installation-root adjustment applies in all three modes. In an experiment, t
 
 Compatibility work uses DSH's Windows bindings and applies to the launched processes' data and call arguments. The installed programs and their access control lists (ACLs) stay intact. Environment changes apply to that command's children. Ordinary Git Bash, WSL and other hosts use their normal execution paths.
 
-## One cache per profile, one base per generation
+## One cache per DSH home, one base per generation
 
-DSH supplies a profile directory. The executor derives `<profile>/.git-bash-on-win` from it and requires a profile before registering the Shell service. Activation does no filesystem preparation. A profile owns its cache across restarts and package replacement. Keeping storage in the package would let a package update remove it outside the plugin's cleanup procedure. A machine-wide cache would make one profile's removal depend on other profiles.
+DSH supplies both the profile directory and the home. The executor keeps settings and offline package resolution profile-specific. Profiles in that home reuse `DSH_HOME/.dsh-git-bash-on-win` when their Git selections match. Activation does no filesystem preparation.
 
 A **generation** is a fresh directory containing the Git layout selected for a build. Its base holds NTFS hardlinks to the source installation. The source and cache must occupy the same NTFS volume, in separate directory trees. Hardlinks share contents and security descriptors with the source. One base replaced three mode-specific trees, reducing 24,543 links to 8,181 in the measured installation. Every required pathname is retained, including Git aliases that name the same file. Publication fixes the layout. An in-place write to a shared file is visible through all its links.
 
@@ -69,7 +69,7 @@ The first command starts one preparation shared by callers. A command can abando
 
 The settings action calls `rebuildRuntime()`, which needs no workspace. If a ready pin exists, commands can keep using it while its replacement is built. A failed rebuild leaves that pin available. With no ready pin, rebuilding displaces unfinished initialization and becomes the shared preparation immediately. The executor joins superseded work before starting fresh setup. An overlapping rebuild gets a busy error. This avoids duplicate inventories and consent requests while preserving existing command leases.
 
-Manual rebuilds send progress over the existing owner feedback stream. The ordinary linker reports completed file counts after each batch. During elevated linking, the unelevated executor watches relative names in the attempt’s new base directory. Windows can coalesce those notifications, so the caption shows a recently observed path. Validation and publication use the same checks in both cases.
+Manual rebuilds send progress over the existing owner feedback stream. The ordinary linker reports completed file counts after each batch. During elevated linking, the unelevated executor watches relative names in the attempt's new base directory. Windows can coalesce those notifications, so the caption shows a recently observed path. Validation and publication use the same checks in both cases.
 
 ## Elevation and cancellation
 
@@ -89,16 +89,16 @@ A generation pin denies delete sharing on its directory. That alone does not pro
 
 Normal shutdown cancels preparation, stops and joins owned commands and brokers, drains local writes, and closes native handles and locks. Failure to confirm exit or close a handle is an error. View cleanup is best effort inside the private cache. The validated base persists for the next DSH session.
 
-Complete removal follows this order for each affected profile.
+Profile removal leaves the shared cache available. Complete removal from the home follows this order.
 
 1. Remove the plugin-only `gitBashPath` override and preserve shared Shell values such as the timeout and output limit.
-2. Close every DSH instance using the profile. An idle executor without a pin could otherwise prepare the cache again.
-3. Purge the profile's `.git-bash-on-win` cache. A blocked or interrupted purge reports failure.
-4. After the purge succeeds, remove the plugin using DSH's official package operation. The repository's removal wrapper performs the purge before it calls DSH.
+2. Close every DSH instance sharing the home. An idle executor without a pin could otherwise prepare the cache again.
+3. Purge the home's `.dsh-git-bash-on-win` cache once. A blocked or interrupted purge reports failure.
+4. After the purge succeeds, remove the plugin using DSH's official package operation. The repository's removal wrapper performs the purge before it calls DSH when invoked with `--purge-cache`.
 
 Purge validates ownership, takes the writer lock, and claims delete access to the root and every ordinary generation. It unlinks helper plans and removes the selector before deleting payload, so an interruption cannot leave a partially deleted generation selected. It removes interior entries without following link targets, keeps the ownership marker until payload cleanup succeeds, and checks handle closure and removal of the root itself.
 
-Offline recovery uses the packaged purge entry with the absolute profile cache path, followed by a Bash call after restart. It retains the package and Shell settings. Removing all cache names restores the source files' hardlink counts. NTFS records link creation and removal in change times, archive bits and journals. The plugin leaves those records to the filesystem.
+Offline recovery uses the packaged purge entry with the absolute shared cache path, followed by a Bash call after restart. It retains the package and Shell settings. Removing all cache names restores the source files' hardlink counts. NTFS records link creation and removal in change times, archive bits and journals. The plugin leaves those records to the filesystem.
 
 ## Verification behind these choices
 

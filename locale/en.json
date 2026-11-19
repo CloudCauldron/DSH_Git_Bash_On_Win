@@ -31,7 +31,12 @@
     "link.confirmChanged": "The Git Bash source files have changed. Administrator permission is required to recreate the links.",
     "link.confirmSetup": "Administrator permission is required to create the Git Bash links.",
 
+    "error.separator": "; ",
     "error.unknown": "Unknown error.",
+    "error.invalidLocaleDictionaries": "Invalid locale catalogs.",
+    "error.invalidLocaleDictionary": "Invalid locale catalog.",
+    "error.localeHttp": "Locale catalogs: HTTP {status}",
+    "error.httpStatus": "HTTP {status}",
 
     "error.dshManifestPath": "{variable} must be an absolute {manifest} path.",
     "error.dshNotInstalled": "No installed DSH found; set {variable} to its absolute {manifest} path.",
@@ -52,9 +57,6 @@
     "error.profileRequired": "Git Bash requires a DSH profile context.",
     "error.shellEntryRequired": "The native {entry} entry is required.",
 
-    "error.invalidLocaleDictionaries": "Invalid Git Bash locale dictionaries.",
-    "error.invalidLocaleDictionary": "Invalid Git Bash locale dictionary.",
-    "error.localeHttp": "Git Bash locales: HTTP {status}",
 
     "error.changedBeforeConfinement": "Git Bash runtime changed before confinement.",
     "error.changedDuringConfinement": "Git Bash runtime changed during command preparation.",

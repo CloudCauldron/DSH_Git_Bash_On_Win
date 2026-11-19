@@ -168,8 +168,8 @@ await test('installed DSH presents link failures and conflicts in native dialogs
       await button.click();
       const response = await failed;
       assert.equal(response.status(), 500);
-      const { error, localized } = await response.json();
-      assert.deepEqual(localized, { key: 'error.gitNotFound', params: { bin: 'bin/bash.exe', usrBin: 'usr/bin/bash.exe' } });
+      const { error, messages } = await response.json();
+      assert.deepEqual(messages, [{ key: 'error.gitNotFound', params: { bin: 'bin/bash.exe', usrBin: 'usr/bin/bash.exe' } }]);
       assert.doesNotMatch(error, /gitBashPath/);
       const modal = first.getByRole('dialog', { name: '路径已保存，但链接建立失败', exact: true });
       await modal.waitFor();
@@ -272,11 +272,11 @@ await test('installed DSH presents link failures and conflicts in native dialogs
         await page.keyboard.press('Escape');
 
         await page.route('**/api/git-bash-on-win/rebuild', route => route.fulfill({
-          status: 500, json: { error: diagnostic, localized: { key: 'error.rebuildBusy', diagnostic } },
+          status: 500, json: { error: diagnostic, messages: [{ key: 'error.elevatedCleanupFailed' }, { key: 'error.brokerRangeUnsettled' }], diagnostic },
         }), { times: 1 });
         await save.click();
         await raw.waitFor();
-        await checkDiagnostic(raw, 'Git Bash links are being rebuilt. Try again when the rebuild finishes.', diagnostic);
+        await checkDiagnostic(raw, 'Elevated setup or its local cleanup failed.; Setup broker range did not settle.', diagnostic);
       } finally { await french.close(); }
 
       const field = await openPlugin(second, url);
@@ -366,6 +366,18 @@ await test('installed DSH presents link failures and conflicts in native dialogs
         assert.equal(await consent.count(), 0);
         assert.equal(await readFile(attempts, 'utf8'), 'plan\n');
       }
+      // Change the live DSH preference and render the plugin again in the same document.
+      await first.getByRole('button', { name: '账号菜单', exact: true }).click();
+      await first.getByRole('menuitem', { name: '设置', exact: true }).click();
+      const settings = first.locator('[data-shortcut-modal="settings"]');
+      await settings.getByRole('button', { name: '通用设置', exact: true }).click();
+      await settings.getByRole('button', { name: '中文', exact: true }).click();
+      await first.getByRole('menuitem', { name: 'English', exact: true }).click();
+      await settings.getByRole('button', { name: 'Close', exact: true }).click();
+      await first.getByRole('button', { name: 'Plugins', exact: true }).click();
+      await first.locator('[data-plugin-package="dsh-git-bash-on-win"]').getByText('DSH Git Bash on Windows', { exact: true }).click();
+      await first.getByRole('textbox', { name: 'Git Bash path', exact: true }).waitFor();
+      await first.getByRole('button', { name: 'Save and link', exact: true }).waitFor();
     } finally { await browser.close(); }
   } finally {
     host.terminate();

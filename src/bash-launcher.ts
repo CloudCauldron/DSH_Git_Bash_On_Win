@@ -1,7 +1,7 @@
 import { buildRuntimeEnvironment } from './runtime/git-installation.ts';
 import { inheritedCompatibility } from './debugger/native-debug.ts';
 import { runPrivateBash } from './debugger/process-family.ts';
-import { LocalizedError } from './localized-error.ts';
+import { LocalizedError } from './locale/errors.ts';
 
 // Reached through DSH's native policy/subprocess machinery. No token creation,
 // source probes, cache metadata or duplicate filesystem admission belong here.

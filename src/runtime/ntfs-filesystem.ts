@@ -4,7 +4,7 @@ import { realpath } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep, toNamespacedPath } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { closeHandleChecked, extendWin32ProcessBindings, isNullPtr, throwLastError, Win32Error, type NativePtr } from '@deepseek-ai/dsh-win32-process';
-import { LocalizedAggregateError, LocalizedError } from '../localized-error.ts';
+import { LocalizedAggregateError, LocalizedError } from '../locale/errors.ts';
 
 export interface FileIdentity { readonly volumeSerial: string; readonly fileId: string }
 export interface Directory extends FileIdentity { readonly path: string }
@@ -438,7 +438,7 @@ export function admitJunction(parent: Directory, name: string, target: Directory
   if (!(info.attributes & ATTR_REPARSE) || info.reparseTag !== MOUNT_POINT) throw new LocalizedError('error.unexpectedJunction', { path });
   let actual: string;
   try { actual = ordinaryPath(realpathSync(toNamespacedPath(path))); }
-  catch (cause) { throw new LocalizedError('error.unexpectedJunction', { path }, { cause }); }
+  catch (cause) { throw new LocalizedError('error.unexpectedJunction', { path }, { cause, failures: [cause] }); }
   if (!samePath(actual, target.path)) {
     throw new LocalizedError('error.unexpectedJunction', { path });
   }

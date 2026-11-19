@@ -7,7 +7,7 @@ import {
   requireJobMember, spawnDebugFamily, ThreadContext, valid, waitDebugEvent, wide, writeData as allocateData, writeMemory,
   type DebugEvent, type IpcCompatibility,
 } from './native-debug.ts';
-import { LocalizedError } from '../localized-error.ts';
+import { LocalizedAggregateError, LocalizedError } from '../locale/errors.ts';
 
 export interface PrivateBashLaunch {
   readonly baseRoot: string;
@@ -314,6 +314,6 @@ export async function runPrivateBash(options: PrivateBashLaunch): Promise<Privat
     attempt(() => close(job));
     attempt(() => ctx.close());
   }
-  if (errors.length) throw new AggregateError(errors, errors.map(error => error instanceof Error ? error.message : String(error)).join('; '));
+  if (errors.length) throw new LocalizedAggregateError(errors);
   return { exitCode: exitCode!, repaired, defaultDaclAdjusted, mappingsAdjusted, installationKey: familyKey! };
 }

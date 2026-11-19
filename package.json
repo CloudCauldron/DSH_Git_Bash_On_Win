@@ -32,7 +32,7 @@
   "scripts": {
     "lint": "eslint src scripts test eslint.config.mjs --max-warnings 0",
     "check": "tsc --noEmit",
-    "build": "node --input-type=module -e \"import { rm } from 'node:fs/promises'; await rm('lib', { recursive: true, force: true });\" && tsc -p tsconfig.build.json",
+    "build": "node --input-type=module -e \"import { rm } from 'node:fs/promises'; await rm('lib', { recursive: true, force: true });\" && tsc -p tsconfig.build.json && esbuild src/client.ts --bundle --format=iife --platform=browser --target=esnext --outfile=lib/client.js",
     "test": "pnpm build && node --test test/*.test.ts",
     "test:browser": "pnpm build && node --test test/client-browser.ts",
     "test:windows": "node -e \"if (process.platform !== 'win32' || process.arch !== 'x64') throw new Error('Native Windows x64 Node is required.');\" && pnpm test",
@@ -80,6 +80,7 @@
     "@types/react": "18.3.31",
     "@types/react-test-renderer": "18.3.2",
     "@typescript/native": "npm:typescript@7.0.2",
+    "esbuild": "0.28.2",
     "eslint": "10.14.0",
     "playwright-core": "1.64.1",
     "react": "18.3.1",

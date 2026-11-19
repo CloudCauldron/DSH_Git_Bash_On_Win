@@ -18,7 +18,7 @@ import {
   anchorNames, captureAnchors, discoverGitInstallation, inventoryGitFiles, linkFreshTree,
   readAnchors, sameAnchors, type AnchorStamps, type GitInstallation, type GitLayout,
 } from './git-installation.ts';
-import { LocalizedAggregateError, LocalizedError } from '../localized-error.ts';
+import { LocalizedAggregateError, LocalizedError } from '../locale/errors.ts';
 
 export type LinkProgress = 'preparing' | 'elevation' | 'checking'
   | { path: string; completed?: never } | { path: string; completed: number; total: number };

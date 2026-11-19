@@ -4,7 +4,7 @@ import { isAbsolute, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { Context } from '@deepseek-ai/cordis';
 import { LocalSubprocessRuntime } from '@deepseek-ai/dsh-subprocess-local';
-import { LocalizedError } from './localized-error.ts';
+import { LocalizedError } from './locale/errors.ts';
 import { admitDirectory, samePath } from './runtime/ntfs-filesystem.ts';
 import { prepareRuntime, sharedCacheDirectory } from './runtime/runtime-cache.ts';
 

@@ -6,7 +6,7 @@ import {
   admitChildDirectory, admitDirectory, createDirectory, createHardlink, isMissing,
   openOrdinaryFile, ordinaryFileExists, pathExists, pinDirectory, revalidateDirectory, sameIdentity, type Directory, type FileIdentity,
 } from './ntfs-filesystem.ts';
-import { LocalizedError } from '../localized-error.ts';
+import { LocalizedError } from '../locale/errors.ts';
 
 export type GitLayout = 'ucrt64' | 'mingw64';
 export interface GitInstallation { readonly root: string; readonly layout: GitLayout }

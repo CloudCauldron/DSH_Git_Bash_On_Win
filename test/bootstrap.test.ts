@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import fs, { readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
+import { readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { mkdir, rmdir, symlink, unlink, writeFile } from 'node:fs/promises';
-import { createRequire, findPackageJSON, syncBuiltinESMExports } from 'node:module';
+import { createRequire, findPackageJSON } from 'node:module';
 import { dirname, join, relative, resolve } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -17,7 +17,7 @@ import ts from 'typescript';
 import { parse } from 'yaml';
 import GitBashExecutor, { type Config } from '../src/index.ts';
 import * as Adapter from '../src/adapter.ts';
-import { readDictionaries } from '../src/locale.ts';
+import { readDictionaries } from '../src/locale/catalogs.ts';
 import GitBashPreset from '../src/preset.ts';
 import * as BashTool from '../src/tool.ts';
 import { findInstalledDshManifest, installedDsh, SUPPORTED_DSH } from '../scripts/installed-dsh.ts';
@@ -123,25 +123,6 @@ await test('bundle adaptation preserves Loader entry/config identity and restore
   assert.deepEqual(packageJson.dsh.bundle, { patch: './cordis.patch.yml', platforms: ['win32'] });
 });
 
-await test('catalog discovery requires English and skips unavailable optional translations', async t => {
-  const directory = await temporaryDirectory(t), url = pathToFileURL(directory + '/');
-  const en = { label: 'English', hint: 'English hint' }, fr = { label: 'Français' };
-  await writeFile(join(directory, 'fr-CA.json'), JSON.stringify({ messages: fr }));
-  await writeFile(join(directory, 'zh.json'), 'invalid JSON');
-  await writeFile(join(directory, 'de.json'), JSON.stringify({ messages: { label: 42 } }));
-  await mkdir(join(directory, 'it.json')); // An existing entry that cannot be read as a catalog.
-  await writeFile(join(directory, 'not_a_locale.json'), JSON.stringify({ messages: fr }));
-  assert.throws(() => readDictionaries(url), { code: 'ENOENT' });
-  await writeFile(join(directory, 'en.json'), '{invalid');
-  assert.throws(() => readDictionaries(url), SyntaxError);
-  await writeFile(join(directory, 'en.json'), JSON.stringify({ messages: en }));
-  assert.deepEqual(readDictionaries(url), { en, 'fr-ca': fr });
-  const listing = t.mock.method(fs, 'readdirSync', () => { throw Object.assign(Error('directory listing denied'), { code: 'EACCES' }); });
-  syncBuiltinESMExports();
-  try { assert.deepEqual(readDictionaries(url), { en }); }
-  finally { listing.mock.restore(); syncBuiltinESMExports(); }
-});
-
 await test('the classic client registers dictionaries and the bundle slot after one locale request', async t => {
   const ns = 'dsh-git-bash-on-win', slot = 'plugins.bundle.config';
   assert.deepEqual(packageJson.dsh.client, { platform: 'web', inject: [
@@ -189,14 +170,14 @@ await test('the classic client registers dictionaries and the bundle slot after 
 
   request.mock.mockImplementationOnce(async () => new Response(null, { status: 404 }));
   await assert.rejects(plugin.apply(context), error => {
-    const e = error as Error & { localized: unknown };
+    const e = error as Error & { messages: unknown };
     assert.match(e.message, /HTTP 404/);
-    assert.deepEqual(structuredClone(e.localized), { key: 'error.localeHttp', params: { status: '404' } });
+    assert.deepEqual(structuredClone(e.messages), [{ key: 'error.localeHttp', params: { status: '404' } }]);
     return true;
   });
   request.mock.mockImplementationOnce(async () => Response.json({ ok: true, dictionaries: { zh: {} } }));
   await assert.rejects(plugin.apply(context), error => {
-    assert.deepEqual(structuredClone((error as { localized: unknown }).localized), { key: 'error.invalidLocaleDictionaries' });
+    assert.deepEqual(structuredClone((error as { messages: unknown }).messages), [{ key: 'error.invalidLocaleDictionaries' }]);
     return true;
   });
   assert.equal(registerLocale.mock.callCount(), 0);
@@ -272,7 +253,7 @@ await test('CLI identity validation rejects invalid selections without an instal
   assert.throws(() => installedDsh(invalid), /Expected @deepseek-ai\/dsh/);
   assert.throws(() => installedDsh('package.json'), {
     message: 'DSH_PACKAGE_JSON must be an absolute package.json path.',
-    localized: { key: 'error.dshManifestPath', params: { variable: 'DSH_PACKAGE_JSON', manifest: 'package.json' } },
+    messages: [{ key: 'error.dshManifestPath', params: { variable: 'DSH_PACKAGE_JSON', manifest: 'package.json' } }],
   });
 });
 
@@ -509,15 +490,15 @@ await test('checkout install, offline recovery and removal preserve shared Shell
       syncBuiltinESMExports();
       try {
         await assert.rejects(ctx.shell.execute(ctx.shell.resolve({ command: 'true', sandboxPolicy: { mode: 'read-only', workspaceRoot: home } })), error => {
-          assert.equal(error.localized.key, 'error.confirmationUnavailable');
-          fs.writeFileSync(join(home, 'recovery-command'), error.localized.params.command);
+          assert.equal(error.messages[0].key, 'error.confirmationUnavailable');
+          fs.writeFileSync(join(home, 'recovery-command'), error.messages[0].params.command);
           return true;
         });
       } finally { denied.mock.restore(); syncBuiltinESMExports(); }
       const first = rebuild();
       const busy = await rebuild();
       assert.equal(busy.ok, false);
-      assert.deepEqual(await busy.json(), { error: 'Git Bash runtime rebuilding is busy.', localized: { key: 'error.rebuildBusy' } });
+      assert.deepEqual(await busy.json(), { error: 'Git Bash runtime rebuilding is busy.', messages: [{ key: 'error.rebuildBusy' }] });
       assert.equal((await first).status, 204);
       assert.equal(probed(), true, 'explicit rebuild exercises the observed Git probe');
       assert.equal(rebuilds.mock.callCount(), 2);

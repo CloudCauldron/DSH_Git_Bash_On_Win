@@ -4,7 +4,7 @@ import koffi from 'koffi';
 import { closeHandleChecked, isNullPtr, loadWin32ProcessBindings, pollProcessExit, throwLastError, type NativePtr } from '@deepseek-ai/dsh-win32-process';
 import { readMetadata, requireActiveLease, requireWindows } from '../runtime/ntfs-filesystem.ts';
 import { decodeElevationPlan, planByteLimit, planGeneration } from './elevated-linking.ts';
-import { LocalizedError } from '../localized-error.ts';
+import { LocalizedError } from '../locale/errors.ts';
 
 // DSH's equivalent quoteArg is not a public export. ShellExecuteEx takes a
 // Windows argument string, not shell syntax; preserve quotes and trailing '\\'.

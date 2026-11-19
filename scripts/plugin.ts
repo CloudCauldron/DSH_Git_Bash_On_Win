@@ -2,7 +2,7 @@ import { statSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
 import { installedDsh } from './installed-dsh.ts';
 import { purgeRuntimeCache, sharedCacheDirectory } from '../src/runtime/runtime-cache.ts';
-import { LocalizedError } from '../src/localized-error.ts';
+import { LocalizedError } from '../src/locale/errors.ts';
 
 // Arbitrary pnpm flags could redirect removal or bypass the cache purge.
 // DSH owns package compatibility and bundle reconciliation.

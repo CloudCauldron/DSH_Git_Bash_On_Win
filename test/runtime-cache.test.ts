@@ -243,7 +243,7 @@ await test('structural and read-only source failures never create an elevated at
   try {
     assert.ok((await inventoryGitFiles(fixture.source, () => {})).includes(relative));
     await assert.rejects(fixture.prepare(), { message: 'Refusing read-only source hardlink: ' + leaf,
-      localized: { key: 'error.readOnlySource', params: { path: leaf } } });
+      messages: [{ key: 'error.readOnlySource', params: { path: leaf } }] });
     assert.deepEqual(readdirSync(join(fixture.cache, 'generations')), []);
     assert.equal(pathExists(join(fixture.cache, 'current.json')), false);
   } finally { execFileSync('attrib.exe', ['-R', leaf]); }

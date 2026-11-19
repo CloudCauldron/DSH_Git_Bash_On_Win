@@ -1,7 +1,7 @@
 import type Subprocess from '@deepseek-ai/dsh-subprocess';
 import { type GitLayout } from '../runtime/git-installation.ts';
 import { type Directory, type FileIdentity } from '../runtime/ntfs-filesystem.ts';
-import { LocalizedAggregateError } from '../localized-error.ts';
+import { LocalizedAggregateError } from '../locale/errors.ts';
 export interface ProvisioningAttempt {
     readonly source: Directory;
     readonly cache: Directory;

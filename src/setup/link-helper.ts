@@ -1,7 +1,7 @@
 import { inventoryGitFiles, linkFreshTree } from '../runtime/git-installation.ts';
 import { openExclusiveMetadata, requireActiveLease } from '../runtime/ntfs-filesystem.ts';
 import { admitElevationPlan, decodeElevationPlan, planByteLimit, planGeneration } from './elevated-linking.ts';
-import { LocalizedError } from '../localized-error.ts';
+import { LocalizedError } from '../locale/errors.ts';
 
 /** Fixed linker only: no process launch, ACL repair, plan rewrite or recursive cleanup. */
 export async function runLinkHelper(planPath: string, digest: string): Promise<void> {

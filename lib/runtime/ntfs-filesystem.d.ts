@@ -1,5 +1,5 @@
 import { type NativePtr } from '@deepseek-ai/dsh-win32-process';
-import { LocalizedAggregateError, LocalizedError } from '../localized-error.ts';
+import { LocalizedAggregateError, LocalizedError } from '../locale/errors.ts';
 export interface FileIdentity {
     readonly volumeSerial: string;
     readonly fileId: string;

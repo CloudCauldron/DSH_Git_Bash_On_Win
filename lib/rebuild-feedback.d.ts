@@ -1,11 +1,8 @@
 import type { Context } from '@deepseek-ai/cordis';
 import { TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol';
-import { LocalizedError } from './localized-error.ts';
+import { type LocalizedError } from './locale/errors.ts';
+import type { Failure } from './locale/shared.ts';
 import type { LinkProgress } from './runtime/runtime-cache.ts';
-export declare function describeFailure(error: unknown): {
-    error: string;
-    localized: import("./localized-error.ts").LocalizedMessage | undefined;
-};
 export interface RebuildNotice {
     confirmation?: {
         id: string;
@@ -13,7 +10,7 @@ export interface RebuildNotice {
     };
     failure?: {
         id: string;
-        reason: ReturnType<typeof describeFailure>;
+        reason: Failure;
     };
     success?: boolean;
     progress?: LinkProgress;

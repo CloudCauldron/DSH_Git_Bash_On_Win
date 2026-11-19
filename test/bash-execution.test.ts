@@ -564,7 +564,8 @@ await test('native cleanup failure inside lease admission remains owned after cu
       resume.resolve(); await acquisition;
       assert.ok(injected);
       await assert.rejects(f.executor.rebuildRuntime(), {
-        name: 'AggregateError', message: 'Previous runtime cleanup failed.', localized: { key: 'error.priorCleanupFailed' },
+        name: 'AggregateError', message: 'Previous runtime cleanup failed.; ' + failure.message,
+        messages: [{ key: 'error.priorCleanupFailed' }], diagnostic: failure.message,
       });
       assert.equal(f.spawned.length, 0);
       await f.dispose();

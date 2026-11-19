@@ -10,8 +10,8 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { hasRuntimeCleanupFailure, prepareRuntime, sharedCacheDirectory, type GenerationPin, type RuntimeUse } from './runtime/runtime-cache.ts';
 import { commandReceiver } from './adapter.ts';
-import { LocalizedAggregateError, LocalizedError } from './localized-error.ts';
-import { describeFailure, RebuildFeedback } from './rebuild-feedback.ts';
+import { describeFailure, LocalizedAggregateError, LocalizedError } from './locale/errors.ts';
+import { RebuildFeedback } from './rebuild-feedback.ts';
 
 export interface Config extends BashConfig { gitBashPath: Volatile<string | undefined> }
 

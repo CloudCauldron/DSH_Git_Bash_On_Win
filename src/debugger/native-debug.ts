@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import type { SandboxMode } from '@deepseek-ai/dsh-sandbox';
 import { tempWriteSid } from '@deepseek-ai/dsh-sandbox-windows-acl';
 import { closeHandleChecked, extendWin32ProcessBindings, isNullPtr, spawnCurrentTokenJobProcess, throwLastError, type CurrentTokenProcessSpawnOptions, type NativePtr } from '@deepseek-ai/dsh-win32-process';
-import { LocalizedError } from '../localized-error.ts';
+import { LocalizedError } from '../locale/errors.ts';
 
 interface DebugBindings {
   currentProcess(): NativePtr;

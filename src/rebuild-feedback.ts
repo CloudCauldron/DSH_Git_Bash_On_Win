@@ -3,17 +3,13 @@ import type {} from '@deepseek-ai/dsh-api-gateway';
 import { RemoteError, TypertRemoteService, type TypertRemoteContribution } from '@deepseek-ai/dsh-typert-protocol';
 import type {} from '@deepseek-ai/dsh-typert-registry';
 import { randomUUID } from 'node:crypto';
-import { LocalizedAggregateError, LocalizedError } from './localized-error.ts';
+import { describeFailure, type LocalizedError } from './locale/errors.ts';
+import type { Failure } from './locale/shared.ts';
 import type { LinkProgress } from './runtime/runtime-cache.ts';
-
-export function describeFailure(error: unknown) {
-  return { error: error instanceof Error ? error.message : String(error),
-    localized: error instanceof LocalizedError || error instanceof LocalizedAggregateError ? error.localized : undefined };
-}
 
 export interface RebuildNotice {
   confirmation?: { id: string; sourceChanged: boolean };
-  failure?: { id: string; reason: ReturnType<typeof describeFailure> };
+  failure?: { id: string; reason: Failure };
   success?: boolean;
   progress?: LinkProgress;
 }

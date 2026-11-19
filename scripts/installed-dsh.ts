@@ -2,7 +2,7 @@ import { existsSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { isAbsolute, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { LocalizedError } from '../src/localized-error.ts';
+import { LocalizedError } from '../src/locale/errors.ts';
 
 export const SUPPORTED_DSH = '0.2.2-rc.5';
 

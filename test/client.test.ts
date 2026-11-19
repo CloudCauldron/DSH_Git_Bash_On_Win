@@ -5,6 +5,7 @@ import { test } from 'node:test';
 import { Script } from 'node:vm';
 import React from 'react';
 import { Context } from '@deepseek-ai/cordis';
+import { describeFailure, LocalizedAggregateError, LocalizedError } from '../src/locale/errors.ts';
 import { RebuildFeedback, type RebuildNotice } from '../src/rebuild-feedback.ts';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 import type { ConfigFormSnapshot } from '@deepseek-ai/dsh-client-ui-settings/client';
@@ -233,13 +234,26 @@ await test('Save and link fences the path write and rebuilds once after confirma
   assert.deepEqual(button().children, ['Linking…']);
   await act(async () => { feedback.setProgress(undefined); });
   assert.equal(field().props.hint, dictionaries.en['path.hint']);
-  const localized = { key: 'error.readOnlySource', params: { path } };
-  await act(async () => { finish(Response.json({ error: 'original diagnostic', localized }, { status: 500 })); });
-  checkModal('link.failedAfterSave', translate(localized.key, { path }), [path]);
+  const diagnostic = 'Access denied\n<original> & {path}';
+  const native = new Error(diagnostic);
+  const operation = new LocalizedError('error.readOnlySource', { path });
+  const rollback = new LocalizedAggregateError([new SuppressedError(native, operation)],
+    'error.directoryRollbackFailed', { path }, { cause: native });
+  const failure = new LocalizedAggregateError([rollback, new LocalizedError('error.brokerRangeUnsettled')], 'error.elevatedCleanupFailed');
+  const reason = describeFailure(failure);
+  assert.deepEqual(reason.messages, [{ key: 'error.elevatedCleanupFailed' }, { key: 'error.directoryRollbackFailed', params: { path } },
+    { key: 'error.readOnlySource', params: { path } }, { key: 'error.brokerRangeUnsettled' }]);
+  assert.equal(reason.diagnostic, diagnostic);
+  assert.equal(rollback.cause, native);
+  assert.equal(failure.errors[0], rollback);
+  const explanation = () => reason.messages!.map(item => translate(item.key, { path })).join(translate('error.separator'));
+  assert.equal(reason.error, explanation() + '; ' + diagnostic);
+  await act(async () => { finish(Response.json(reason, { status: 500 })); });
+  checkModal('link.failedAfterSave', explanation() + diagnostic, [path, path, diagnostic], diagnostic);
   assert.equal(field().props.text, text);
   assert.equal(button().props.disabled, false);
   await act(async () => { language = 'zh'; renderer.update(page()); });
-  checkModal('link.failedAfterSave', translate(localized.key, { path }), [path]);
+  checkModal('link.failedAfterSave', explanation() + diagnostic, [path, path, diagnostic], diagnostic);
   await closeModal();
   assert.equal(rebuild.mock.callCount(), 4);
   rebuild.mock.mockImplementationOnce(async () => { throw new Error('offline'); });
@@ -280,15 +294,14 @@ await test('Save and link fences the path write and rebuilds once after confirma
   assert.equal(field().props.text, 'another path');
   assert.equal(rebuild.mock.callCount(), 6);
   // A known error can carry verbatim output from a subprocess as well as translated text.
-  const diagnostic = 'Access denied\n<original> & {path}';
-  const elevated = { key: 'error.elevatedSetup', params: { exit: '1', signal: 'null' }, diagnostic };
-  rebuild.mock.mockImplementationOnce(async () => Response.json({ error: diagnostic, localized: elevated }, { status: 500 }));
+  const elevated = { key: 'error.elevatedSetup', params: { exit: '1', signal: 'null' } };
+  rebuild.mock.mockImplementationOnce(async () => Response.json({ error: diagnostic, messages: [elevated], diagnostic }, { status: 500 }));
   await act(async () => { edit('Host path'); });
   await act(async () => { click(); });
   checkModal('link.failed', translate(elevated.key, elevated.params) + diagnostic, ['1', 'null', diagnostic], diagnostic);
   await closeModal();
   rebuild.mock.mockImplementationOnce(async () => Response.json({
-    error: diagnostic, localized: { key: 'error.unrecognizedInThisClient' },
+    error: diagnostic, messages: [{ key: 'error.unrecognizedInThisClient' }],
   }, { status: 500 }));
   await act(async () => { click(); });
   checkModal('link.failed', '未知错误。' + diagnostic, [diagnostic], diagnostic);

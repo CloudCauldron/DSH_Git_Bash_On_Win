@@ -2,8 +2,8 @@ import type {} from '@deepseek-ai/dsh-client-connection';
 import type { Context } from '@deepseek-ai/cordis';
 import type { Entry } from '@deepseek-ai/cordis-plugin-loader';
 import type { SubprocessSpawnSpec } from '@deepseek-ai/dsh-subprocess';
-import { readDictionaries } from './locale.ts';
-import { LocalizedError } from './localized-error.ts';
+import { registerCatalogs } from './locale/catalogs.ts';
+import { LocalizedError } from './locale/errors.ts';
 
 /** The pinned native Shell waits for target done, not managed-range settlement.
  * Shadow only this invocation's lookup; the provider still owns all processes. */
@@ -77,18 +77,7 @@ export async function apply(ctx: Context): Promise<void> {
   ctx.provide('gitBashAdapter', {});
   if (process.arch === 'x64') {
     ctx.inject(['profileContext', 'connection'], scope => {
-      let dictionaries: ReturnType<typeof readDictionaries> | undefined;
-      scope.connection.fetch.register({
-        path: '/api/git-bash-on-win/locales', methods: ['GET'], requestBody: 'buffered',
-        async fetch() {
-          try {
-            dictionaries ??= readDictionaries();
-            return Response.json({ ok: true, dictionaries });
-          } catch {
-            return Response.json({ ok: false }, { status: 500 });
-          }
-        },
-      });
+      registerCatalogs(scope.connection.fetch, 'git-bash-on-win');
     });
   }
 }

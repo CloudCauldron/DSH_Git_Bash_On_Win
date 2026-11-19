@@ -31,7 +31,12 @@
     "link.confirmChanged": "Git Bash 原文件发生变化，需要获取管理员权限以重新链接。",
     "link.confirmSetup": "需要获取管理员权限以建立 Git Bash 链接。",
 
+    "error.separator": "；",
     "error.unknown": "未知错误。",
+    "error.invalidLocaleDictionaries": "语言词典格式无效。",
+    "error.invalidLocaleDictionary": "语言词典格式无效。",
+    "error.localeHttp": "读取语言词典失败：HTTP {status}。",
+    "error.httpStatus": "HTTP {status}",
 
     "error.dshManifestPath": "{variable} 必须是 {manifest} 的绝对路径。",
     "error.dshNotInstalled": "未找到已安装的 DSH。请将 {variable} 设为其 {manifest} 的绝对路径。",
@@ -52,9 +57,6 @@
     "error.profileRequired": "Git Bash 需要 DSH 配置上下文。",
     "error.shellEntryRequired": "缺少必需的原生 {entry} 条目。",
 
-    "error.invalidLocaleDictionaries": "Git Bash 语言词典格式无效。",
-    "error.invalidLocaleDictionary": "Git Bash 词典格式无效。",
-    "error.localeHttp": "读取 Git Bash 词典失败：HTTP {status}。",
 
     "error.changedBeforeConfinement": "应用沙箱限制前，Git Bash 运行时已发生变化。",
     "error.changedDuringConfinement": "应用沙箱限制期间，Git Bash 运行时发生了变化。",

@@ -1,8 +1,10 @@
-// eslint-disable-next-line @typescript-eslint/no-unused-vars -- Augments the host Window in a classic script.
-interface Window {
-  __ModuleLoader__: {
-    load(entry: { id: string; factory(require: (name: string) => unknown): unknown }): void;
-  };
+import { asFailure, readFailure, registerClientLocale, renderFailure, withCode, type LocaleClientContext } from './locale/client.ts';
+import type { Failure, LocalizedProps } from './locale/shared.ts';
+
+declare global {
+  interface Window {
+    __ModuleLoader__: { load(entry: { id: string; factory(require: (name: string) => unknown): unknown }): void };
+  }
 }
 
 window.__ModuleLoader__.load({
@@ -28,16 +30,13 @@ window.__ModuleLoader__.load({
       Toast: import('react').ComponentType<{ text: string; tone?: 'success'; onDone(): void }>;
     };
 
-    type Messages = Record<string, string>;
     type ShellSettings = { gitBashPath?: string };
     type ShellForm = import('@deepseek-ai/dsh-client-ui-settings/client').ConfigForm<ShellSettings>;
     type Snapshot = ReturnType<ShellForm['getSnapshot']>;
-    type Failure = { error: string; localized?: import('./localized-error.ts').LocalizedMessage };
     type RebuildNotice = import('./rebuild-feedback.ts').RebuildNotice;
     const feedbackUrl = 'api/git-bash-on-win/feedback';
     type Feedback = { key: 'link.ok' } | { key: 'save.review'; path?: string }
       | { key: 'save.failed'; reason?: Failure } | { key: 'link.failed' | 'link.failedAfterSave'; reason: Failure };
-    interface LocalizedProps { t(key: string, params?: Record<string, string>): string }
     interface PageProps extends LocalizedProps {
       notify(message: Feedback): void;
       useLinkProgress<T>(select: (progress: RebuildNotice['progress']) => T): T;
@@ -47,7 +46,7 @@ window.__ModuleLoader__.load({
     interface ClientContext extends Pick<import('@deepseek-ai/cordis').Context, 'fiber' | 'effect' | 'configForms'> {
       remote: Pick<import('@deepseek-ai/dsh-typert-protocol').TypertClientRemote, '$mount'>;
       get(name: 'remote.gitBashFeedback'): { watch(signal: AbortSignal): AsyncIterable<RebuildNotice> };
-      locale: { register(ns: string, dictionaries: Record<string, Messages>): () => void };
+      locale: LocaleClientContext['locale'];
       slots: {
         inject(name: string, setup: () => void): void;
         register<P>(entry: { name: string; key?: string; id?: string; locale: string; inject?(): object },
@@ -86,7 +85,7 @@ window.__ModuleLoader__.load({
           }
         } catch (error) {
           setDraft({ text, revision });
-          notify({ key: 'save.failed', reason: { error: error instanceof Error ? error.message : String(error) } });
+          notify({ key: 'save.failed', reason: asFailure(error) });
         }
         return false;
       }
@@ -109,7 +108,7 @@ window.__ModuleLoader__.load({
             if (response.ok) notify({ key: 'link.ok' });
             else notify({ key: failureKey, reason: await readFailure(response) });
           } catch (error) {
-            notify({ key: failureKey, reason: { error: error instanceof Error ? error.message : String(error) } });
+            notify({ key: failureKey, reason: asFailure(error) });
           }
         } finally {
           locked.current = false;
@@ -151,54 +150,15 @@ window.__ModuleLoader__.load({
       );
     }
 
-    async function readFailure(response: Response): Promise<Failure> {
-      const text = await response.text();
-      if (response.headers.get('content-type')?.includes('application/json')) {
-        try {
-          const failure = JSON.parse(text) as Failure | null;
-          if (typeof failure?.error === 'string') return failure;
-        } catch { /* Keep the original response if the host or proxy sent invalid JSON. */ }
-      }
-      return { error: text || `HTTP ${response.status}` };
-    }
-
     function answer(action: 'confirm' | 'dismiss', id: string) {
       return fetch(feedbackUrl + '?action=' + action + '&id=' + encodeURIComponent(id), { method: 'POST', redirect: 'error' });
-    }
-
-    // Split the translated template before inserting values so even a path containing braces stays literal.
-    function withCode(template: string, params?: Record<string, string>) {
-      if (!params) return template;
-      return template.split(/(\{\w+\})/g).map((part, index) => {
-        const name = part.slice(1, -1);
-        return part.startsWith('{') && Object.hasOwn(params, name)
-          ? React.createElement('code', { key: index, style: { overflowWrap: 'anywhere' } }, params[name]) : part;
-      });
-    }
-
-    function isDictionary(value: unknown): value is Messages {
-      return typeof value === 'object' && value !== null && !Array.isArray(value)
-        && Object.values(value).every(message => typeof message === 'string');
     }
 
     return {
       inject: ['slots', 'configForms', 'locale', 'remote'],
       async apply(ctx: ClientContext) {
-        const response = await fetch('api/git-bash-on-win/locales', { cache: 'no-store', redirect: 'error' });
+        await registerClientLocale(ctx, ns, 'git-bash-on-win');
         if (ctx.fiber.uid === null) return;
-        if (!response.ok) {
-          throw Object.assign(new Error(`Git Bash locales: HTTP ${response.status}`), {
-            localized: { key: 'error.localeHttp', params: { status: String(response.status) } },
-          });
-        }
-        const data = await response.json() as { ok?: boolean; dictionaries?: Record<string, unknown> } | null;
-        if (ctx.fiber.uid === null) return;
-        const dictionaries = data?.dictionaries;
-        if (data?.ok !== true || !dictionaries || !isDictionary(dictionaries.en)) {
-          throw Object.assign(new Error('Invalid Git Bash locale dictionaries.'), { localized: { key: 'error.invalidLocaleDictionaries' } });
-        }
-        const catalogs = Object.fromEntries(Object.entries(dictionaries).filter((entry): entry is [string, Messages] => isDictionary(entry[1])));
-        ctx.effect(() => ctx.locale.register(ns, catalogs));
         const progress = createSnapshotStore<RebuildNotice['progress']>(undefined);
         const notices = createSnapshotStore<(Feedback & { id: number }) | null>(null);
         let sequence = 0;
@@ -283,28 +243,14 @@ window.__ModuleLoader__.load({
           if (notice.key === 'link.ok') {
             return React.createElement(Toast, { key: notice.id, text: t(notice.key), tone: 'success', onDone: dismiss });
           }
+          const h = React.createElement;
           let description: import('react').ReactNode;
-          let diagnostic: string | undefined;
           if (notice.key === 'save.review') {
-            description = notice.path?.trim() ? withCode(t('save.reviewDetail'), { path: notice.path }) : t('save.reviewEmpty');
+            description = notice.path?.trim() ? withCode(React, t('save.reviewDetail'), { path: notice.path }) : t('save.reviewEmpty');
           } else if (!notice.reason) {
             description = t('form.unavailable');
           } else {
-            const { localized, error } = notice.reason;
-            const template = localized && t(localized.key);
-            if (localized && template?.trim() && template !== localized.key) {
-              description = withCode(template, localized.params);
-              diagnostic = localized.diagnostic || undefined;
-            } else {
-              description = t('error.unknown');
-              diagnostic = localized?.diagnostic || error;
-            }
-          }
-          const h = React.createElement;
-          if (diagnostic) {
-            description = h(React.Fragment, null, description,
-              h('code', { style: { display: 'block', marginTop: 4, fontFamily: 'var(--ds-font-family-code, monospace)', fontSize: 12,
-                color: 'var(--dsw-alias-label-secondary)', overflowWrap: 'anywhere', whiteSpace: 'pre-wrap' } }, diagnostic));
+            description = renderFailure(React, t, notice.reason);
           }
           return h(Modal, { open: true, title: t(notice.key), description, closeLabel: t('close'), onClose: dismiss });
         }

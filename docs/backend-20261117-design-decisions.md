@@ -69,6 +69,8 @@ The first command starts one preparation shared by callers. A command can abando
 
 The settings action calls `rebuildRuntime()`, which needs no workspace. If a ready pin exists, commands can keep using it while its replacement is built. A failed rebuild leaves that pin available. With no ready pin, rebuilding displaces unfinished initialization and becomes the shared preparation immediately. The executor joins superseded work before starting fresh setup. An overlapping rebuild gets a busy error. This avoids duplicate inventories and consent requests while preserving existing command leases.
 
+Manual rebuilds send progress over the existing owner feedback stream. The ordinary linker reports completed file counts after each batch. During elevated linking, the unelevated executor watches relative names in the attempt’s new base directory. Windows can coalesce those notifications, so the caption shows a recently observed path. Validation and publication use the same checks in both cases.
+
 ## Elevation and cancellation
 
 The Windows User Account Control (UAC) consent dialog can block a native call. Terminating a JavaScript worker may still wait for that call. A small unelevated broker runs it in a DSH-owned process so local shutdown can stop and join the broker. Only the fixed link helper receives elevation.

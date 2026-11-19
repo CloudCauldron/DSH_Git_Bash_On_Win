@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "Git Bash on Windows",
-    "description": "Configure the Git Bash path and create hard links for DSH on Windows.",
+    "description": "Configure the Git Bash path and create links for DSH on Windows.",
     "detail": "README.md"
   },
   "messages": {
@@ -12,6 +12,7 @@
     "path.hint": "Enter the full path to bash.exe, which DSH uses to run commands.",
 
     "action.saveLink": "Save and link",
+    "action.linking": "Linking…",
     "action.confirm": "Confirm",
 
     "save.failed": "Could not save the path",
@@ -19,10 +20,15 @@
     "save.reviewDetail": "Last saved path: {path}. Review it and try again.",
     "save.reviewEmpty": "The last saved path is empty.",
 
-    "link.failed": "Could not create hard links",
-    "link.failedAfterSave": "Path saved, but hard link creation failed",
-    "link.ok": "Hard links created",
-    "link.confirmChanged": "The Git Bash source files have changed. Administrator permission is required to recreate the hard links.",
+    "link.failed": "Could not create links",
+    "link.failedAfterSave": "Path saved, but link creation failed",
+    "link.preparing": "Preparing links…",
+    "link.elevation": "Creating links… Windows may ask for approval.",
+    "link.files": "Linked {count} of {total} · {path}",
+    "link.path": "Linking… {path}",
+    "link.checking": "Checking links…",
+    "link.ok": "Links created",
+    "link.confirmChanged": "The Git Bash source files have changed. Administrator permission is required to recreate the links.",
     "link.confirmSetup": "Administrator permission is required to create the Git Bash links.",
 
     "error.unknown": "Unknown error.",
@@ -64,7 +70,7 @@
     "error.priorCleanupFailed": "Previous runtime cleanup failed.",
     "error.providerCleanupFailed": "Git Bash provider failed to release owned resources.",
     "error.providerStopping": "The Git Bash provider is stopping.",
-    "error.rebuildBusy": "Git Bash hard links are being rebuilt. Try again when the rebuild finishes.",
+    "error.rebuildBusy": "Git Bash links are being rebuilt. Try again when the rebuild finishes.",
     "error.confirmationRequired": "An explicit link request or interactive confirmation is required before elevation.",
     "error.confirmationUnavailable": "Administrator permission is required, but there is no interactive DSH window to confirm. Run this command in Windows Git Bash, then retry in a new DSH process: {command}",
     "error.stalePreparation": "Stale Git Bash runtime preparation.",
@@ -75,9 +81,9 @@
     "error.invalidRelativePath": "Invalid Git relative file path: {path}",
     "error.unsupportedRuntimeEntry": "Unsupported Git runtime entry: {path}",
 
-    "error.hardlinkVolume": "Hardlink source and destination must share an NTFS volume.",
+    "error.hardlinkVolume": "Link source and destination must share an NTFS volume.",
     "error.ntfsRequired": "The path {path} must be on an NTFS volume.",
-    "error.readOnlySource": "The source file {path} is read-only and cannot be hard-linked.",
+    "error.readOnlySource": "The source file {path} is read-only and cannot be linked.",
     "error.sameVolume": "The Git installation and the runtime cache must be on the same NTFS volume.",
     "error.volumeBoundaryChanged": "Volume boundary changed: {path}",
 
@@ -102,7 +108,7 @@
     "error.directoryRedirected": "Directory path redirected: {path}",
     "error.directoryRollbackFailed": "Directory admission and cleanup failed: {path}",
     "error.junctionRollbackFailed": "Junction admission and cleanup failed: {path}",
-    "error.reparsePoint": "The path {path} is a reparse point and cannot be used to create hard links.",
+    "error.reparsePoint": "The path {path} is a reparse point and cannot be used to create links.",
     "error.unexpectedJunction": "Unexpected runtime junction: {path}",
     "error.unsupportedReparseTag": "Unsupported reparse tag at {path}",
 
@@ -118,7 +124,7 @@
     "error.brokerCleanupFailed": "Failed to settle the setup broker.",
     "error.brokerRangeUnsettled": "Setup broker range did not settle.",
     "error.elevatedCleanupFailed": "Elevated setup or its local cleanup failed.",
-    "error.elevatedSetup": "Elevated hard link creation failed. Exit code: {exit}. Signal: {signal}.",
+    "error.elevatedSetup": "Elevated link creation failed. Exit code: {exit}. Signal: {signal}.",
     "error.linkHelperExit": "Elevated link helper exited with code {code}.",
     "error.missingElevatedProcess": "Elevated setup returned no process handle.",
     "error.setupComFailed": "Cannot initialize setup COM: 0x{status}",

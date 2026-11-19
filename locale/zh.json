@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "Windows Git Bash",
-    "description": "在 Windows DSH 中配置 Git Bash 路径并建立硬链接。",
+    "description": "在 Windows DSH 中配置 Git Bash 路径并建立链接。",
     "detail": "README_CN.md"
   },
   "messages": {
@@ -12,6 +12,7 @@
     "path.hint": "填写 bash.exe 的完整路径，DSH 会用它运行命令。",
 
     "action.saveLink": "保存并链接",
+    "action.linking": "正在链接…",
     "action.confirm": "确认",
 
     "save.failed": "路径保存失败",
@@ -19,9 +20,14 @@
     "save.reviewDetail": "最近保存的路径为 {path}，请核对后重试。",
     "save.reviewEmpty": "最近保存的路径为空",
 
-    "link.failed": "硬链接建立失败",
-    "link.failedAfterSave": "路径已保存，但硬链接建立失败",
-    "link.ok": "已建立硬链接",
+    "link.failed": "链接建立失败",
+    "link.failedAfterSave": "路径已保存，但链接建立失败",
+    "link.preparing": "正在准备链接…",
+    "link.elevation": "正在建立链接，Windows 可能会请求授权。",
+    "link.files": "已链接 {count}/{total} · {path}",
+    "link.path": "正在链接… {path}",
+    "link.checking": "正在检查链接…",
+    "link.ok": "已建立链接",
     "link.confirmChanged": "Git Bash 原文件发生变化，需要获取管理员权限以重新链接。",
     "link.confirmSetup": "需要获取管理员权限以建立 Git Bash 链接。",
 
@@ -64,7 +70,7 @@
     "error.priorCleanupFailed": "上一次运行时清理失败。",
     "error.providerCleanupFailed": "Git Bash 执行器未能释放其持有的资源。",
     "error.providerStopping": "Git Bash 执行器正在停止。",
-    "error.rebuildBusy": "正在重建 Git Bash 硬链接，请稍后重试。",
+    "error.rebuildBusy": "正在重建 Git Bash 链接，请稍后重试。",
     "error.confirmationRequired": "提升权限前需要手动请求链接或通过交互窗口确认。",
     "error.confirmationUnavailable": "需要管理员权限，但没有可供确认的 DSH 窗口。请在 Windows Git Bash 中运行以下命令，然后在新的 DSH 进程中重试：{command}",
     "error.stalePreparation": "本次 Git Bash 运行时准备已失效。",
@@ -75,9 +81,9 @@
     "error.invalidRelativePath": "Git 相对文件路径无效：{path}。",
     "error.unsupportedRuntimeEntry": "不支持此 Git 运行时条目：{path}。",
 
-    "error.hardlinkVolume": "硬链接的源文件与目标必须位于同一 NTFS 卷上。",
+    "error.hardlinkVolume": "链接的源文件与目标必须位于同一 NTFS 卷上。",
     "error.ntfsRequired": "路径 {path} 必须位于 NTFS 卷上。",
-    "error.readOnlySource": "源文件 {path} 为只读，无法为其建立硬链接。",
+    "error.readOnlySource": "源文件 {path} 为只读，无法为其建立链接。",
     "error.sameVolume": "Git 安装目录与运行时缓存必须位于同一个 NTFS 卷上。",
     "error.volumeBoundaryChanged": "卷边界已改变：{path}。",
 
@@ -102,7 +108,7 @@
     "error.directoryRedirected": "目录路径被重定向：{path}。",
     "error.directoryRollbackFailed": "目录验证及回滚清理失败：{path}。",
     "error.junctionRollbackFailed": "目录联接的验证及清理失败：{path}。",
-    "error.reparsePoint": "路径 {path} 是重解析点，无法用于建立硬链接。",
+    "error.reparsePoint": "路径 {path} 是重解析点，无法用于建立链接。",
     "error.unexpectedJunction": "运行时目录联接异常：{path}。",
     "error.unsupportedReparseTag": "路径 {path} 的重解析标记不受支持。",
 
@@ -118,7 +124,7 @@
     "error.brokerCleanupFailed": "未能确认安装代理已停止或完成清理。",
     "error.brokerRangeUnsettled": "未能确认安装代理的进程已全部退出。",
     "error.elevatedCleanupFailed": "提权安装或其本地清理失败。",
-    "error.elevatedSetup": "提权建立硬链接失败。退出码为 {exit}，信号为 {signal}。",
+    "error.elevatedSetup": "提权建立链接失败。退出码为 {exit}，信号为 {signal}。",
     "error.linkHelperExit": "提权链接辅助进程返回退出码 {code}。",
     "error.missingElevatedProcess": "提权安装未返回进程句柄。",
     "error.setupComFailed": "初始化安装所需的 COM 失败：0x{status}。",

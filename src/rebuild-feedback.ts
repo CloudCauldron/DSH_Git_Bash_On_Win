@@ -4,6 +4,7 @@ import { RemoteError, TypertRemoteService, type TypertRemoteContribution } from 
 import type {} from '@deepseek-ai/dsh-typert-registry';
 import { randomUUID } from 'node:crypto';
 import { LocalizedAggregateError, LocalizedError } from './localized-error.ts';
+import type { LinkProgress } from './runtime/runtime-cache.ts';
 
 export function describeFailure(error: unknown) {
   return { error: error instanceof Error ? error.message : String(error),
@@ -14,6 +15,7 @@ export interface RebuildNotice {
   confirmation?: { id: string; sourceChanged: boolean };
   failure?: { id: string; reason: ReturnType<typeof describeFailure> };
   success?: boolean;
+  progress?: LinkProgress;
 }
 
 const namespace = 'gitBashFeedback';
@@ -25,6 +27,8 @@ const streamContract = {
 
 /** Lives with one executor. Only an owner with a mounted overlay can answer its current request. */
 export class RebuildFeedback extends TypertRemoteService {
+  private progress?: LinkProgress;
+  private nextPathUpdate = 0;
   private readonly clients = new Map<ReadableStreamDefaultController<RebuildNotice>, () => void>();
   private readonly failures: NonNullable<RebuildNotice['failure']>[] = [];
   private pending?: { notice: NonNullable<RebuildNotice['confirmation']>; confirm(): void; disconnect(): void };
@@ -39,12 +43,25 @@ export class RebuildFeedback extends TypertRemoteService {
   }
 
   private frame(success = false): RebuildNotice {
-    return { confirmation: this.pending?.notice, failure: this.failures[0], success };
+    return { confirmation: this.pending?.notice, failure: this.failures[0], success, progress: this.progress };
   }
 
   private publish(success = false) {
     const frame = this.frame(success);
     for (const client of this.clients.keys()) client.enqueue(frame);
+  }
+
+  setProgress(progress?: LinkProgress) {
+    // Bound filename updates on the owner stream. Always deliver phase changes and the final count.
+    if (typeof progress === 'object') {
+      const now = performance.now();
+      if (now < this.nextPathUpdate && !(progress.completed !== undefined && progress.completed === progress.total)) return;
+      this.nextPathUpdate = now + 150;
+    } else {
+      this.nextPathUpdate = 0;
+    }
+    this.progress = progress;
+    this.publish();
   }
 
   succeeded() { this.publish(true); }

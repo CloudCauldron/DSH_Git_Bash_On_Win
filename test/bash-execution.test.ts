@@ -306,10 +306,15 @@ await test('a successful rebuild serves the old pin during preparation and prese
 await test('a selection change cancels a manual rebuild while a previous ready pin is serving commands', nativeOnly, async t => {
   const f = await executorFixture(t), execution = await f.run();
   const published = await f.current();
+  const client = await (await feedbackClient(f.ctx)).subscribe();
+  assert.equal((await client.next()).progress, undefined);
   const blocked = f.holdInventory();
   const cancelled = assert.rejects(f.executor.rebuildRuntime(), /superseded/);
   await blocked.entered;
+  assert.equal((await client.next()).progress, 'preparing');
   await f.select(join(f.source, 'another', 'bash.exe'));
+  assert.equal((await client.next()).progress, undefined);
+  await client.close();
   blocked.resume();
   await cancelled;
   assert.equal((await f.current()).generationId, published.generationId);
@@ -320,6 +325,8 @@ await test('a selection change cancels a manual rebuild while a previous ready p
 await test('UAC denial during rebuilding preserves a ready pin and its current selection', nativeOnly, async t => {
   const f = await executorFixture(t), existing = await f.run();
   const before = await f.current(), original = fs.linkSync;
+  const client = await (await feedbackClient(f.ctx)).subscribe();
+  assert.equal((await client.next()).progress, undefined);
   const mock = t.mock.method(fs, 'linkSync', (source: fs.PathLike, target: fs.PathLike) => {
     if (basename(String(target)) === '.probe') throw Object.assign(new Error('fixture link denial'), { code: 'EPERM' });
     original(source, target);
@@ -330,6 +337,10 @@ await test('UAC denial during rebuilding preserves a ready pin and its current s
   });
   try { await assert.rejects(f.executor.rebuildRuntime(), /Elevated setup failed/); }
   finally { mock.mock.restore(); syncBuiltinESMExports(); }
+  assert.equal((await client.next()).progress, 'preparing');
+  assert.equal((await client.next()).progress, 'elevation');
+  assert.equal((await client.next()).progress, undefined);
+  await client.close();
   assert.equal((await f.current()).generationId, before.generationId);
   const subsequent = await f.run();
   assert.equal(invocation(f.spawned[0]!.spec).base, invocation(f.spawned[1]!.spec).base);

@@ -21,11 +21,15 @@ async function checkDiagnostic(dialog: Locator, explanation: string, diagnostic:
   assert.equal(await dialog.locator('pre').count(), 0);
 }
 
-async function openPlugin(page: Page, url: string) {
+async function openPlugins(page: Page, url: string) {
   await page.addLocatorHandler(page.getByRole('button', { name: /^(继续|Continuer)$/ }), button => button.click());
   await page.addLocatorHandler(page.getByRole('dialog', { name: /^(开始使用|Commencez)$/ }), dialog => dialog.getByRole('button').first().click());
   await page.goto(url);
   await page.getByRole('button', { name: /^(插件|Plugins)$/ }).click();
+}
+
+async function openPlugin(page: Page, url: string) {
+  await openPlugins(page, url);
   await page.locator('[data-plugin-package="dsh-git-bash-on-win"]').getByRole('button', { name: /Windows Git Bash|Git Bash on Windows/ }).first().click();
   return page.getByRole('textbox', { name: /^(Git Bash 路径|Git Bash path)$/ });
 }
@@ -48,18 +52,31 @@ await test('installed DSH presents link failures and conflicts in native dialogs
   execFileSync(process.execPath, [join(repo, 'scripts/plugin.ts'), pnpm, 'web', 'add', 'file:' + repo.replaceAll('\\', '/')], { cwd, env });
 
   const gate = join(home, 'deny-probe'), attempts = join(home, 'elevation-attempts'), manual = process.env.DSH_GIT_BASH_UAC_TEST;
+  const progressPrefix = 'etc/' + 'long-name-'.repeat(15);
+  const progressGate = join(home, 'hold-link-progress');
+  await Promise.all(Array.from({ length: 32 }, (_, i) =>
+    writeFile(join(fixture.source, progressPrefix + i + '.txt'), 'fixture')));
   const realConsent = manual === 'approve' || manual === 'deny';
   const preload = join(home, 'fixture-preload.mjs'), driver = join(profile, 'fixture-command.mjs');
   // Scope fault injection to this host and the owned fixture. Default browser runs can never open UAC.
   await writeFile(preload, `
     import fs from 'node:fs';
+    import timers from 'node:timers/promises';
     import { basename, toNamespacedPath } from 'node:path';
     import { syncBuiltinESMExports } from 'node:module';
     const original = fs.linkSync, write = fs.writeFileSync;
+    // Pause at the linker's normal yield so the browser can inspect a real, completed batch.
+    const immediate = timers.setImmediate;
+    let linkedSample = false;
+    timers.setImmediate = async (...args) => {
+      while (linkedSample && fs.existsSync(${JSON.stringify(progressGate)})) await timers.setTimeout(20);
+      return immediate(...args);
+    };
     fs.linkSync = (source, target) => {
       if (source === toNamespacedPath(${JSON.stringify(join(fixture.source, 'usr/bin/bash.exe'))}) && basename(target) === '.probe' && fs.existsSync(${JSON.stringify(gate)}))
         throw Object.assign(Error('fixture probe'), { code: 'EPERM' });
-      return original(source, target);
+      original(source, target);
+      if (source.startsWith(toNamespacedPath(${JSON.stringify(join(fixture.source, progressPrefix))}))) linkedSample = true;
     };
     fs.writeFileSync = (path, ...args) => {
       if (typeof path === 'string' && basename(path) === 'plan.json' && path.startsWith(toNamespacedPath(${JSON.stringify(fixture.cache)}))) {
@@ -105,8 +122,14 @@ await test('installed DSH presents link failures and conflicts in native dialogs
       const first = await browser.newPage();
       let rebuilds = 0;
       first.on('request', req => { if (req.method() === 'POST' && new URL(req.url()).pathname === '/api/git-bash-on-win/rebuild') rebuilds++; });
+      await openPlugins(first, url);
+      await first.locator('[data-plugin-item="shell"]').getByRole('button').first().click();
+      const shellSave = first.getByRole('button', { name: '保存', exact: true });
+      const saveClass = await shellSave.getAttribute('class');
+      assert.ok(saveClass);
       const input = await openPlugin(first, url);
       const button = first.getByRole('button', { name: '保存并链接', exact: true });
+      assert.equal(await button.getAttribute('class'), saveClass);
       const measure = () => input.evaluate(el => {
         const row = el.parentElement!.parentElement!;
         const bounds = row.getBoundingClientRect(), box = el.getBoundingClientRect();
@@ -136,7 +159,7 @@ await test('installed DSH presents link failures and conflicts in native dialogs
       const { error, localized } = await response.json();
       assert.deepEqual(localized, { key: 'error.gitNotFound', params: { bin: 'bin/bash.exe', usrBin: 'usr/bin/bash.exe' } });
       assert.doesNotMatch(error, /gitBashPath/);
-      const modal = first.getByRole('dialog', { name: '路径已保存，但硬链接建立失败', exact: true });
+      const modal = first.getByRole('dialog', { name: '路径已保存，但链接建立失败', exact: true });
       await modal.waitFor();
       assert.equal(await modal.getAttribute('aria-modal'), 'true');
       assert.equal(await modal.locator('p').textContent(), '未找到受支持的 Git for Windows。请将 Git Bash 路径设置为 bin/bash.exe 或 usr/bin/bash.exe 的绝对路径。');
@@ -150,7 +173,7 @@ await test('installed DSH presents link failures and conflicts in native dialogs
       assert.equal(rebuilds, 1);
 
       await button.click();
-      const retry = first.getByRole('dialog', { name: '硬链接建立失败', exact: true });
+      const retry = first.getByRole('dialog', { name: '链接建立失败', exact: true });
       await retry.waitFor();
       await first.keyboard.press('Escape');
       await retry.waitFor({ state: 'detached' });
@@ -162,11 +185,23 @@ await test('installed DSH presents link failures and conflicts in native dialogs
       await otherInput.click();
       assert.equal(await otherInput.inputValue(), missing);
       await otherInput.fill(valid);
-      await second.getByRole('button', { name: '保存并链接', exact: true }).click();
-      const toast = second.getByRole('alert').filter({ hasText: '已建立硬链接' });
+      await writeFile(progressGate, '');
+      try {
+        await second.getByRole('button', { name: '保存并链接', exact: true }).click();
+        const progress = second.locator('[data-plugin-config] p').filter({ hasText: progressPrefix });
+        await progress.waitFor();
+        assert.equal((await measure()).hint, wide.hint, 'another tab keeps the hint for its own draft');
+        const counts = /^已链接 (\d+)\/(\d+) · etc\//.exec(await progress.innerText());
+        assert.ok(counts && Number(counts[1]) > 0 && Number(counts[1]) < Number(counts[2]));
+        assert.equal(await second.getByRole('button', { name: '正在链接…' }).isDisabled(), true);
+        assert.equal(await progress.evaluate(el => getComputedStyle(el).textOverflow === 'ellipsis'
+          && el.scrollWidth > el.clientWidth && el.clientHeight === parseFloat(getComputedStyle(el).lineHeight)), true);
+      } finally { await unlink(progressGate); }
+      const toast = second.getByRole('alert').filter({ hasText: '已建立链接' });
       await toast.waitFor();
       assert.equal(await toast.evaluate(el => el.parentElement === document.body), true);
-      assert.equal(await toast.innerText(), '已建立硬链接');
+      assert.equal(await toast.innerText(), '已建立链接');
+      await second.getByText('填写 bash.exe 的完整路径，DSH 会用它运行命令。', { exact: true }).waitFor();
       await toast.waitFor({ state: 'detached' });
 
       await button.click();
@@ -196,7 +231,7 @@ await test('installed DSH presents link failures and conflicts in native dialogs
         await path.fill(missing);
         const save = page.getByRole('button', { name: 'Save and link', exact: true });
         await save.click();
-        const dialog = page.getByRole('dialog', { name: 'Path saved, but hard link creation failed' });
+        const dialog = page.getByRole('dialog', { name: 'Path saved, but link creation failed' });
         await dialog.waitFor();
         assert.equal(await dialog.locator('p').textContent(), 'Supported Git for Windows was not found. In the Git Bash path field, enter the absolute path to bin/bash.exe or usr/bin/bash.exe.');
         assert.deepEqual(await dialog.locator('code').allTextContents(), ['bin/bash.exe', 'usr/bin/bash.exe']);
@@ -207,7 +242,7 @@ await test('installed DSH presents link failures and conflicts in native dialogs
           status: 500, json: { error: diagnostic },
         }), { times: 1 });
         await save.click();
-        const raw = page.getByRole('dialog', { name: 'Could not create hard links', exact: true });
+        const raw = page.getByRole('dialog', { name: 'Could not create links', exact: true });
         await raw.waitFor();
         await checkDiagnostic(raw, 'Unknown error.', diagnostic);
         await page.keyboard.press('Escape');
@@ -217,7 +252,7 @@ await test('installed DSH presents link failures and conflicts in native dialogs
         }), { times: 1 });
         await save.click();
         await raw.waitFor();
-        await checkDiagnostic(raw, 'Git Bash hard links are being rebuilt. Try again when the rebuild finishes.', diagnostic);
+        await checkDiagnostic(raw, 'Git Bash links are being rebuilt. Try again when the rebuild finishes.', diagnostic);
       } finally { await french.close(); }
 
       const field = await openPlugin(second, url);
@@ -232,7 +267,7 @@ await test('installed DSH presents link failures and conflicts in native dialogs
       await saveSelection(join(cwd, 'another-missing', 'bin', 'bash.exe'));
       await first.goto(url);
       const runShell = () => first.evaluate(async () => (await fetch('api/fixture-command', { method: 'POST' })).json() as Promise<{ error: string }>);
-      const failedAutomatically = first.getByRole('dialog', { name: '硬链接建立失败', exact: true });
+      const failedAutomatically = first.getByRole('dialog', { name: '链接建立失败', exact: true });
       assert.match((await runShell()).error, /Git for Windows/);
       await failedAutomatically.waitFor();
       await failedAutomatically.getByRole('button', { name: '关闭' }).click();
@@ -247,7 +282,7 @@ await test('installed DSH presents link failures and conflicts in native dialogs
       // exhausts Chromium's same-origin pool here, blocking the third settings page and the consent POST.
       const third = await browser.newPage();
       await openPlugin(third, url);
-      const priorFailure = second.getByRole('dialog', { name: '硬链接建立失败', exact: true });
+      const priorFailure = second.getByRole('dialog', { name: '链接建立失败', exact: true });
       if (manual !== 'approve') {
         await second.route('**/api/git-bash-on-win/rebuild', route => route.fulfill({ status: 500, json: { error: 'prior manual error' } }), { times: 1 });
         await second.getByRole('button', { name: '保存并链接', exact: true }).click();
@@ -279,7 +314,7 @@ await test('installed DSH presents link failures and conflicts in native dialogs
       if (manual === 'approve') {
         assert.match(result.error, /overlap/i);
         assert.notEqual((await fixture.current()).generationId, previous);
-        await first.getByRole('alert').filter({ hasText: '已建立硬链接' }).waitFor();
+        await first.getByRole('alert').filter({ hasText: '已建立链接' }).waitFor();
       } else {
         const reason = realConsent ? /ShellExecuteExW failed \(Win32 1223\)/ : /fixture plan creation failed/;
         assert.match(result.error, reason);
@@ -301,7 +336,7 @@ await test('installed DSH presents link failures and conflicts in native dialogs
         // A new selection retries the failed preparation with ordinary permissions.
         await saveSelection(valid.replaceAll('\\', '/'));
         await toast.waitFor({ state: 'detached' });
-        const rebuilt = first.getByRole('alert').filter({ hasText: '已建立硬链接' });
+        const rebuilt = first.getByRole('alert').filter({ hasText: '已建立链接' });
         const [shell] = await Promise.all([runShell(), rebuilt.waitFor()]);
         assert.match(shell.error, /overlap/i);
         assert.equal(await consent.count(), 0);

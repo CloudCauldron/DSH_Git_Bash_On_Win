@@ -11,7 +11,12 @@ window.__ModuleLoader__.load({
     const ns = 'dsh-git-bash-on-win';
     const React = require('react') as typeof import('react');
     const { createSnapshotStore } = require('@deepseek-ai/dsh-client-store') as typeof import('@deepseek-ai/dsh-client-store');
-    const { SettingsValueField, Button, Modal, Toast } = require('@deepseek-ai/dsh-client-ui-primitives') as {
+    const { SettingsForm, SettingsValueField, Button, Modal, Toast } = require('@deepseek-ai/dsh-client-ui-primitives') as {
+      SettingsForm: import('react').ComponentType<{
+        state: { available: boolean; writable: boolean; dirty: boolean; invalid: boolean; saving: boolean; failed: boolean };
+        labels: { unavailable: string; readOnly: string; saveFailed: string; save: string; saving: string };
+        onSave(): void; onDiscard(): void; children?: import('react').ReactNode;
+      }>;
       SettingsValueField: import('react').ComponentType<{
         id: string; label: string; hint: string; text: string; placeholder: string; disabled: boolean;
         overridden: boolean; overriddenLabel: string; resetLabel: string; invalid: boolean; invalidLabel: string;
@@ -35,6 +40,7 @@ window.__ModuleLoader__.load({
     interface LocalizedProps { t(key: string, params?: Record<string, string>): string }
     interface PageProps extends LocalizedProps {
       notify(message: Feedback): void;
+      useLinkProgress<T>(select: (progress: RebuildNotice['progress']) => T): T;
       shellForm: ShellForm;
       useShellForm<T>(select: (snapshot: Snapshot) => T): T;
     }
@@ -57,10 +63,11 @@ window.__ModuleLoader__.load({
       }
     }
 
-    function GitBashPage({ t, shellForm, useShellForm, notify }: PageProps) {
+    function GitBashPage({ t, shellForm, useShellForm, useLinkProgress, notify }: PageProps) {
       const snapshot = useShellForm(s => s);
       const [draft, setDraft] = React.useState<{ text: string; revision: number | undefined }>();
       const [busy, setBusy] = React.useState(false);
+      const progress = useLinkProgress(p => busy ? p : undefined);
       const locked = React.useRef(false);
       const inputId = React.useId();
       const value = draft?.text ?? snapshot.value?.gitBashPath ?? '';
@@ -111,18 +118,36 @@ window.__ModuleLoader__.load({
       }
 
       const h = React.createElement;
-      return h('div', { style: { display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) max-content', alignItems: 'center', gap: '0.5rem' } },
-        h(SettingsValueField, {
-          id: inputId, label: t('path.label'), placeholder: t('path.placeholder'), hint: t('path.hint'),
+      let hint = t('path.hint');
+      if (typeof progress === 'object') {
+        hint = progress.completed !== undefined
+          ? t('link.files', { count: String(progress.completed), total: String(progress.total), path: progress.path })
+          : t('link.path', { path: progress.path });
+      } else if (progress) {
+        hint = t('link.' + progress);
+      }
+      return h('div', { className: 'dsh-git-bash-settings', 'data-linking': progress ? true : undefined,
+        title: typeof progress === 'object' ? progress.path : undefined },
+        h('style', null, `
+          .dsh-git-bash-settings > div { display: grid; grid-template-columns: minmax(0, 1fr) max-content; align-items: center; gap: 0.5rem; }
+          .dsh-git-bash-settings > div > :last-child { padding-top: 0; }
+          .dsh-git-bash-settings[data-linking] p[id] { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        `),
+        h(SettingsForm, {
+          // Rebuilding a saved path is an action even when the settings document is clean or read-only.
+          state: { available: true, writable: true, dirty: !disabled && (snapshot.writable || !pathChange(value, snapshot)),
+            invalid: false, saving: busy, failed: false },
+          labels: { unavailable: t('form.unavailable'), readOnly: '', saveFailed: t('save.failed'),
+            save: t('action.saveLink'), saving: t('action.linking') },
+          onSave: () => { void saveAndLink(); }, onDiscard() {},
+        }, h(SettingsValueField, {
+          id: inputId, label: t('path.label'), placeholder: t('path.placeholder'), hint,
           text: value, disabled: disabled || !snapshot.writable,
           overridden: false, overriddenLabel: '', resetLabel: '', onReset() {}, invalid: false, invalidLabel: '',
           onEdit(text) {
             setDraft(previous => ({ text, revision: previous ? previous.revision : snapshot.revision }));
           },
-        }),
-        h(Button, { type: 'button', disabled: disabled || (!snapshot.writable && !!pathChange(value, snapshot)),
-          onClick: () => { void saveAndLink(); },
-        }, t('action.saveLink')),
+        })),
       );
     }
 
@@ -174,6 +199,7 @@ window.__ModuleLoader__.load({
         }
         ctx.effect(() => ctx.locale.register(ns, 'zh', zh));
         ctx.effect(() => ctx.locale.register(ns, 'en', en));
+        const progress = createSnapshotStore<RebuildNotice['progress']>(undefined);
         const notices = createSnapshotStore<(Feedback & { id: number }) | null>(null);
         let sequence = 0;
         const notify = (message: Feedback) => notices.set({ ...message, id: ++sequence });
@@ -203,18 +229,20 @@ window.__ModuleLoader__.load({
                 for await (const snapshot of ctx.get('remote.gitBashFeedback').watch(controller.signal)) {
                   if (controller.signal.aborted) return;
                   watching.current = true;
+                  progress.set(snapshot.progress);
                   setAutomatic(snapshot);
                   if (snapshot.success) notify({ key: 'link.ok' });
                 }
               } catch { /* The next subscription receives the pending confirmation and undismissed failure. */ }
               if (!controller.signal.aborted) {
+                progress.set(undefined);
                 watching.current = false;
                 setAutomatic(previous => ({ failure: previous.failure }));
                 retry = setTimeout(() => { void connect(); }, 1500);
               }
             };
             void connect();
-            return () => { controller.abort(); clearTimeout(retry); };
+            return () => { controller.abort(); clearTimeout(retry); progress.set(undefined); };
           }, []);
           // Send consent only after React has committed the closed dialog.
           React.useEffect(() => {
@@ -287,7 +315,7 @@ window.__ModuleLoader__.load({
         const form = ctx.configForms.get<ShellSettings>('pwsh-sandbox');
         ctx.slots.inject('plugins.bundle.config', () => ctx.slots.register({
           name: 'plugins.bundle.config', key: ns, locale: ns,
-          inject: () => ({ notify, shellForm: form, hooks: { shellForm: form } }),
+          inject: () => ({ notify, shellForm: form, hooks: { shellForm: form, linkProgress: progress } }),
         }, GitBashPage));
       },
     };

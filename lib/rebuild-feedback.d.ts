@@ -1,6 +1,7 @@
 import type { Context } from '@deepseek-ai/cordis';
 import { TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol';
 import { LocalizedError } from './localized-error.ts';
+import type { LinkProgress } from './runtime/runtime-cache.ts';
 export declare function describeFailure(error: unknown): {
     error: string;
     localized: import("./localized-error.ts").LocalizedMessage | undefined;
@@ -15,15 +16,19 @@ export interface RebuildNotice {
         reason: ReturnType<typeof describeFailure>;
     };
     success?: boolean;
+    progress?: LinkProgress;
 }
 /** Lives with one executor. Only an owner with a mounted overlay can answer its current request. */
 export declare class RebuildFeedback extends TypertRemoteService {
+    private progress?;
+    private nextPathUpdate;
     private readonly clients;
     private readonly failures;
     private pending?;
     constructor(ctx: Context);
     private frame;
     private publish;
+    setProgress(progress?: LinkProgress): void;
     succeeded(): void;
     failed(error: unknown): void;
     confirm(sourceChanged: boolean, unavailable: LocalizedError, signal: AbortSignal): Promise<void>;

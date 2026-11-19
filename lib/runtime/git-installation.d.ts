@@ -21,7 +21,11 @@ export declare function anchorPaths(layout: GitLayout): Readonly<Record<AnchorNa
 export declare function buildRuntimeEnvironment(installationRoot: string, sourceRoot: string, layout: GitLayout, ambient: NodeJS.ProcessEnv): Record<string, string>;
 export declare function discoverGitInstallation(setting?: string): GitInstallation;
 export declare function inventoryGitFiles(sourceRoot: string, checkActive: () => void): Promise<readonly string[]>;
-export declare function linkFreshTree(tree: FreshLinkTree, checkActive: () => void): Promise<void>;
+export declare function linkFreshTree(tree: FreshLinkTree, checkActive: () => void, onLinked?: (file: {
+    path: string;
+    completed: number;
+    total: number;
+}) => void): Promise<void>;
 export declare function readAnchors(root: string, layout: GitLayout): Promise<AnchorStamps>;
 /** Capture base stamps with both handles open; only identities are compared here. */
 export declare function captureAnchors(sourceRoot: string, baseRoot: string, layout: GitLayout): AnchorStamps;

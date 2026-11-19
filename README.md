@@ -26,6 +26,7 @@
    - **Auto-detect (recommended)**: Leave blank to automatically locate Git for Windows in common installation directories.
    - **Manual path**: For portable or custom installations, enter the absolute path to `bin/bash.exe` or `usr/bin/bash.exe`.
    - **Reset to default**: Clear the input field and click **Save and link** to remove the override path and restore default detection.
+   - **Linking progress**: The hint below the input shows linking progress and the current relative path. It returns to the path description when linking ends.
 3. Common usage notes:
    - **Multi-tab conflict**: If another window saved changes first, a **Changes were not saved** prompt appears listing the latest path; review it and try again.
    - **Link failure after saving**: The saved path is preserved; resolve the path or permission issue and click **Save and link** again.
@@ -42,7 +43,7 @@ If you edit the profile's `cordis.patch.yml` manually, be sure to preserve the e
 
 ### **3.2 - Automatic Linking, Permission Confirmation, and Headless Mode**
 
-- **Automatic setup**: Hard links are created automatically on the first Bash command or when a Git upgrade modifies key files, displaying **Hard links created** when finished.
+- **Automatic setup**: Hard links are created automatically on the first Bash command or when a Git upgrade modifies key files, displaying **Links created** when finished.
 - **On-demand elevation (UAC)**: If Git is located in a protected directory such as `C:\Program Files\Git`, administrator permission is requested once on demand when creating links. Elevation is used solely to create hard links; everyday commands still run with standard privileges.
 - **Headless mode (`dsh headless`)**: When elevation is required without an interactive window, the process aborts and prints a recovery command in the terminal; run it in Windows Git Bash, then restart DSH and retry:
 

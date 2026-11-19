@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import { Script } from 'node:vm';
 import React from 'react';
 import { Context } from '@deepseek-ai/cordis';
-import { RebuildFeedback } from '../src/rebuild-feedback.ts';
+import { RebuildFeedback, type RebuildNotice } from '../src/rebuild-feedback.ts';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 import type { ConfigFormSnapshot } from '@deepseek-ai/dsh-client-ui-settings/client';
 
@@ -45,12 +45,20 @@ await test('Save and link fences the path write and rebuilds once after confirma
   type PageProps = {
     shellForm: typeof form;
     useShellForm<T>(select: (s: Snapshot) => T): T;
+    hooks: { linkProgress: ReturnType<typeof createSnapshotStore<RebuildNotice['progress']>> };
+    useLinkProgress<T>(select: (s: RebuildNotice['progress']) => T): T;
     t(key: string, params?: Record<string, string>): string;
   };
   let Page!: React.ComponentType<PageProps>, Overlay!: React.ComponentType<Pick<PageProps, 't'>>;
   let injected!: Partial<PageProps>;
   function Modal({ description, children }: { description?: React.ReactNode; children?: React.ReactNode }) {
     return React.createElement('section', null, description, children);
+  }
+  function SettingsForm({ state, labels, onSave, children }: { state: { dirty: boolean; saving: boolean };
+    labels: { save: string; saving: string }; onSave(): void; children: React.ReactNode }) {
+    return React.createElement(React.Fragment, null, children, React.createElement('button', {
+      type: 'button', disabled: !state.dirty || state.saving, onClick: onSave,
+    }, state.saving ? labels.saving : labels.save));
   }
   function SettingsValueField() { return null; }
   function Toast() { return null; }
@@ -83,15 +91,18 @@ await test('Save and link fences the path write and rebuilds once after confirma
   await load.mock.calls[0]!.arguments[0].factory(name => {
     if (name === 'react') return React;
     if (name === '@deepseek-ai/dsh-client-store') return { createSnapshotStore };
-    return { SettingsValueField, Button: 'button', Modal, Toast };
+    return { SettingsForm, SettingsValueField, Button: 'button', Modal, Toast };
   }).apply(applyContext);
 
   let language: keyof typeof dictionaries = 'en';
   const useShellForm = <T,>(select: (s: Snapshot) => T) => select(React.useSyncExternalStore(form.subscribe, form.getSnapshot));
+  const hooks = injected.hooks!;
+  const useLinkProgress: PageProps['useLinkProgress'] = select =>
+    select(React.useSyncExternalStore(hooks.linkProgress.subscribe, hooks.linkProgress.getSnapshot));
   const translate: PageProps['t'] = (key, params) => key === 'close' ? (language === 'en' ? 'Close' : '关闭')
     : (dictionaries[language][key] ?? key).replace(/\{(\w+)\}/g, (match, name: string) => params?.[name] ?? match);
   const page = () => React.createElement(React.Fragment, null,
-    React.createElement(Page, { ...injected, shellForm: form, useShellForm, t: translate }),
+    React.createElement(Page, { ...injected, shellForm: form, useShellForm, hooks, useLinkProgress, t: translate }),
     React.createElement(Overlay, { t: translate }),
   );
   let renderer!: ReactTestRenderer;
@@ -217,6 +228,11 @@ await test('Save and link fences the path write and rebuilds once after confirma
   await act(async () => { click(); });
   assert.equal(rebuild.mock.callCount(), 4, 'the click lock covers the pending POST');
   const path = 'C:/Tools/{path}/<&>/bin/bash.exe';
+  await act(async () => { feedback.setProgress({ path, completed: 32, total: 64 }); });
+  assert.equal(field().props.hint, 'Linked 32 of 64 · ' + path);
+  assert.deepEqual(button().children, ['Linking…']);
+  await act(async () => { feedback.setProgress(undefined); });
+  assert.equal(field().props.hint, dictionaries.en['path.hint']);
   const localized = { key: 'error.readOnlySource', params: { path } };
   await act(async () => { finish(Response.json({ error: 'original diagnostic', localized }, { status: 500 })); });
   checkModal('link.failedAfterSave', translate(localized.key, { path }), [path]);

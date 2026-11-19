@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { basename, dirname, join } from 'node:path';
+import { watch, type FSWatcher } from 'node:fs';
+import { basename, dirname, join, sep } from 'node:path';
 import z from '@deepseek-ai/schemastery';
 import { writeFileAtomic } from '@deepseek-ai/dsh-atomic-write';
 import type { SandboxExecutionPolicy } from '@deepseek-ai/dsh-sandbox';
@@ -19,11 +20,15 @@ import {
 } from './git-installation.ts';
 import { LocalizedAggregateError, LocalizedError } from '../localized-error.ts';
 
+export type LinkProgress = 'preparing' | 'elevation' | 'checking'
+  | { path: string; completed?: never } | { path: string; completed: number; total: number };
+
 export interface RuntimePreparation {
   readonly cacheDirectory: string;
   readonly spawn: Subprocess['spawn'];
   readonly gitBashPath?: string;
   readonly rebuild?: boolean;
+  readonly onProgress?: (progress: LinkProgress) => void;
   readonly elevation: 'manual' | ((sourceRoot: string, sourceChanged: boolean) => Promise<void>);
 }
 export interface GenerationPin {
@@ -205,7 +210,7 @@ async function preparePass(request: RuntimePreparation, signal: AbortSignal, app
       const generations = ensureDirectory(root, 'generations');
       const authorized = request.elevation === 'manual' || !!approved && approved.layout === source.layout
         && samePath(approved.source.path, source.root) && sameIdentity(approved.source, sourceDirectory);
-      pin = await buildFresh(root, generations, source, sourceDirectory, signal, request.spawn, authorized);
+      pin = await buildFresh(root, generations, source, sourceDirectory, signal, request, authorized);
       if (!pin) return { source: sourceDirectory, layout: source.layout, sourceChanged: warm === 'sourceChanged' };
     }
     return pin;
@@ -222,7 +227,7 @@ async function closePreparationLock(lock: NativeHold, pin: GenerationPin | undef
 }
 
 async function buildFresh(root: Directory, generations: Directory, source: GitInstallation, sourceDirectory: Directory,
-  signal: AbortSignal, spawn: Subprocess['spawn'], authorized: boolean): Promise<GenerationPin | undefined> {
+  signal: AbortSignal, request: RuntimePreparation, authorized: boolean): Promise<GenerationPin | undefined> {
   signal.throwIfAborted();
   const id = randomUUID().replaceAll('-', ''), generation = createDirectory(generations, id);
   let hold: NativeHold | undefined;
@@ -247,6 +252,7 @@ async function buildFresh(root: Directory, generations: Directory, source: GitIn
     const base = createDirectory(generation, 'base');
     const validate = () => {
       signal.throwIfAborted();
+      request.onProgress?.('checking');
       createJunction(base, 'bin', admitChildDirectory(admitChildDirectory(base, 'usr'), 'bin'));
       const anchors = captureAnchors(source.root, base.path, source.layout);
       admitBase(generation, source.layout);
@@ -255,12 +261,27 @@ async function buildFresh(root: Directory, generations: Directory, source: GitIn
     };
     let anchors: AnchorStamps;
     if (elevated) {
-      anchors = await provisionRuntime({ source: sourceDirectory, cache: root, generation, base, layout: source.layout }, signal, spawn, validate);
+      const report = request.onProgress;
+      let watcher: FSWatcher | undefined;
+      if (report) {
+        report('elevation');
+        // Observe relative names only. Windows may coalesce notifications from the helper.
+        try {
+          watcher = watch(base.path, { recursive: true, signal }, (event, name) => {
+            if (event === 'rename' && name) report({ path: name.split(sep).join('/') });
+          });
+          watcher.on('error', () => watcher?.close());
+        } catch { /* Linking can proceed without filename notifications. */ }
+      }
+      try {
+        anchors = await provisionRuntime({ source: sourceDirectory, cache: root, generation, base, layout: source.layout },
+          signal, request.spawn, validate);
+      } finally { watcher?.close(); }
     } else {
       const files = await inventoryGitFiles(source.root, () => signal.throwIfAborted());
       revalidateDirectory(sourceDirectory);
       revalidateDirectory(base);
-      await linkFreshTree({ sourceRoot: source.root, baseRoot: base.path, files }, () => signal.throwIfAborted());
+      await linkFreshTree({ sourceRoot: source.root, baseRoot: base.path, files }, () => signal.throwIfAborted(), request.onProgress);
       anchors = validate();
     }
     // Final admission and checked lease closure precede ordinary plan cleanup.

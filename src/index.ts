@@ -117,7 +117,11 @@ export default class GitBashExecutor extends SandboxBashExecutor {
     const selection = this.config.gitBashPath.get();
     const obsolete = new Set<PreparationSlot>();
     if (this.slot && this.slot.selection !== selection) { obsolete.add(this.slot); this.slot = undefined; }
-    if (this.rebuildOp && this.rebuildOp.selection !== selection) { obsolete.add(this.rebuildOp); this.rebuildOp = undefined; }
+    if (this.rebuildOp && this.rebuildOp.selection !== selection) {
+      obsolete.add(this.rebuildOp);
+      this.rebuildOp = undefined;
+      this.feedback.setProgress(undefined);
+    }
     for (const slot of obsolete) void this.retire(slot);
     return selection;
   }
@@ -135,6 +139,9 @@ export default class GitBashExecutor extends SandboxBashExecutor {
         controller.signal.throwIfAborted();
         this.stopping.signal.throwIfAborted();
         const pin = await prepareRuntime({ cacheDirectory: this.cacheDirectory, gitBashPath: selection, rebuild, spawn: this.setupSpawn,
+          onProgress: rebuild ? progress => {
+            if (this.rebuildOp === slot && !controller.signal.aborted) this.feedback.setProgress(progress);
+          } : undefined,
           elevation: rebuild ? 'manual' : (source, changed) => this.confirmElevation(source, changed, controller.signal),
         }, controller.signal).catch(error => {
           if (hasRuntimeCleanupFailure(error)) this.cleanupErrors.push(error);
@@ -268,6 +275,7 @@ export default class GitBashExecutor extends SandboxBashExecutor {
     }
     const op = this.rebuildOp = this.createSlot(selection, true);
     this.slot ??= op;
+    this.feedback.setProgress('preparing');
     try {
       await op.ready;
       this.observeSelection();
@@ -278,7 +286,10 @@ export default class GitBashExecutor extends SandboxBashExecutor {
       this.slot = op;
       if (previous && previous !== op) await this.retire(previous);
     } finally {
-      if (this.rebuildOp === op) this.rebuildOp = undefined;
+      if (this.rebuildOp === op) {
+        this.rebuildOp = undefined;
+        this.feedback.setProgress(undefined);
+      }
     }
   }
 
@@ -289,6 +300,7 @@ export default class GitBashExecutor extends SandboxBashExecutor {
       try { execution.kill(); } catch (error) { this.cleanupErrors.push(error); }
     }
     const slots = new Set([this.slot, this.rebuildOp]);
+    if (this.rebuildOp) this.feedback.setProgress(undefined);
     this.slot = this.rebuildOp = undefined;
     for (const slot of slots) if (slot) void this.retire(slot);
     while (this.work.size || this.cleanup.size) await Promise.allSettled([...this.work, ...this.cleanup]);

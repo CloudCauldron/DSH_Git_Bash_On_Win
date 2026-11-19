@@ -12,7 +12,7 @@ import { loadWin32ProcessBindings, Win32Error, type NativePtr } from '@deepseek-
 import type Subprocess from '@deepseek-ai/dsh-subprocess';
 import type { SubprocessHandle, SubprocessOutcome } from '@deepseek-ai/dsh-subprocess';
 import { localSpawn, nativeOnly, runtimeFixture, readAclRecords } from './fixtures.ts';
-import { prepareRuntime, purgeRuntimeCache, type GenerationPin } from '../src/runtime/runtime-cache.ts';
+import { prepareRuntime, purgeRuntimeCache, type GenerationPin, type LinkProgress } from '../src/runtime/runtime-cache.ts';
 import { anchorPaths } from '../src/runtime/git-installation.ts';
 import {
   admitDirectory, children, createSetupLease, isBusy, isMissing, NativeHold, openExclusiveMetadata, openOrdinaryFile, pathExists, pinDirectory,
@@ -126,6 +126,7 @@ await test('a layout change within the selected Git installation is reported as 
 await test('probe denial joins helper work and keeps its setup lease through final admission', nativeOnly, async t => {
   const fixture = await runtimeFixture(t), restore = denyProbe(t);
   const linked = deferred<void>(), range = deferred<boolean>();
+  const progress: LinkProgress[] = [];
   let started = false, generation = '', baseId = 0n;
   let helperFinished = false;
   let plan: ReturnType<typeof decodeElevationPlan>;
@@ -164,13 +165,18 @@ await test('probe denial joins helper work and keeps its setup lease through fin
     return brokerHandle(done, { waitForExit: () => range.promise });
   };
   try {
-    const preparation = prepareRuntime({ ...fixture.request, spawn }, signal());
+    const preparation = prepareRuntime({ ...fixture.request, spawn, onProgress: update => progress.push(update) }, signal());
     await linked.promise;
+    const sawFile = await t.waitFor(() => assert.ok(progress.some(update =>
+      typeof update === 'object' && update.path === 'usr/bin/bash.exe'))).then(() => true, () => false);
     assert.equal(pathExists(join(fixture.cache, 'current.json')), false);
     assert.ok(pathExists(join(generation, '.setup-owner')));
     range.resolve(true);
     const pin = await preparation;
     try {
+      assert.equal(progress[0], 'elevation');
+      assert.ok(sawFile, 'the host observes hard links created by the separate helper');
+      assert.equal(progress.at(-1), 'checking');
       assert.deepEqual(observed, expected, 'final anchors and root ownership must be admitted with the lease active');
       assert.equal(fs.statSync(join(generation, 'base'), { bigint: true }).ino, baseId);
       assert.deepEqual(readdirSync(generation), ['base']);

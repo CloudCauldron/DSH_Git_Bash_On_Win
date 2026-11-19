@@ -1,11 +1,20 @@
 import type { SandboxExecutionPolicy } from '@deepseek-ai/dsh-sandbox';
 import type Subprocess from '@deepseek-ai/dsh-subprocess';
 import { type GitLayout } from './git-installation.ts';
+export type LinkProgress = 'preparing' | 'elevation' | 'checking' | {
+    path: string;
+    completed?: never;
+} | {
+    path: string;
+    completed: number;
+    total: number;
+};
 export interface RuntimePreparation {
     readonly cacheDirectory: string;
     readonly spawn: Subprocess['spawn'];
     readonly gitBashPath?: string;
     readonly rebuild?: boolean;
+    readonly onProgress?: (progress: LinkProgress) => void;
     readonly elevation: 'manual' | ((sourceRoot: string, sourceChanged: boolean) => Promise<void>);
 }
 export interface GenerationPin {

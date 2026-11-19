@@ -142,7 +142,8 @@ export async function inventoryGitFiles(sourceRoot: string, checkActive: () => v
   return files.sort();
 }
 
-export async function linkFreshTree(tree: FreshLinkTree, checkActive: () => void): Promise<void> {
+export async function linkFreshTree(tree: FreshLinkTree, checkActive: () => void,
+  onLinked?: (file: { path: string; completed: number; total: number }) => void): Promise<void> {
   checkActive();
   validateFiles(tree.files);
   const source = admitDirectory(tree.sourceRoot), base = admitDirectory(tree.baseRoot);
@@ -164,6 +165,10 @@ export async function linkFreshTree(tree: FreshLinkTree, checkActive: () => void
     for (const file of tree.files.slice(offset, offset + 32)) {
       const parent = posix.dirname(file), name = posix.basename(file);
       createHardlink(directoryAt(source, parent, sources), name, targets.get(parent)!, name);
+    }
+    if (onLinked) {
+      const completed = Math.min(offset + 32, tree.files.length);
+      onLinked({ path: tree.files[completed - 1]!, completed, total: tree.files.length });
     }
     // Each synchronous syscall has settled before yielding. Cancellation can
     // stop the next bounded batch without leaving queued path-based writes.

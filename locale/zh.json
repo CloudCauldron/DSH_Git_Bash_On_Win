@@ -9,6 +9,7 @@
 
     "path.label": "Git Bash 路径",
     "path.placeholder": "留空则自动查找 Git Bash 路径",
+    "path.hint": "填写 bash.exe 的完整路径，DSH 会用它运行命令。",
 
     "action.saveLink": "保存并链接",
     "action.confirm": "确认",

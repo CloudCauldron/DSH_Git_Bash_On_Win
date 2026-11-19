@@ -108,10 +108,12 @@ await test('installed DSH presents link failures and conflicts in native dialogs
       const input = await openPlugin(first, url);
       const button = first.getByRole('button', { name: '保存并链接', exact: true });
       const measure = () => input.evaluate(el => {
-        const field = el.parentElement!, row = field.parentElement!;
-        const bounds = row.parentElement!.getBoundingClientRect(), box = field.getBoundingClientRect();
+        const row = el.parentElement!.parentElement!;
+        const bounds = row.getBoundingClientRect(), box = el.getBoundingClientRect();
+        const hint = document.getElementById(el.getAttribute('aria-describedby')!)!;
         const button = row.querySelector('button')!.getBoundingClientRect();
         return { left: box.left - bounds.left, right: bounds.right - button.right, gap: button.left - box.right,
+          hint: hint.textContent, hintBelow: hint.getBoundingClientRect().top >= box.bottom,
           input: box.width, button: button.width, sameRow: box.top < button.bottom && button.top < box.bottom };
       });
       const viewport = first.viewportSize()!;
@@ -119,6 +121,8 @@ await test('installed DSH presents link failures and conflicts in native dialogs
       await first.setViewportSize({ ...viewport, width: 720 });
       const narrow = await measure();
       for (const row of [wide, narrow]) {
+        assert.equal(row.hint, '填写 bash.exe 的完整路径，DSH 会用它运行命令。');
+        assert.ok(row.hintBelow);
         assert.ok(Math.abs(row.left) < 1 && Math.abs(row.right) < 1 && row.gap > 0 && row.sameRow);
       }
       assert.ok(narrow.input < wide.input && narrow.button === wide.button);

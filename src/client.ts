@@ -11,8 +11,12 @@ window.__ModuleLoader__.load({
     const ns = 'dsh-git-bash-on-win';
     const React = require('react') as typeof import('react');
     const { createSnapshotStore } = require('@deepseek-ai/dsh-client-store') as typeof import('@deepseek-ai/dsh-client-store');
-    const { Input, Button, Modal, Toast } = require('@deepseek-ai/dsh-client-ui-primitives') as {
-      Input: import('react').ComponentType<import('react').ComponentProps<'input'>>;
+    const { SettingsValueField, Button, Modal, Toast } = require('@deepseek-ai/dsh-client-ui-primitives') as {
+      SettingsValueField: import('react').ComponentType<{
+        id: string; label: string; hint: string; text: string; placeholder: string; disabled: boolean;
+        overridden: boolean; overriddenLabel: string; resetLabel: string; invalid: boolean; invalidLabel: string;
+        onEdit(text: string): void; onReset(): void;
+      }>;
       Button: import('react').ComponentType<import('react').ComponentProps<'button'>>;
       Modal: import('react').ComponentType<{ open: boolean; title: string; description?: import('react').ReactNode;
         closeLabel: string; onClose(): void; className?: string; footer?: import('react').ReactNode }>;
@@ -107,19 +111,18 @@ window.__ModuleLoader__.load({
       }
 
       const h = React.createElement;
-      return h('div', null,
-        h('label', { htmlFor: inputId }, t('path.label')),
-        h('div', { style: { display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) max-content', alignItems: 'center', gap: '0.5rem' } },
-          h(Input, { id: inputId, value, placeholder: t('path.placeholder'), disabled: disabled || !snapshot.writable,
-            onChange(event) {
-              const text = event.currentTarget.value;
-              setDraft(previous => ({ text, revision: previous ? previous.revision : snapshot.revision }));
-            },
-          }),
-          h(Button, { type: 'button', disabled: disabled || (!snapshot.writable && !!pathChange(value, snapshot)),
-            onClick: () => { void saveAndLink(); },
-          }, t('action.saveLink')),
-        ),
+      return h('div', { style: { display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) max-content', alignItems: 'center', gap: '0.5rem' } },
+        h(SettingsValueField, {
+          id: inputId, label: t('path.label'), placeholder: t('path.placeholder'), hint: t('path.hint'),
+          text: value, disabled: disabled || !snapshot.writable,
+          overridden: false, overriddenLabel: '', resetLabel: '', onReset() {}, invalid: false, invalidLabel: '',
+          onEdit(text) {
+            setDraft(previous => ({ text, revision: previous ? previous.revision : snapshot.revision }));
+          },
+        }),
+        h(Button, { type: 'button', disabled: disabled || (!snapshot.writable && !!pathChange(value, snapshot)),
+          onClick: () => { void saveAndLink(); },
+        }, t('action.saveLink')),
       );
     }
 

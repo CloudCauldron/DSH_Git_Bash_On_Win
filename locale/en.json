@@ -9,6 +9,7 @@
 
     "path.label": "Git Bash path",
     "path.placeholder": "Leave blank to find Git Bash automatically",
+    "path.hint": "Enter the full path to bash.exe, which DSH uses to run commands.",
 
     "action.saveLink": "Save and link",
     "action.confirm": "Confirm",

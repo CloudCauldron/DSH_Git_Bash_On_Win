@@ -1,5 +1,9 @@
 # **DSH Git Bash on Windows**
 
+<p align="center">
+  <a href="README_CN.md">中文</a> | <a href="README.md">English</a>
+</p>
+
 <span style="margin-left:2em;">&#8203;</span>An extension plugin that provides Git Bash execution support for **[DeepSeek Harness (DSH)](https://github.com/deepseek-ai/deepseek-harness)** on Windows x64.
 
 ## **1 - Overview**

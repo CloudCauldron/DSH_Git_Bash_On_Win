@@ -4,7 +4,7 @@
 
 ## **1 - Overview**
 
-<span style="margin-left:2em;">&#8203;</span>DeepSeek Harness `0.2.2-rc.2` uses PowerShell (`pwsh-sandbox` / `tool-pwsh`) by default on Windows, and switching directly to Git Bash prevents the shell from starting because MSYS2 encounters permission restrictions under a restricted sandbox token.
+<span style="margin-left:2em;">&#8203;</span>DeepSeek Harness `0.2.2-rc.5` uses PowerShell (`pwsh-sandbox` / `tool-pwsh`) by default on Windows, and switching directly to Git Bash prevents the shell from starting because MSYS2 encounters permission restrictions under a restricted sandbox token.
 
 <span style="margin-left:2em;">&#8203;</span>`dsh-git-bash-on-win` provides an out-of-the-box Git Bash backend for DSH on Windows (supporting both `ucrt64` and `mingw64` layouts), switching the terminal tool to Bash while preserving native mechanisms such as sandbox restrictions, approvals, timeouts, output truncation, and background job management.
 
@@ -14,8 +14,8 @@
   Run Git Bash directly under `read-only`, `workspace-write`, and `danger-full-access` without relaxing the sandbox or switching to WSL, with support for pipelines, subshells, native child processes, and multiple concurrent sessions.
 - **Single Shared Hard Link Base with Virtually No Extra Disk Usage**
   Reuses local Git files via NTFS hard links and shares one base directory across all modes, with no extra copies required.
-- **Zero Intrusion on the Host Environment**
-  Leaves the Windows Registry, global `PATH`, environment variables, and the file contents and permissions (ACLs) of source Git and DSH installations untouched. Regular Git Bash and WSL remain unaffected, and following the uninstall and cleanup procedure restores the original hard link counts of source files.
+- **Isolated in the DSH profile directory without altering the host environment**
+  All runtime files and hard links are stored in the DSH profile's cache directory, without modifying the Windows Registry, global `PATH`, environment variables, or the contents and permissions (ACLs) of the source Git and DSH files. Everyday Git Bash and WSL remain unaffected. A complete uninstall and cleanup restores the source files' hard-link counts (creating or removing hard links may update NTFS change timestamps, archive bits, and journal or audit records).
 
 ## **3 - Usage Guide**
 
@@ -70,7 +70,7 @@ If you edit the profile's `cordis.patch.yml` manually, be sure to preserve the e
 
 ## **5 - Requirements**
 
-- **DeepSeek Harness**: `0.2.2-rc.2` (`web` / `desktop` profiles and `dsh headless`)
+- **DeepSeek Harness**: `0.2.2-rc.5` (`web` / `desktop` profiles and `dsh headless`)
 - **Operating System**: Native **Windows x64** on an **NTFS** volume (automatically skipped on Linux, macOS, and WSL)
 - **Node.js**: `>= 26` (native Windows x64)
 - **Git for Windows**: With a `ucrt64` or `mingw64` layout

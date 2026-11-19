@@ -35,6 +35,7 @@ const packageJson = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
   dsh: { bundle: { patch: string; platforms: string[] }; client: { platform: string; inject: string[] } };
   dependencies: Record<string, string>;
   peerDependencies: Record<string, string>;
+  devDependencies: Record<string, string>;
 };
 
 function filesUnder(directory: string): string[] {
@@ -208,8 +209,10 @@ await test('the classic client registers dictionaries and the bundle slot after 
 
 await test('public pinned dependencies resolve and atomic-write is usable', async t => {
   assert.equal(packageJson.engines.dsh, SUPPORTED_DSH);
-  assert.equal(packageJson.dependencies['@deepseek-ai/dsh-atomic-write'], SUPPORTED_DSH);
-  for (const [name, version] of Object.entries({ ...packageJson.dependencies, ...packageJson.peerDependencies })) {
+  const dshDevDependencies = Object.entries(packageJson.devDependencies).filter(([name]) => name.startsWith('@deepseek-ai/dsh-'));
+  const dependencies = [...Object.entries(packageJson.dependencies), ...Object.entries(packageJson.peerDependencies), ...dshDevDependencies];
+  for (const [name, version] of dependencies) {
+    if (name.startsWith('@deepseek-ai/dsh-')) assert.equal(version, SUPPORTED_DSH, name);
     const manifest = findPackageJSON(name, import.meta.url);
     assert.ok(manifest, name);
     const metadata = JSON.parse(readFileSync(manifest, 'utf8')) as { version: string };

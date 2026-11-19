@@ -4,7 +4,7 @@
 
 ## **1 - 项目简介**
 
-<span style="margin-left:2em;">&#8203;</span>DeepSeek Harness `0.2.2-rc.2` 在 Windows 下默认使用 PowerShell（`pwsh-sandbox` / `tool-pwsh`），直接切换为 Git Bash 会因 MSYS2 在受限沙箱令牌下权限受阻而无法启动。
+<span style="margin-left:2em;">&#8203;</span>DeepSeek Harness `0.2.2-rc.5` 在 Windows 下默认使用 PowerShell（`pwsh-sandbox` / `tool-pwsh`），直接切换为 Git Bash 会因 MSYS2 在受限沙箱令牌下权限受阻而无法启动。
 
 <span style="margin-left:2em;">&#8203;</span>`dsh-git-bash-on-win` 为 Windows 版 DSH 提供开箱即用的 Git Bash 后端（支持 `ucrt64` 与 `mingw64` 布局），在保留沙箱限制、审批、超时、输出截断与后台托管等原生机制的同时，将终端工具切换为 Bash。
 
@@ -14,8 +14,8 @@
   在 `read-only`、`workspace-write` 与 `danger-full-access` 下均可直接运行 Git Bash，无需放宽沙箱或改用 WSL，支持管道、子 Shell、原生子进程与多会话并发。
 - **单份硬链接共享，几乎不额外占用磁盘空间**
   通过 NTFS 硬链接复用本机 Git 文件，全模式共用同一份基础目录，无需复制额外副本。
-- **零侵入宿主环境**
-  不修改 Windows 注册表、全局 `PATH`、环境变量及源 Git / DSH 的文件内容与权限（ACL）。日常 Git Bash 与 WSL 不受影响，按流程卸载清理后可还原源文件硬链接计数。
+- **隔离于 DSH 配置目录，不侵入宿主环境**
+  运行时文件与硬链接均保存在 DSH 配置的缓存目录中，不修改 Windows 注册表、全局 `PATH`、环境变量及源 Git / DSH 的文件内容与权限（ACL），日常 Git Bash 与 WSL 不受影响。彻底卸载清理后可还原源文件硬链接计数（创建或移除硬链接可能更新 NTFS 变更时间、存档位及日志或审计记录）。
 
 ## **3 - 使用指南**
 
@@ -70,7 +70,7 @@
 
 ## **5 - 环境要求**
 
-- **DeepSeek Harness**：`0.2.2-rc.2`（`web` / `desktop` 配置与 `dsh headless`）
+- **DeepSeek Harness**：`0.2.2-rc.5`（`web` / `desktop` 配置与 `dsh headless`）
 - **操作系统**：原生 **Windows x64**，**NTFS** 分区（Linux、macOS 与 WSL 下会自动跳过）
 - **Node.js**：`>= 26`（原生 Windows x64）
 - **Git for Windows**：包含 `ucrt64` 或 `mingw64` 布局

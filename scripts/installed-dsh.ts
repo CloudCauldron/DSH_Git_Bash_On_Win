@@ -4,7 +4,7 @@ import { isAbsolute, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { LocalizedError } from '../src/localized-error.ts';
 
-export const SUPPORTED_DSH = '0.2.2-rc.2';
+export const SUPPORTED_DSH = '0.2.2-rc.5';
 
 /** Discover installed code only; never open or create a user's DSH profile. */
 export function findInstalledDshManifest(): string | undefined {

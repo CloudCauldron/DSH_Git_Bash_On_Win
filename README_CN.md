@@ -76,7 +76,7 @@
 
 - **DeepSeek Harness**：`0.2.2-rc.5`（`web` / `desktop` 配置与 `dsh headless`）
 - **操作系统**：原生 **Windows x64**，**NTFS** 分区（Linux、macOS 与 WSL 下会自动跳过）
-- **Node.js**：`>= 26`（原生 Windows x64）
+- **Node.js**：原生 Windows x64，版本范围为 `^24.21.0 || >=26`。
 - **Git for Windows**：包含 `ucrt64` 或 `mingw64` 布局
 - **包管理器**：`pnpm`
 
@@ -130,7 +130,7 @@ node '<已安装插件目录>/lib/purge-runtime-cache.js' '<DSH 主目录绝对�
     node scripts/plugin.ts "$gitbash_pnpm" web remove dsh-git-bash-on-win --purge-cache
     ```
 
-    若直接使用原生 CLI，需**先**运行第 6.2 节清理命令，再执行 `dsh plugin --profile web remove dsh-git-bash-on-win --ignore-scripts`（多个配置使用此包时请逐个卸载，共享缓存只需清理一次）。
+    若直接使用原生 CLI，需**先**运行第 6.2 节清理命令，再执行 `dsh plugin --profile web remove dsh-git-bash-on-win --config.ignore-scripts=true`（多个配置使用此包时请逐个卸载，共享缓存只需清理一次）。
 
 ## **7 - 开发与测试**
 

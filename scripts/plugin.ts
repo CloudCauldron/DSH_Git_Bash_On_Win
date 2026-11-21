@@ -34,7 +34,7 @@ if (purge) {
   }
 }
 const result = await runPluginCommand({ profile, dir, installAnchor: runtime.manifest, cwd: process.cwd() },
-  [operation, target!, '--ignore-scripts'], {
+  [operation, target!, '--config.ignore-scripts=true'], {
     command: pnpm, execution: 'cli', outputBytes: 16_384, lockWaitMs: 120_000,
     onOutput: (text, stream) => { process[stream].write(text); },
   });

@@ -69,6 +69,7 @@ export async function runtimeFixture(t: TestContext, layout: GitLayout = 'ucrt64
   }
   const request: RuntimePreparation = {
     elevation: 'manual',
+    installAnchor: process.versions.electron ? findInstalledDshManifest() : undefined,
     cacheDirectory: cache, gitBashPath: join(source, 'usr/bin/bash.exe'),
     spawn: () => { throw new Error('This fixture must never start a subprocess or open UAC.'); },
   };

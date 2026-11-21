@@ -1,6 +1,6 @@
 {
   "name": "dsh-git-bash-on-win",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "private": true,
   "type": "module",
   "description": "Run commands with Git Bash on Windows x64 under DSH's current sandbox policy.",
@@ -28,7 +28,7 @@
       ]
     }
   },
-  "engines": { "node": ">=26", "dsh": "0.2.2-rc.5" },
+  "engines": { "node": "^24.21.0 || >=26", "dsh": "0.2.2-rc.5" },
   "scripts": {
     "lint": "eslint src scripts test eslint.config.mjs --max-warnings 0",
     "check": "tsc --noEmit",

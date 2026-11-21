@@ -11,14 +11,16 @@ import koffi from 'koffi';
 import { loadWin32ProcessBindings, Win32Error, type NativePtr } from '@deepseek-ai/dsh-win32-process';
 import type Subprocess from '@deepseek-ai/dsh-subprocess';
 import type { SubprocessHandle, SubprocessOutcome } from '@deepseek-ai/dsh-subprocess';
+import { findInstalledDshManifest, installedDsh } from '../scripts/installed-dsh.ts';
+import { LocalizedError } from '../src/locale/errors.ts';
 import { denyProbe, localSpawn, nativeOnly, runtimeFixture, readAclRecords } from './fixtures.ts';
 import { prepareRuntime, purgeRuntimeCache, type GenerationPin, type LinkProgress } from '../src/runtime/runtime-cache.ts';
 import { anchorPaths } from '../src/runtime/git-installation.ts';
 import {
-  admitDirectory, children, createSetupLease, isBusy, isMissing, NativeHold, openExclusiveMetadata, openOrdinaryFile, pathExists, pinDirectory,
+  admitDirectory, children, createDirectory, createSetupLease, isBusy, isMissing, NativeHold, openExclusiveMetadata, openOrdinaryFile, pathExists, pinDirectory,
   requireActiveLease, unlinkEntry,
 } from '../src/runtime/ntfs-filesystem.ts';
-import { decodeElevationPlan, planDigest } from '../src/setup/elevated-linking.ts';
+import { decodeElevationPlan, planDigest, provisionRuntime } from '../src/setup/elevated-linking.ts';
 import { runLinkHelper } from '../src/setup/link-helper.ts';
 import { runElevationBroker } from '../src/setup/elevation-broker.ts';
 
@@ -527,6 +529,56 @@ await test('F4 broker requires a process handle, helper zero, successful wait an
   });
 });
 
+await test('Desktop resolves the bundled broker executable before creating elevation controls', nativeOnly, async t => {
+  const installed = findInstalledDshManifest();
+  if (!installed) { t.skip('Set DSH_PACKAGE_JSON to the installed DSH manifest.'); return; }
+  const anchor = installedDsh(installed).manifest;
+  const fixture = await runtimeFixture(t);
+  const cache = createDirectory(admitDirectory(fixture.directory), 'setup');
+  const generation = createDirectory(createDirectory(cache, 'generations'), 'a'.repeat(32));
+  const attempt = { source: admitDirectory(fixture.source), cache, generation, base: createDirectory(generation, 'base'), layout: 'ucrt64' as const };
+  t.mock.property(process, 'versions', { ...process.versions, electron: '44.7.0' });
+  t.mock.property(process, 'execPath', join(fixture.directory, 'DeepSeek Harness.exe'));
+  const payload = join(fixture.directory, 'resources/runtime/primary-runtime');
+  const manifest = join(payload, 'runtime.json'), node = join(payload, 'dependencies/node/bin/node.exe');
+  const spawn: Subprocess['spawn'] = spec => {
+    assert.equal(spec.argv[0], node);
+    return brokerHandle(runLinkHelper(spec.argv[2]!, spec.argv[3]!).then(() => success));
+  };
+  const run = (installAnchor?: string, active = signal()) => provisionRuntime(attempt, active, spawn, () => {}, installAnchor);
+  const unavailable = async (installAnchor?: string, detail?: RegExp) => {
+    await assert.rejects(run(installAnchor), error => {
+      assert.ok(error instanceof LocalizedError);
+      assert.deepEqual(error.messages.map(item => item.key), ['error.desktopNodeUnavailable']);
+      if (detail) {
+        assert.ok(error.cause instanceof Error);
+        assert.match(error.cause.message, detail);
+        assert.equal(error.diagnostic, error.cause.message);
+      } else assert.equal(error.diagnostic, undefined);
+      return true;
+    });
+    assert.deepEqual(children(generation), ['base']);
+  };
+  await unavailable();
+  await unavailable(join(fixture.directory, 'package.json'), /dsh-tool-workspace-dependencies/);
+  await unavailable(anchor, /runtime\.json/);
+  fs.mkdirSync(join(payload, 'dependencies/python/Lib/site-packages'), { recursive: true });
+  writeFileSync(join(payload, 'dependencies/python/python.exe'), '');
+  const metadata = { desktopVersion: '0.2.2-rc.5', platform: 'win32', arch: 'x64', python: '3.12.14', pythonPackages: {} };
+  writeFileSync(manifest, JSON.stringify(metadata));
+  await unavailable(anchor);
+  writeFileSync(manifest, JSON.stringify({ ...metadata, node: '24.21.0' }));
+  fs.mkdirSync(dirname(node), { recursive: true });
+  fs.mkdirSync(join(payload, 'dependencies/node/node_modules'));
+  await unavailable(anchor, /node\.exe/);
+  writeFileSync(node, '');
+  const controller = new AbortController(), pending = run(anchor, controller.signal);
+  controller.abort();
+  await assert.rejects(pending, error => error === controller.signal.reason);
+  assert.deepEqual(children(generation), ['base']);
+  await run(anchor);
+});
+
 await test('native broker launch and wait join through DSH before cache publication without consent', nativeOnly, async t => {
   const spawn = await localSpawn(t); if (!spawn) return;
   const fixture = await runtimeFixture(t);
@@ -536,8 +588,9 @@ await test('native broker launch and wait join through DSH before cache publicat
   const content = readFileSync(bash), links = fs.statSync(bash).nlink;
   const acl = readAclRecords(bash);
   const preload = join(fixture.directory, 'ordinary-shell-execute.mjs');
-  // Change only the consent verb. The request ABI, process handle, wait/close,
-  // fixed script argv and DSH outcome/range observation all remain native.
+  const expectedNode = process.versions.electron
+    ? join(dirname(process.execPath), 'resources/runtime/primary-runtime/dependencies/node/bin/node.exe') : process.execPath;
+  // Exercise the helper without Electron's environment or an interactive consent dialog.
   // Resolve the ESM export used by the broker; Koffi's CJS facade is separate.
   writeFileSync(preload, `
     import assert from 'node:assert/strict';
@@ -551,6 +604,8 @@ await test('native broker launch and wait join through DSH before cache publicat
         const execute = library.func(...declaration);
         return request => {
           assert.equal(request.lpVerb, 'runas');
+          assert.equal(request.lpFile, ${JSON.stringify(expectedNode)});
+          delete process.env.ELECTRON_RUN_AS_NODE;
           request.lpVerb = 'open';
           return execute(request);
         };

@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
+import { createRequire } from 'node:module';
 import { basename, dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import z from '@deepseek-ai/schemastery';
 import type Subprocess from '@deepseek-ai/dsh-subprocess';
 import type { SubprocessHandle } from '@deepseek-ai/dsh-subprocess';
@@ -74,6 +75,25 @@ export function admitElevationPlan(plan: ElevationPlan, openedGeneration: Direct
 
 const brokerGraceMs = 250;
 
+/** UAC starts the helper without Electron's process-local Node mode. */
+async function brokerExecutable(installAnchor?: string): Promise<string> {
+  if (!process.versions.electron) return process.execPath;
+  if (installAnchor) {
+    try {
+      const entry = createRequire(installAnchor).resolve('@deepseek-ai/dsh-tool-workspace-dependencies');
+      const { resolvePrimaryRuntime } = await import(pathToFileURL(entry).href) as {
+        resolvePrimaryRuntime(root: string): Promise<{ node?: string }>;
+      };
+      // Only the payload shipped beside the running Desktop executable may elevate.
+      const { node } = await resolvePrimaryRuntime(join(dirname(process.execPath), 'resources/runtime/primary-runtime'));
+      if (node) return node;
+    } catch (cause) {
+      throw new LocalizedError('error.desktopNodeUnavailable', undefined, { cause, failures: [cause] });
+    }
+  }
+  throw new LocalizedError('error.desktopNodeUnavailable');
+}
+
 /** Local broker shutdown failed; ordinary setup rejection does not imply this. */
 export class ProvisioningCleanupError extends LocalizedAggregateError {}
 
@@ -91,7 +111,9 @@ async function stopBroker(broker: SubprocessHandle): Promise<void> {
 }
 
 /** Keep the setup lease through the caller's synchronous final admission. */
-export async function provisionRuntime<T>(attempt: ProvisioningAttempt, signal: AbortSignal, spawn: Subprocess['spawn'], validate: () => T): Promise<T> {
+export async function provisionRuntime<T>(attempt: ProvisioningAttempt, signal: AbortSignal, spawn: Subprocess['spawn'], validate: () => T, installAnchor?: string): Promise<T> {
+  signal.throwIfAborted();
+  const executable = await brokerExecutable(installAnchor);
   signal.throwIfAborted();
   const lease = createSetupLease(attempt.generation);
   let cancel!: () => void;
@@ -118,7 +140,7 @@ export async function provisionRuntime<T>(attempt: ProvisioningAttempt, signal: 
     writeNewMetadata(attempt.generation, 'plan.json', plan);
     signal.throwIfAborted();
     const child = broker = spawn({
-      argv: [process.execPath, fileURLToPath(new URL('./elevation-broker.js', import.meta.url)), join(attempt.generation.path, 'plan.json'), planDigest(plan)],
+      argv: [executable, fileURLToPath(new URL('./elevation-broker.js', import.meta.url)), join(attempt.generation.path, 'plan.json'), planDigest(plan)],
       cwd: attempt.cache.path, graceMs: brokerGraceMs,
       stdio: { stdin: 'ignore', stdout: { maxBytes: 0 }, stderr: { maxBytes: 8192 } },
       env: { NODE_OPTIONS: undefined },

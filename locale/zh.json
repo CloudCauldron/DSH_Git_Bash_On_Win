@@ -121,6 +121,7 @@
     "error.planOutsideGeneration": "安装计划不在预期的运行时代目录内。",
     "error.setupPlanChanged": "安装计划在准备后发生了变化。",
     "error.setupPlanArgument": "需要提供安装计划路径及其摘要。",
+    "error.desktopNodeUnavailable": "无法找到 DSH Desktop 随附的 Node 可执行文件以提权建立链接。",
     "error.sourcePlanMismatch": "源目录布局与安装计划不一致。",
     "error.unexpectedPlanBase": "计划中的基目录必须是该运行时代的 base 目录。",
 

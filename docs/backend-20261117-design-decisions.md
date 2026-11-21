@@ -1,6 +1,6 @@
 # Backend design decisions
 
-The backend design took shape on 15–17 November 2026. It lets a DSH profile run Git Bash on native Windows x64 under DSH's selected execution policy. The supported host is DSH 0.2.2-rc.5 with Node 26 or newer. An installation can use the `ucrt64` or `mingw64` Git for Windows layout.
+The backend design took shape on 15–17 November 2026. It lets a DSH profile run Git Bash on native Windows x64 under DSH's selected execution policy. The supported host is DSH 0.2.2-rc.5 with Node `^24.21.0 || >=26`, including Desktop's bundled Node 24.21.0. An installation can use the `ucrt64` or `mingw64` Git for Windows layout.
 
 Four observations drove the design. Stock Git Bash failed to start its Unix compatibility runtime, MSYS, in read-only and workspace-write modes. The first working executor scanned the source and three runtime trees on every command. Its cleanup could delete existing files in a directory it mistook for its cache, and its elevation worker could mistake a failed wait for helper exit. The backend kept the working DSH integration and changed how it starts Bash, owns storage and confirms completion.
 
@@ -74,6 +74,8 @@ Manual rebuilds send progress over the existing owner feedback stream. The ordin
 ## Elevation and cancellation
 
 The Windows User Account Control (UAC) consent dialog can block a native call. Terminating a JavaScript worker may still wait for that call. A small unelevated broker runs it in a DSH-owned process so local shutdown can stop and join the broker. Only the fixed link helper receives elevation. Approval trusts the installed Node executable, plugin code and its dependencies. Profiles sharing the cache belong to the same Windows user.
+
+The Desktop host runs inside Electron with `ELECTRON_RUN_AS_NODE=1`. UAC does not preserve that process-local mode. Before spawning the broker, the host resolves the standalone Node in its installed payload through DSH's `resolvePrimaryRuntime`. The broker can then use its own executable for the fixed helper on both Desktop and the native CLI.
 
 When automatic setup needs elevation, it releases the writer lock before requesting confirmation from an interactive DSH owner. On confirmation it rechecks the source directory identity, layout and current cache. Another instance may already have finished. A headless user gets a command for the installed profile. An explicit linking action supplies the user's request to proceed to Windows consent.
 

@@ -11,6 +11,7 @@ export type LinkProgress = 'preparing' | 'elevation' | 'checking' | {
 };
 export interface RuntimePreparation {
     readonly cacheDirectory: string;
+    readonly installAnchor?: string;
     readonly spawn: Subprocess['spawn'];
     readonly gitBashPath?: string;
     readonly rebuild?: boolean;

@@ -61,7 +61,7 @@ async function executorFixture(t: TestContext) {
       };
     },
   };
-  ctx.provide('profileContext', { dir: fixture.directory, home: fixture.directory });
+  ctx.provide('profileContext', { dir: fixture.directory, home: fixture.directory, installAnchor: fixture.request.installAnchor });
   ctx.provide('subprocess', provider);
   ctx.provide('sandboxPolicy', { defaultMode: policy.mode, resolve: () => policy });
   ctx.provide('sandbox', { confine: (argv: string[]) => controls.confine(argv) });
@@ -179,6 +179,14 @@ async function feedbackClient(ctx: Context) {
   return { subscribe, answer: (action: string, id: string) =>
     route.fetch(new Request(url + '?action=' + action + '&id=' + id, { method: 'POST' })) };
 }
+
+await test('headless Desktop recovery invokes Electron in Node mode', nativeOnly, async t => {
+  const f = await executorFixture(t);
+  t.mock.property(process, 'versions', { ...process.versions, electron: '44.7.0' });
+  t.mock.property(process, 'execPath', 'C:/Program Files/DSH/DeepSeek Harness.exe');
+  denyProbe(t);
+  await assert.rejects(f.run(), /ELECTRON_RUN_AS_NODE=1 'C:\/Program Files\/DSH\/DeepSeek Harness\.exe' /);
+});
 
 await test('losing the last owner cancels automatic consent and late confirmations cannot open UAC', nativeOnly, async t => {
   const f = await executorFixture(t), ui = await feedbackClient(f.ctx);

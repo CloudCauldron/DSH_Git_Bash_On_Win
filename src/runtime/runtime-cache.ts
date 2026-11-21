@@ -25,6 +25,7 @@ export type LinkProgress = 'preparing' | 'elevation' | 'checking'
 
 export interface RuntimePreparation {
   readonly cacheDirectory: string;
+  readonly installAnchor?: string;
   readonly spawn: Subprocess['spawn'];
   readonly gitBashPath?: string;
   readonly rebuild?: boolean;
@@ -280,7 +281,7 @@ async function buildFresh(root: Directory, generations: Directory, source: GitIn
       }
       try {
         anchors = await provisionRuntime({ source: sourceDirectory, cache: root, generation, base, layout: source.layout },
-          signal, request.spawn, validate);
+          signal, request.spawn, validate, request.installAnchor);
       } finally { watcher?.close(); }
     } else {
       const files = await inventoryGitFiles(source.root, () => signal.throwIfAborted());

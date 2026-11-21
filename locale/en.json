@@ -121,6 +121,7 @@
     "error.planOutsideGeneration": "Plan is outside its expected generation.",
     "error.setupPlanChanged": "The setup plan has changed since preparation.",
     "error.setupPlanArgument": "Expected a setup plan path and digest.",
+    "error.desktopNodeUnavailable": "Cannot locate DSH Desktop's bundled Node executable for elevated linking.",
     "error.sourcePlanMismatch": "Source layout disagrees with the setup plan.",
     "error.unexpectedPlanBase": "Plan base must be exactly the generation base.",
 

@@ -137,7 +137,8 @@ export default class GitBashExecutor extends SandboxBashExecutor {
         this.observeSelection();
         controller.signal.throwIfAborted();
         this.stopping.signal.throwIfAborted();
-        const pin = await prepareRuntime({ cacheDirectory: sharedCacheDirectory(this.profile.home), gitBashPath: selection, rebuild, spawn: this.setupSpawn,
+        const pin = await prepareRuntime({ cacheDirectory: sharedCacheDirectory(this.profile.home), installAnchor: this.profile.installAnchor,
+          gitBashPath: selection, rebuild, spawn: this.setupSpawn,
           onProgress: rebuild ? progress => {
             if (this.rebuildOp === slot && !controller.signal.aborted) this.feedback.setProgress(progress);
           } : undefined,
@@ -169,7 +170,9 @@ export default class GitBashExecutor extends SandboxBashExecutor {
     if (this.profile.installAnchor) args.push(this.profile.installAnchor);
     // Print literal arguments for Windows Git Bash, including paths with quotes or shell metacharacters.
     const command = args.map(arg => "'" + arg.replaceAll('\\', '/').replaceAll("'", "'\\''") + "'").join(' ');
-    return this.feedback.confirm(changed, new LocalizedError('error.confirmationUnavailable', { command }), signal);
+    // Desktop's recovery entry resolves its DSH installation anchor inside app.asar.
+    const invocation = process.versions.electron ? 'ELECTRON_RUN_AS_NODE=1 ' + command : command;
+    return this.feedback.confirm(changed, new LocalizedError('error.confirmationUnavailable', { command: invocation }), signal);
   }
 
   private current(slot: PreparationSlot, signal: AbortSignal): boolean {

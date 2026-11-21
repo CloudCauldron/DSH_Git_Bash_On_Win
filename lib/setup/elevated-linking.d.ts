@@ -29,5 +29,5 @@ export declare function admitElevationPlan(plan: ElevationPlan, openedGeneration
 export declare class ProvisioningCleanupError extends LocalizedAggregateError {
 }
 /** Keep the setup lease through the caller's synchronous final admission. */
-export declare function provisionRuntime<T>(attempt: ProvisioningAttempt, signal: AbortSignal, spawn: Subprocess['spawn'], validate: () => T): Promise<T>;
+export declare function provisionRuntime<T>(attempt: ProvisioningAttempt, signal: AbortSignal, spawn: Subprocess['spawn'], validate: () => T, installAnchor?: string): Promise<T>;
 export {};

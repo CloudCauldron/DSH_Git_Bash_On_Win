@@ -524,7 +524,7 @@ await test('checkout install, offline recovery and removal preserve shared Shell
   const recovery = readFileSync(join(home, 'recovery-command'), 'utf8');
   assert.ok(recovery.endsWith("/package.json'"), 'the command includes the DSH installation anchor');
   const git = discoverGitInstallation(process.env.DSH_TEST_GIT_BASH);
-  success(await run([join(git.root, 'bin/bash.exe'), '--noprofile', '--norc', '-c', 'PATH=/usr/bin\n' + recovery]));
+  success(await run([join(git.root, 'bin/bash.exe'), '--noprofile', '--norc', '-c', 'unset ELECTRON_RUN_AS_NODE\nPATH=/usr/bin\n' + recovery]));
   const sharedGeneration = readFileSync(join(cache, 'current.json'), 'utf8');
   const sharedLinks = statSync(sourceFile).nlink;
   // Application-owned profiles can live anywhere. DSH selects an installation bundle before a profile-local copy.

@@ -76,7 +76,7 @@ If you edit the profile's `cordis.patch.yml` manually, be sure to preserve the e
 
 - **DeepSeek Harness**: `0.2.2-rc.5` (`web` / `desktop` profiles and `dsh headless`)
 - **Operating System**: Native **Windows x64** on an **NTFS** volume (automatically skipped on Linux, macOS, and WSL)
-- **Node.js**: `>= 26` (native Windows x64)
+- **Node.js**: Native Windows x64, `^24.21.0 || >=26`.
 - **Git for Windows**: With a `ucrt64` or `mingw64` layout
 - **Package Manager**: `pnpm`
 
@@ -130,7 +130,7 @@ After cleanup succeeds, restart DSH to rebuild on demand, or click **Save and li
     node scripts/plugin.ts "$gitbash_pnpm" web remove dsh-git-bash-on-win --purge-cache
     ```
 
-    If using the native CLI directly, run the Section 6.2 cleanup command **first**, and then run `dsh plugin --profile web remove dsh-git-bash-on-win --ignore-scripts` (remove the package from each remaining profile; purge the home cache only once).
+    If using the native CLI directly, run the Section 6.2 cleanup command **first**, and then run `dsh plugin --profile web remove dsh-git-bash-on-win --config.ignore-scripts=true` (remove the package from each remaining profile; purge the home cache only once).
 
 ## **7 - Development and Testing**
 

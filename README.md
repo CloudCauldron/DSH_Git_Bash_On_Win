@@ -71,6 +71,8 @@ If you edit the profile's `cordis.patch.yml` manually, be sure to preserve the e
    Hard links share on-disk data with the source files, so the size reported in File Explorer does not represent additional disk usage; modifying source files in place takes effect across the links as well. After upgrading Git or if supporting files are missing, click **Save and link** on the plugin page to rebuild.
 6. **Run with standard privileges and do not recursively delete the cache directly**
    Launch DSH with standard privileges for installation, updates, and everyday use. Never force-delete `.dsh-git-bash-on-win` with `rm -rf` or File Explorer; when cleaning up, close all relevant DSH instances first and then run the command in Section 6.2.
+7. **Starting a new session after disabling the plugin**
+   In DSH `0.2.2-rc.5`, clicking **New Session** can reopen a blank session created while the plugin was enabled. By design, DSH keeps open sessions on the same version of their agent preset when a plugin is enabled or disabled. Commands in that session now run in PowerShell, but the model still sees a tool named `bash` and may try Bash syntax first. Sessions created after you disable the plugin use `pwsh` from the start. If DSH reopens an older blank session, leave the plugin disabled, fully exit DSH, then reopen it and start a session.
 
 ## **5 - Requirements**
 

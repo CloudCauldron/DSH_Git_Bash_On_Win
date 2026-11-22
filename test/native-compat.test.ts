@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
-import { join } from 'node:path';
+import { basename, dirname, join, toNamespacedPath } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import koffi from 'koffi';
 import type { SandboxExecutionPolicy } from '@deepseek-ai/dsh-sandbox';
@@ -39,6 +39,7 @@ NTSTATUS NTAPI fakeQuery(HANDLE, TOKEN_INFORMATION_CLASS, PVOID, ULONG, PULONG);
 #undef NtQueryInformationToken
 #define CHECK(x) do { if (!(x)) return __LINE__; } while (0)
 static DWORD longResult;
+static LPCWSTR expectedLongInput;
 static int protectCalls, protectFault;
 static int tokenFault;
 NTSTATUS NTAPI fakeQuery(HANDLE token, TOKEN_INFORMATION_CLASS kind, PVOID data, ULONG capacity, PULONG length) {
@@ -70,9 +71,14 @@ NTSTATUS NTAPI fakeQuery(HANDLE token, TOKEN_INFORMATION_CLASS kind, PVOID data,
     return status;
 }
 static DWORD WINAPI fakeLongPath(LPCWSTR a, LPWSTR b, DWORD c) {
+    if (expectedLongInput) {
+        if (!wide_eq_ci(a, expectedLongInput)) { SetLastError(ERROR_INVALID_NAME); return 0; }
+        expectedLongInput = NULL;
+    }
     if (longResult) {
         if (longResult < c) {
             if (longResult == 14) memcpy(b, L"C:\\s\\usr\\bin\\a", 15 * sizeof(WCHAR));
+            else if (longResult == 18) memcpy(b, L"\\\\?\\C:\\s\\usr\\bin\\a", 19 * sizeof(WCHAR));
             else { for (DWORD i = 0; i < longResult; i++) b[i] = L'x'; b[longResult] = 0; }
         }
         return longResult;
@@ -81,8 +87,8 @@ static DWORD WINAPI fakeLongPath(LPCWSTR a, LPWSTR b, DWORD c) {
 }
 NTSTATUS NTAPI fakeProtect(HANDLE p, PVOID *base, PSIZE_T size, ULONG protection, PULONG old) {
     if (!protectFault) return NtProtectVirtualMemory(p, base, size, protection, old);
-    *old = PAGE_READONLY;
-    return ++protectCalls == 2 ? (NTSTATUS)0xc0000022 : 0;
+    *old = protectFault == 2 ? PAGE_READWRITE : PAGE_READONLY;
+    return ++protectCalls == 2 && protectFault == 1 ? (NTSTATUS)0xc0000022 : 0;
 }
 BOOL WINAPI testDllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) { return TRUE; }
 
@@ -92,6 +98,10 @@ __declspec(dllexport) int token_checks(void) {
     CHECK(verify_token_and_policy(MODE_WORKSPACE_WRITE, FALSE, 0, 0));
     for (tokenFault = 2; tokenFault <= 6; tokenFault++) CHECK(!verify_token_and_policy(MODE_WORKSPACE_WRITE, FALSE, 0, 0));
     tokenFault = 0;
+    DSH_SID4 probe;
+    CHECK(SetEnvironmentVariableW(L"TEMP", L"\xfffd") && compute_temp_sid_from_env(&probe, &present) && present);
+    CHECK(SetEnvironmentVariableW(L"TEMP", L"\xd800") && !compute_temp_sid_from_env(&probe, &present));
+    CHECK(GetLastError() == ERROR_NO_UNICODE_TRANSLATION);
     CHECK(SetEnvironmentVariableW(L"TEMP", NULL) && SetEnvironmentVariableW(L"TMP", NULL));
     CHECK(verify_token_and_policy(MODE_WORKSPACE_WRITE, FALSE, 0, 0));
     tokenFault = 1;
@@ -99,6 +109,11 @@ __declspec(dllexport) int token_checks(void) {
     CHECK(verify_token_and_policy(MODE_WORKSPACE_WRITE, TRUE, temp.SubAuthority[0], temp.SubAuthority[1]));
     tokenFault = 0;
     return 0;
+}
+
+__declspec(dllexport) BOOL signal_pipe_matches(const char *name) {
+    format_hex64_lower(1, g_expectedKeyHexA, g_expectedKeyHexW);
+    return parse_own_sigwait_pipe(name);
 }
 
 __declspec(dllexport) int native_checks(void) {
@@ -141,10 +156,18 @@ __declspec(dllexport) int native_checks(void) {
     groups->Groups[0].Sid = token + 90; CHECK(!checked_logon_sid(token, sizeof(token), 96));
     groups->Groups[0].Sid = token; CHECK(!checked_logon_sid(token, sizeof(token), 44));
 
+    UNICODE_STRING section = { 16, 16, L"cygpid.1" };
+    CHECK(unicode_is_cygpid(&section));
+    section.MaximumLength = 14; CHECK(!unicode_is_cygpid(&section));
+    section.MaximumLength = 16; section.Length = 15; CHECK(!unicode_is_cygpid(&section));
+    section.Length = 14; CHECK(!unicode_is_cygpid(&section));
+    section.Length = 16; section.Buffer = L"cygpid.x"; CHECK(!unicode_is_cygpid(&section));
+
     format_hex64_lower(1, g_expectedKeyHexA, g_expectedKeyHexW);
     const WCHAR *namespaces[] = {
         L"\\BaseNamedObjects\\msys-2.0S5-0000000000000001",
         L"\\BaseNamedObjects\\msys-2.0S-0000000000000001",
+        L"\\Sessions\\1\\BaseNamedObjects\\msys-2.0S5-0000000000000001",
         L"\\BaseNamedObjects\\msys-2.0S5\\other-0000000000000001",
         L"\\BaseNamedObjects\\msys-2.0S5-0000000000000002"
     };
@@ -212,6 +235,9 @@ __declspec(dllexport) int native_checks(void) {
     longResult = 14;
     CHECK(try_rewrite_application_path(L"C:\\short~1\\a", output) == PATH_REWRITE);
     CHECK(wide_eq_ci(output, L"C:\\v\\usr\\bin\\a"));
+    longResult = 18;
+    CHECK(try_rewrite_application_path(L"\\\\?\\C:\\short~1\\a", output) == PATH_REWRITE);
+    CHECK(wide_eq_ci(output, L"\\\\?\\C:\\v\\usr\\bin\\a"));
     longResult = MAX_PATH_CHARS - 1;
     CHECK(try_rewrite_application_path(L"C:\\short~1\\a", output) == PATH_NO_MATCH);
     longResult = MAX_PATH_CHARS;
@@ -225,12 +251,15 @@ __declspec(dllexport) int native_checks(void) {
     CHECK(try_rewrite_application_path(L"C:\\s\\usr\\bin\\a", output) == PATH_ERROR && GetLastError() == ERROR_FILENAME_EXCED_RANGE);
     protectFault = 1; protectCalls = 0; void *slot = (void *)1, *original;
     CHECK(!patch_iat_slot(&slot, (void *)2, &original) && protectCalls == 2);
+    protectFault = 2; protectCalls = 0; slot = (void *)1; original = NULL;
+    CHECK(!patch_iat_slot(&slot, (void *)2, &original) && protectCalls == 2 && slot == (void *)1 && !original);
     protectFault = 0;
     return 0;
 }
 
 static volatile LONG rootCalls, originalCalls;
 static BOOL rootFailure;
+static LPCWSTR expectedApplication;
 static DWORD WINAPI rootQuery(HANDLE h, LPWSTR path, DWORD size, DWORD flags) {
     InterlockedIncrement(&rootCalls);
     if (rootFailure) { SetLastError(ERROR_ACCESS_DENIED); return 0; }
@@ -238,40 +267,52 @@ static DWORD WINAPI rootQuery(HANDLE h, LPWSTR path, DWORD size, DWORD flags) {
 }
 static BOOL WINAPI originalProcess(LPCWSTR app, LPWSTR command, LPSECURITY_ATTRIBUTES pa, LPSECURITY_ATTRIBUTES ta,
     BOOL inherit, DWORD flags, LPVOID env, LPCWSTR cwd, LPSTARTUPINFOW startup, LPPROCESS_INFORMATION info) {
-    InterlockedIncrement(&originalCalls); return TRUE;
+    InterlockedIncrement(&originalCalls); return !expectedApplication || app == expectedApplication;
+}
+__declspec(noinline) static BOOL call_process_hook(LPCWSTR application) {
+    return Hook_CreateProcessW(application, NULL, NULL, NULL, FALSE, 0, NULL, NULL, NULL, NULL);
 }
 static DWORD WINAPI rootThread(LPVOID argument) {
-    BOOL result = Hook_CreateProcessW(L"C:\\unrelated.exe", NULL, NULL, NULL, FALSE, 0, NULL, NULL, NULL, NULL);
+    BOOL result = call_process_hook(L"C:\\unrelated.exe");
     return rootFailure ? (!result && GetLastError() == ERROR_ACCESS_DENIED ? 0 : 1) : result ? 0 : 1;
 }
-__declspec(dllexport) int roots_check(LPCWSTR view, BOOL failure) {
+__declspec(dllexport) int roots_check(LPCWSTR view, BOOL failure, LPCWSTR longFile) {
     InitOnceInitialize(&g_rootsOnce); g_rootsError = 0; rootCalls = 0; originalCalls = 0; rootFailure = failure;
     g_viewRootLen = wlen(view); CHECK(g_viewRootLen < MAX_PATH_CHARS); memcpy(g_viewRoot, view, (g_viewRootLen + 1) * sizeof(WCHAR));
     g_origGetFinalPathNameByHandleW = rootQuery; g_origCreateProcessW = originalProcess;
-    CHECK(Hook_CreateProcessW(NULL, NULL, NULL, NULL, FALSE, 0, NULL, NULL, NULL, NULL) && rootCalls == 0);
+    CHECK(call_process_hook(NULL) && rootCalls == 0);
     HANDLE threads[8];
     for (int i = 0; i < 8; i++) { threads[i] = CreateThread(NULL, 0, rootThread, NULL, 0, NULL); CHECK(threads[i]); }
     for (int i = 0; i < 8; i++) { CHECK(WaitForSingleObject(threads[i], 10000) == WAIT_OBJECT_0); DWORD code;
         CHECK(GetExitCodeThread(threads[i], &code) && code == 0); CHECK(CloseHandle(threads[i])); }
     CHECK(rootCalls == (failure ? 1 : 2));
     rootFailure = FALSE;
-    BOOL result = Hook_CreateProcessW(L"C:\\unrelated.exe", NULL, NULL, NULL, FALSE, 0, NULL, NULL, NULL, NULL);
+    BOOL result = call_process_hook(L"C:\\unrelated.exe");
     CHECK(failure ? !result && GetLastError() == ERROR_ACCESS_DENIED : result);
     CHECK(rootCalls == (failure ? 1 : 2)); CHECK(originalCalls == (failure ? 1 : 10));
     if (!failure) {
         static WCHAR oversized[MAX_PATH_CHARS + 1], matched[MAX_PATH_CHARS];
         for (int i = 0; i < MAX_PATH_CHARS; i++) oversized[i] = L'x'; oversized[MAX_PATH_CHARS] = 0;
-        CHECK(!Hook_CreateProcessW(oversized, NULL, NULL, NULL, FALSE, 0, NULL, NULL, NULL, NULL));
+        CHECK(!call_process_hook(oversized));
         CHECK(GetLastError() == ERROR_FILENAME_EXCED_RANGE && originalCalls == 10);
         longResult = MAX_PATH_CHARS;
-        CHECK(!Hook_CreateProcessW(L"C:\\short~1\\a", NULL, NULL, NULL, FALSE, 0, NULL, NULL, NULL, NULL));
+        CHECK(!call_process_hook(L"C:\\short~1\\a"));
         CHECK(GetLastError() == ERROR_FILENAME_EXCED_RANGE && originalCalls == 10); longResult = 0;
         CHECK(g_sourceRootLen + 12 < MAX_PATH_CHARS);
         memcpy(matched, g_sourceRoot, g_sourceRootLen * sizeof(WCHAR));
         memcpy(matched + g_sourceRootLen, L"\\usr\\bin\\a", 11 * sizeof(WCHAR));
         g_viewRootLen = MAX_PATH_CHARS - 1;
-        CHECK(!Hook_CreateProcessW(matched, NULL, NULL, NULL, FALSE, 0, NULL, NULL, NULL, NULL));
+        CHECK(!call_process_hook(matched));
         CHECK(GetLastError() == ERROR_FILENAME_EXCED_RANGE && originalCalls == 10);
+
+        CHECK(wlen(longFile) > MAX_PATH && wlen(longFile) < MAX_PATH_CHARS);
+        expectedLongInput = longFile; expectedApplication = longFile;
+        CHECK(call_process_hook(longFile) && !expectedLongInput);
+        memcpy(matched, longFile, (wlen(longFile) + 1) * sizeof(WCHAR));
+        matched[1] = L'?'; expectedApplication = matched; expectedLongInput = longFile;
+        CHECK(call_process_hook(matched) && !expectedLongInput);
+        CHECK(originalCalls == 12);
+        expectedApplication = NULL;
     }
     return 0;
 }
@@ -350,7 +391,9 @@ await test('isolated native builds reproduce bytes and enforce release tools/has
   }
   const scratch = join(directory, 'scratch');
   await mkdir(scratch);
-  const env = { ...process.env, TMP: scratch, TEMP: scratch };
+  const env = { ...process.env, TMP: scratch, TEMP: scratch,
+    CL: '/DSH_AUDIT_BAD_FLAG /FIabsent-header.h', _CL_: '/FIabsent-trailer.h',
+    LINK: 'absent-input.obj', _LINK_: 'absent-trailer.obj', INCLUDE: scratch, LIB: scratch };
   const build = (root: string, release = false) => execFileSync(process.execPath,
     [join(root, 'scripts/build-compat-dll.ts'), ...(release ? ['--release'] : [])], { env, encoding: 'utf8', stdio: 'pipe', windowsHide: true });
   const tools = nativeToolchain(scratch);
@@ -418,8 +461,16 @@ await test('optimized shim admission, forks, images and IPC under real DSH polic
   const helper = await nativeHarness(t);
   await t.test('bounded native predicates and ACL/control preservation', () => {
     const library = koffi.load(helper);
-    try { assert.equal(library.func('int native_checks()')(), 0, 'native failure reports its C source line'); }
-    finally { library.unload(); }
+    try {
+      assert.equal(library.func('int native_checks()')(), 0, 'native failure reports its C source line');
+      const matches = library.func('int signal_pipe_matches(str)');
+      const pipe = '\\\\.\\pipe\\msys-0000000000000001-' + process.pid + '-sigwait';
+      assert.equal(matches(pipe), 1);
+      for (const other of [pipe.replace('msys-', 'cygwin-'), pipe.replace('0001-', '0002-'),
+        pipe.replace('-' + process.pid + '-', '-0' + process.pid + '-'),
+        pipe.replace('-' + process.pid + '-', '-' + (process.pid + 1) + '-'),
+        pipe.replace('-' + process.pid + '-', '-4294967296-')]) assert.equal(matches(other), 0, other);
+    } finally { library.unload(); }
   });
   const f = await compatFixture(t), spawn = f.ctx.subprocess.spawn.bind(f.ctx.subprocess);
   await t.test('TokenLogonSid agrees with TokenGroups on actual DSH tokens', async t => {
@@ -473,7 +524,6 @@ await test('optimized shim admission, forks, images and IPC under real DSH polic
       ['delete process.env.TEMP; delete process.env.TMP;', true],
       ["process.env.TMP=process.env.TEMP; process.env.TEMP='invalid';", false],
       ["process.env.TMP=process.env.TEMP; process.env.TEMP='x'.repeat(1024);", false],
-      ["process.env.TEMP=String.fromCharCode(0xd800);", false],
     ] as const) {
       const spec = await f.command('workspace-write', '', bound ? 'native-parent' : undefined);
       const bash = join(spec.view, 'usr/bin/bash.exe');
@@ -497,9 +547,13 @@ await test('optimized shim admission, forks, images and IPC under real DSH polic
     }
   });
   await t.test('concurrent root initialization publishes once and remembers terminal errors', async () => {
+    const longDir = join(dirname(helper), 'with~tilde', 'a'.repeat(120), 'b'.repeat(120));
+    await mkdir(longDir, { recursive: true });
+    const longFile = toNamespacedPath(join(longDir, 'target.exe'));
+    await writeFile(longFile, 'callback observes the untouched application path');
     for (const failure of [0, 1]) {
       const spec = await f.command('danger-full-access', '', 'roots');
-      const r = await runNative(spec, `console.log('CHECK:'+library.func('int roots_check(str16,int)')(${JSON.stringify(spec.view)},${failure}));`);
+      const r = await runNative(spec, `console.log('CHECK:'+library.func('int roots_check(str16,int,str16)')(${JSON.stringify(spec.view)},${failure},${JSON.stringify(longFile)}));`);
       assert.match(r.stdout, /CHECK:0\s*$/, r.stdout);
     }
   });
@@ -526,11 +580,11 @@ await test('optimized shim admission, forks, images and IPC under real DSH polic
         const pid = /HOLDER (\d+) (\d+)/.exec(stdout)!, namespace = /NAMESPACE (msys-\S+)/.exec(stdout)![1]!;
         assert.ok(namespace.endsWith('-' + expectedMsysKey(x.view)));
         const images = observeMsysImages(Number(pid[2]), iat);
-        assert.equal(images.length, 2);
+        assert.deepEqual(images.map(image => basename(image.path).toLowerCase()).sort(), ['dsh-msys-compat.dll', 'msys-2.0.dll']);
         for (const image of images) {
           assert.ok(image.path.toLowerCase().startsWith(x.view.toLowerCase() + '\\'));
           assert.ok(image.mapped.toLowerCase().endsWith(join(f.runtime, 'usr/bin', image.path.split('\\').at(-1)!).slice(2).toLowerCase()));
-          if (image.iatProtections) assert.deepEqual(image.iatProtections, [2, 2, 2, 2, 2]);
+          if (basename(image.path).toLowerCase() === 'msys-2.0.dll') assert.deepEqual(image.iatProtections, [2, 2, 2, 2, 2]);
         }
         return { ...x, pid: pid[1], namespace };
       });
@@ -572,6 +626,7 @@ await test('optimized shim admission, forks, images and IPC under real DSH polic
   await t.test('direct source/runtime usr/bin redirect preserves argv0 and never retries a missing target', async () => {
     const sourceBash = join(f.source, 'usr/bin/bash.exe').replaceAll('\\', '/');
     const physicalBash = join(f.runtime, 'usr/bin/bash.exe').replaceAll('\\', '/');
+    assert.deepEqual(await readFile(join(f.runtime, 'bin/bash.exe')), await readFile(join(f.installed.root, 'bin/bash.exe')));
     for (const mode of ['read-only', 'workspace-write', 'danger-full-access'] as const) {
       const command = `set -e; '${sourceBash}' --noprofile --norc -c 'echo source'; '${physicalBash}' --noprofile --norc -c 'echo runtime'; exec -a custom sh -c 'test "$0" = custom'`;
       const spec = await f.command(mode, command, 'rewrite');

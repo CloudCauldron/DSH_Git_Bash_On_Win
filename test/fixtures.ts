@@ -303,7 +303,7 @@ export async function executionFixture(t: TestContext) {
     finally { removeTree(admitDirectory(dirname(directory)), basename(directory)); }
   });
   await mkdir(source); await mkdir(workspace);
-  const files = await inventoryGitFiles(installed.root, () => {});
+  const files = [...await inventoryGitFiles(installed.root, () => {}), 'bin/bash.exe'];
   const parents = [...new Set(files.map(file => dirname(join(source, file))))].sort((a, b) => a.length - b.length);
   for (const parent of parents) await mkdir(parent, { recursive: true });
   for (let offset = 0; offset < files.length; offset += 32) {
@@ -348,13 +348,12 @@ export async function compatFixture(t: TestContext) {
   await mkdir(join(runtime, 'usr/bin'), { recursive: true }); await mkdir(views);
   const junctions = async (source: string, destination: string) => {
     for (const entry of await readdir(source, { withFileTypes: true })) {
-      if (['usr', 'bin', 'tmp', 'dev'].includes(entry.name) && source === f.source) continue;
+      if (['usr', 'tmp', 'dev'].includes(entry.name) && source === f.source) continue;
       if (['bin', 'tmp', 'dev'].includes(entry.name) && source !== f.source) continue;
       if (entry.isDirectory()) await symlink(join(source, entry.name), join(destination, entry.name), 'junction');
     }
   };
   await junctions(f.source, runtime);
-  await symlink(join(f.source, 'bin'), join(runtime, 'bin'), 'junction');
   await junctions(join(f.source, 'usr'), join(runtime, 'usr'));
   for (const entry of await readdir(join(f.source, 'usr/bin'), { withFileTypes: true })) {
     const source = join(f.source, 'usr/bin', entry.name), destination = join(runtime, 'usr/bin', entry.name);

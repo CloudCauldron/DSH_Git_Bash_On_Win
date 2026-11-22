@@ -67,8 +67,9 @@ export function verifyCompatDll(bytes: Buffer, manifest = readBuildManifest()) {
   assert.deepEqual(pe.directory(4), { rva: 0, size: 0 }, 'Unexpected certificate directory');
   assert.ok(pe.imports.length > 0, 'Missing native imports');
   for (const entry of pe.imports) {
-    assert.ok(manifest.imports[entry.dll] && entry.symbols.length, `Unreviewed native import DLL: ${entry.dll}`);
-    for (const symbol of entry.symbols) assert.ok(!symbol.startsWith('#') && manifest.imports[entry.dll]?.includes(symbol),
+    const allowed = Object.hasOwn(manifest.imports, entry.dll) && manifest.imports[entry.dll];
+    assert.ok(allowed && entry.symbols.length, `Unreviewed native import DLL: ${entry.dll}`);
+    for (const symbol of entry.symbols) assert.ok(!symbol.startsWith('#') && allowed.includes(symbol),
       `Unreviewed native import: ${entry.dll}!${symbol}`);
   }
   // Delayed imports are outside the reviewed loader-lock contract.
@@ -126,7 +127,7 @@ export function buildCompatDll(release = false) {
   console.log(JSON.stringify({ release, ...versions!, sha256: hash! }));
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (import.meta.main) {
   const args = process.argv.slice(2);
   assert.ok(!args.length || args.length === 1 && args[0] === '--release', 'Usage: node scripts/build-compat-dll.ts [--release]');
   buildCompatDll(args.length === 1);

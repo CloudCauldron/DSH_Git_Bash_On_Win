@@ -50,6 +50,11 @@ static BOOL ascii_eq_ci(const char *a, const char *b) {
     return *a == 0 && *b == 0;
 }
 
+static BOOL ascii_eq(const char *a, const char *b) {
+    while (*a && *a == *b) { a++; b++; }
+    return *a == *b;
+}
+
 static BOOL ascii_starts_ci(const char *s, const char *prefix) {
     while (*prefix) {
         if (ascii_lower(*s) != ascii_lower(*prefix)) return FALSE;
@@ -69,17 +74,10 @@ static BOOL ascii_starts_ci(const char *s, const char *prefix) {
 #define OBJECT_NAME_INFORMATION_CLASS 1
 #define FILE_ALL_ACCESS_MASK 0x001F01FFu
 
-NTSYSAPI NTSTATUS NTAPI NtOpenProcessToken( HANDLE ProcessHandle, ACCESS_MASK DesiredAccess, PHANDLE TokenHandle );
-
-NTSYSAPI NTSTATUS NTAPI NtQueryInformationToken( HANDLE TokenHandle, TOKEN_INFORMATION_CLASS TokenInformationClass, PVOID TokenInformation, ULONG TokenInformationLength, PULONG ReturnLength );
-
-NTSYSAPI NTSTATUS NTAPI NtSetInformationToken( HANDLE TokenHandle, TOKEN_INFORMATION_CLASS TokenInformationClass, PVOID TokenInformation, ULONG TokenInformationLength );
-
-NTSYSAPI NTSTATUS NTAPI NtCreateSection( PHANDLE SectionHandle, ACCESS_MASK DesiredAccess, POBJECT_ATTRIBUTES ObjectAttributes, PLARGE_INTEGER MaximumSize, ULONG SectionPageProtection, ULONG AllocationAttributes, HANDLE FileHandle );
-
-NTSYSAPI NTSTATUS NTAPI NtProtectVirtualMemory( HANDLE ProcessHandle, PVOID *BaseAddress, PSIZE_T RegionSize, ULONG NewProtect, PULONG OldProtect );
-
-NTSYSAPI NTSTATUS NTAPI NtQueryVirtualMemory( HANDLE ProcessHandle, PVOID BaseAddress, ULONG MemoryInformationClass, PVOID MemoryInformation, SIZE_T MemoryInformationLength, PSIZE_T ReturnLength );
+NTSYSAPI NTSTATUS NTAPI NtOpenProcessToken(HANDLE ProcessHandle, ACCESS_MASK DesiredAccess, PHANDLE TokenHandle);
+NTSYSAPI NTSTATUS NTAPI NtQueryInformationToken(HANDLE TokenHandle, TOKEN_INFORMATION_CLASS TokenInformationClass, PVOID TokenInformation, ULONG TokenInformationLength, PULONG ReturnLength);
+NTSYSAPI NTSTATUS NTAPI NtProtectVirtualMemory(HANDLE ProcessHandle, PVOID *BaseAddress, PSIZE_T RegionSize, ULONG NewProtect, PULONG OldProtect);
+NTSYSAPI NTSTATUS NTAPI NtQueryVirtualMemory(HANDLE ProcessHandle, PVOID BaseAddress, ULONG MemoryInformationClass, PVOID MemoryInformation, SIZE_T MemoryInformationLength, PSIZE_T ReturnLength);
 
 NTSYSAPI WCHAR NTAPI RtlUpcaseUnicodeChar(WCHAR SourceCharacter);
 NTSYSAPI BOOLEAN NTAPI RtlEqualSid(PSID Sid1, PSID Sid2);
@@ -366,7 +364,7 @@ static BOOL dacl_has_exact_allow_ace(PACL dacl, PSID sid, BOOL acceptFileAll) {
     if (!dacl || dacl->AclSize < sizeof(ACL) || dacl->AclSize > 8192) return FALSE;
     for (DWORD i = 0; i < dacl->AceCount; i++) {
         PVOID acePtr = NULL;
-        if (!NT_SUCCESS(RtlGetAce(dacl, i, &acePtr)) || !acePtr) continue;
+        if (!NT_SUCCESS(RtlGetAce(dacl, i, &acePtr)) || !acePtr) return FALSE;
         PACE_HEADER hdr = (PACE_HEADER)acePtr;
         if (!inside(dacl, dacl->AclSize, hdr, sizeof(ACE_HEADER))
          || !inside(dacl, dacl->AclSize, hdr, hdr->AceSize)) return FALSE;
@@ -664,7 +662,7 @@ static DWORD resolve_root(const WCHAR *suffix, WCHAR *out, size_t *outLen) {
     DWORD error = n == 0 ? GetLastError() : n >= MAX_PATH_CHARS ? ERROR_FILENAME_EXCED_RANGE : 0;
     if (!CloseHandle(h) && !error) error = GetLastError();
     if (error) return error;
-    if (!n || n >= MAX_PATH_CHARS) return ERROR_INVALID_DATA;
+    if (!n) return ERROR_INVALID_DATA;
     size_t len;
     const WCHAR *clean = strip_extended_prefix(finalBuf, &len);
     if (len <= suffixLen || !wide_ends_ci(clean, len, suffix, suffixLen)) return ERROR_INVALID_DATA;
@@ -709,34 +707,29 @@ __declspec(noinline) static int try_rewrite_application_path(LPCWSTR lpApplicati
     if (!appLen) return PATH_NO_MATCH;
 
     WCHAR norm[MAX_PATH_CHARS];
-    BOOL hadExtPrefix = (appLen >= 4 && lpApplicationName[0] == L'\\'
-                      && (lpApplicationName[1] == L'\\' || lpApplicationName[1] == L'?')
-                      && lpApplicationName[2] == L'?' && lpApplicationName[3] == L'\\');
-    const WCHAR *src = hadExtPrefix ? (lpApplicationName + 4) : lpApplicationName;
-    size_t normLen = hadExtPrefix ? (appLen - 4) : appLen;
     BOOL hasTilde = FALSE;
-    for (size_t i = 0; i < normLen; i++) {
-        WCHAR c = src[i];
-        if (c == L'/') c = L'\\';
+    for (size_t i = 0; i < appLen; i++) {
+        WCHAR c = lpApplicationName[i];
+        norm[i] = c == L'/' ? L'\\' : c;
         if (c == L'~') hasTilde = TRUE;
-        norm[i] = c;
     }
-    norm[normLen] = 0;
+    norm[appLen] = 0;
 
-    const WCHAR *leaf = match_root_usr_bin_leaf(norm, normLen, g_sourceRoot, g_sourceRootLen);
-    if (!leaf) leaf = match_root_usr_bin_leaf(norm, normLen, g_runtimeRoot, g_runtimeRootLen);
+    size_t normLen;
+    const WCHAR *path = strip_extended_prefix(norm, &normLen);
+    BOOL hadExtPrefix = path != norm;
+    const WCHAR *leaf = match_root_usr_bin_leaf(path, normLen, g_sourceRoot, g_sourceRootLen);
+    if (!leaf) leaf = match_root_usr_bin_leaf(path, normLen, g_runtimeRoot, g_runtimeRootLen);
 
-    /* Handle 8.3 short paths (e.g. fork.cc buffered short pathname) in place via rewritten scratch. */
     if (!leaf && hasTilde) {
-        DWORD ln = GetLongPathNameW(norm, rewritten, MAX_PATH_CHARS);
+        /* Preserve extended-length semantics. Win32 takes \\?\ for either prefix. */
+        if (hadExtPrefix) norm[1] = L'\\';
+        DWORD ln = GetLongPathNameW(norm, norm, MAX_PATH_CHARS);
         if (!ln) return PATH_ERROR;
         if (ln >= MAX_PATH_CHARS) { SetLastError(ERROR_FILENAME_EXCED_RANGE); return PATH_ERROR; }
-        {
-            memcpy(norm, rewritten, (ln + 1) * sizeof(WCHAR));
-            normLen = ln;
-            leaf = match_root_usr_bin_leaf(norm, normLen, g_sourceRoot, g_sourceRootLen);
-            if (!leaf) leaf = match_root_usr_bin_leaf(norm, normLen, g_runtimeRoot, g_runtimeRootLen);
-        }
+        path = strip_extended_prefix(norm, &normLen);
+        leaf = match_root_usr_bin_leaf(path, normLen, g_sourceRoot, g_sourceRootLen);
+        if (!leaf) leaf = match_root_usr_bin_leaf(path, normLen, g_runtimeRoot, g_runtimeRootLen);
     }
 
     if (!leaf) return PATH_NO_MATCH;
@@ -991,11 +984,11 @@ static BOOL verify_token_and_policy(int expectedMode, BOOL hasBoundSid, DWORD bo
         } else {
             /* env -i path: TEMP/TMP absent. Require view-bound SID or unique temp SID backed by TokenDefaultDacl. */
             if (hasBoundSid) {
-                if (!defaultDacl || !dacl_has_exact_allow_ace(defaultDacl, &boundSid, TRUE)) goto done;
+                if (!dacl_has_exact_allow_ace(defaultDacl, &boundSid, TRUE)) goto done;
                 chosenGrant = &boundSid;
             } else {
                 if (tempShapeCount != 1 || !onlyTempShapeSid) goto done;
-                if (!defaultDacl || !dacl_has_exact_allow_ace(defaultDacl, onlyTempShapeSid, TRUE)) goto done;
+                if (!dacl_has_exact_allow_ace(defaultDacl, onlyTempShapeSid, TRUE)) goto done;
                 chosenGrant = onlyTempShapeSid;
             }
         }
@@ -1029,31 +1022,26 @@ static BOOL is_msys_basename(const UNICODE_STRING *name) {
 }
 
 static BOOL resolve_and_verify_sibling_msys(HMODULE hSelf) {
-
     PEB *peb = (PEB *)__readgsqword(0x60);
     if (!peb || !peb->Ldr) return FALSE;
 
     LIST_ENTRY *head = &peb->Ldr->InMemoryOrderModuleList;
-    static WCHAR selfClean[MAX_PATH_CHARS];
+    const WCHAR *selfClean = NULL;
     static WCHAR raw[MAX_PATH_CHARS];
     static WCHAR expectedMsys[MAX_PATH_CHARS];
     static WCHAR msysNtPath[MAX_PATH_CHARS];
     static BYTE mapNameBuf[2048];
     size_t selfCleanLen = 0;
-    BOOL foundSelf = FALSE;
 
     for (LIST_ENTRY *cur = head->Flink; cur && cur != head; cur = cur->Flink) {
         DSH_LDR_ENTRY *ent = CONTAINING_RECORD(cur, DSH_LDR_ENTRY, InMemoryOrderLinks);
         if (ent->DllBase == hSelf) {
             if (!copy_loader_path(&ent->FullDllName, raw)) return FALSE;
-            const WCHAR *clean = strip_extended_prefix(raw, &selfCleanLen);
-            if (selfCleanLen >= MAX_PATH_CHARS) return FALSE;
-            memcpy(selfClean, clean, (selfCleanLen + 1) * sizeof(WCHAR));
-            foundSelf = TRUE;
+            selfClean = strip_extended_prefix(raw, &selfCleanLen);
             break;
         }
     }
-    if (!foundSelf) return FALSE;
+    if (!selfClean) return FALSE;
 
     static const WCHAR suffix[] = L"\\usr\\bin\\dsh-msys-compat.dll";
     const size_t suffixLen = 28;
@@ -1193,7 +1181,7 @@ static BOOL install_msys_iat_hooks(void) {
             if (*ilt > MAXDWORD - 2) return FALSE;
             const char *fn = image_string(*ilt + 2);
             if (!fn) return FALSE;
-            for (int n = 0; n < 5; n++) if ((n < 3 ? kernel : native) && ascii_eq_ci(fn, names[n])) {
+            for (int n = 0; n < 5; n++) if ((n < 3 ? kernel : native) && ascii_eq(fn, names[n])) {
                 if (slots[n]) return FALSE;
                 slots[n] = iat;
             }

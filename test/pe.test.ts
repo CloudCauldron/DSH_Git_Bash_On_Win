@@ -9,7 +9,10 @@ import { readBuildManifest, verifyCompatDll } from '../scripts/build-compat-dll.
 import { msysPeFixture, nativeOnly } from './fixtures.ts';
 
 await test('fixed patch preserves sections and accounting and appends one read-only import', () => {
-  const source = msysPeFixture(), original = Buffer.from(source), before = readPe(source);
+  const source = msysPeFixture(), before = readPe(source);
+  source.writeUInt32LE(0x2900, before.directories + 11 * 8);
+  source.writeUInt32LE(8, before.directories + 11 * 8 + 4);
+  const original = Buffer.from(source);
   const output = patchMsysDll(source), after = readPe(output);
   assert.deepEqual(source, original);
   assert.deepEqual(output, patchMsysDll(source));
@@ -67,35 +70,44 @@ await test('header room is bounded by SizeOfHeaders as well as first raw data', 
 });
 
 await test('malformed, signed and unsupported layouts reject before producing a patch', async t => {
-  const cases: [string, (b: Buffer) => void][] = [
-    ['signed', b => b.writeUInt32LE(1, 0x98 + 112 + 4 * 8)],
-    ['header padding', b => { b[0x1d8] = 1; }],
-    ['overlapping import tables', b => b.writeUInt32LE(b.readUInt32LE(0x600), 0x610)],
-    ['gap before appended IAT section', b => b.writeUInt32LE(0x4000, 0x98 + 56)],
-    ['overlapping raw', b => b.writeUInt32LE(0x400, 0x188 + 40 + 20)],
-    ['overlapping virtual', b => b.writeUInt32LE(0x1000, 0x188 + 40 + 12)],
-    ['unmapped import', b => b.writeUInt32LE(0xffff0000, 0x98 + 120)],
-    ['directory bounds', b => b.writeUInt32LE(0xffffffff, 0x98 + 124)],
-    ['unterminated descriptors', b => b.writeUInt32LE(40, 0x98 + 124)],
-    ['bad thunk RVA', b => b.writeBigUInt64LE(0x100000000n, 0x700)],
-    ['bad ordinal', b => b.writeBigUInt64LE(0x8000000000010001n, 0x700)],
-    ['missing symbol', b => b.writeBigUInt64LE(0x8000000000000001n, 0x700)],
-    ['missing lookup table', b => b.writeUInt32LE(0, 0x600)],
-    ['early IAT terminator', b => b.writeBigUInt64LE(0n, 0x720)],
-    ['unterminated thunk', b => { b.writeUInt32LE(0x29f8, 0x600); b.writeBigUInt64LE(0x8000000000000001n, 0xff8); }],
-    ['empty debug directory', b => b.writeUInt32LE(0x2800, 0x98 + 112 + 6 * 8)],
-    ['unterminated string', b => { b.fill(65, 0xff0); b.writeUInt32LE(0x29f0, 0x60c); }],
-    ['unsafe IAT write', b => b.writeUInt32LE(0xc0000040, 0x188 + 40 + 36)],
-    ['unsafe IAT execute', b => b.writeUInt32LE(0x60000040, 0x188 + 40 + 36)],
-    ['initialized data overflow', b => b.writeUInt32LE(0xffffffff, 0x98 + 8)],
-    ['unsupported debug tail', b => { b.writeUInt32LE(0x2800, 0x98 + 112 + 6 * 8); b.writeUInt32LE(28, 0x98 + 116 + 6 * 8);
+  const cases: [string, RegExp, (b: Buffer) => void][] = [
+    ['overlapping DOS header', /NT header offset/, b => b.writeUInt32LE(48, 0x3c)],
+    ['misaligned NT header', /NT header offset/, b => { b.copy(b, 0x81, 0x80, 0x1d8); b.writeUInt32LE(0x81, 0x3c); }],
+    ['empty section', /empty section/, b => {
+      b.writeUInt16LE(3, 0x86); b.writeUInt32LE(0x3000, 0x1d8 + 12); b.writeUInt32LE(0x40000040, 0x1d8 + 36);
+    }],
+    ['empty DLL name', /empty or unterminated name/, b => { b[0x900] = 0; }],
+    ['empty symbol name', /empty or unterminated name/, b => { b[readPe(b).offset(Number(b.readBigUInt64LE(0x700)) + 2)] = 0; }],
+    ['bound timestamp', /bound import descriptor/, b => b.writeUInt32LE(0xffffffff, 0x604)],
+    ['forwarder chain', /bound import descriptor/, b => b.writeUInt32LE(1, 0x608)],
+    ['signed', /signed image/, b => b.writeUInt32LE(1, 0x98 + 112 + 4 * 8)],
+    ['header padding', /nonzero section header padding/, b => { b[0x1d8] = 1; }],
+    ['overlapping import tables', /overlapping import thunks/, b => b.writeUInt32LE(b.readUInt32LE(0x600), 0x610)],
+    ['gap before appended IAT section', /SizeOfImage/, b => b.writeUInt32LE(0x4000, 0x98 + 56)],
+    ['overlapping raw', /overlapping raw sections/, b => b.writeUInt32LE(0x400, 0x188 + 40 + 20)],
+    ['overlapping virtual', /virtual sections must be adjacent/, b => b.writeUInt32LE(0x1000, 0x188 + 40 + 12)],
+    ['unmapped import', /unmapped RVA/, b => b.writeUInt32LE(0xffff0000, 0x98 + 120)],
+    ['directory bounds', /32-bit size overflow/, b => b.writeUInt32LE(0xffffffff, 0x98 + 124)],
+    ['unterminated descriptors', /unterminated descriptors/, b => b.writeUInt32LE(40, 0x98 + 124)],
+    ['bad thunk RVA', /import RVA overflow/, b => b.writeBigUInt64LE(0x100000000n, 0x700)],
+    ['bad ordinal', /invalid ordinal thunk/, b => b.writeBigUInt64LE(0x8000000000010001n, 0x700)],
+    ['missing symbol', /expected one kernel32\.dll!GetFinalPathNameByHandleW/, b => b.writeBigUInt64LE(0x8000000000000001n, 0x700)],
+    ['missing lookup table', /missing import lookup table/, b => b.writeUInt32LE(0, 0x600)],
+    ['early IAT terminator', /import tables terminate at different entries/, b => b.writeBigUInt64LE(0n, 0x720)],
+    ['unterminated thunk', /unmapped RVA/, b => { b.writeUInt32LE(0x29f8, 0x600); b.writeBigUInt64LE(0x8000000000000001n, 0xff8); }],
+    ['empty debug directory', /debug directory/, b => b.writeUInt32LE(0x2800, 0x98 + 112 + 6 * 8)],
+    ['unterminated string', /empty or unterminated name/, b => { b.fill(65, 0xff0); b.writeUInt32LE(0x29f0, 0x60c); }],
+    ['unsafe IAT write', /IAT span must be readable/, b => b.writeUInt32LE(0xc0000040, 0x188 + 40 + 36)],
+    ['unsafe IAT execute', /IAT span must be readable/, b => b.writeUInt32LE(0x60000040, 0x188 + 40 + 36)],
+    ['initialized data overflow', /32-bit size overflow/, b => b.writeUInt32LE(0xffffffff, 0x98 + 8)],
+    ['unsupported debug tail', /unsupported debug relocation/, b => { b.writeUInt32LE(0x2800, 0x98 + 112 + 6 * 8); b.writeUInt32LE(28, 0x98 + 116 + 6 * 8);
       b.writeUInt32LE(4, 0xe10); b.writeUInt32LE(0x1000, 0xe18); }],
   ];
-  for (const [name, corrupt] of cases) await t.test(name, () => {
-    const b = msysPeFixture(); corrupt(b); assert.throws(() => patchMsysDll(b));
+  for (const [name, diagnostic, corrupt] of cases) await t.test(name, () => {
+    const b = msysPeFixture(); corrupt(b); assert.throws(() => patchMsysDll(b), diagnostic);
   });
-  for (const length of [0, 63, 0x90, 0x180, 0x500, 0xfff]) assert.throws(() => patchMsysDll(msysPeFixture().subarray(0, length)));
-  assert.throws(() => patchMsysDll(Buffer.concat([msysPeFixture(), Buffer.from('overlay')])));
+  for (const length of [0, 63, 0x90, 0x180, 0x500, 0xfff]) assert.throws(() => patchMsysDll(msysPeFixture().subarray(0, length)), /truncated file/);
+  assert.throws(() => patchMsysDll(Buffer.concat([msysPeFixture(), Buffer.from('overlay')])), /unsupported overlay/);
 });
 
 await test('installed real MSYS is structurally admitted without a version/hash whitelist', nativeOnly, () => {
@@ -118,6 +130,9 @@ await test('build-only verification enforces mitigations, export and named-funct
   manifest.imports['kernel32.dll']!.push('UnusedReviewedSymbol');
   assert.doesNotThrow(() => verifyCompatDll(bytes, manifest));
   const pe = readPe(bytes);
+  const inherited = Buffer.from(bytes);
+  inherited.write('constructor\0', pe.offset(bytes.readUInt32LE(pe.imports[0]!.descriptor + 12)));
+  assert.throws(() => verifyCompatDll(inherited, manifest), /Unreviewed native import DLL: constructor/);
   const first = pe.imports[0]!.symbols[0]!;
   const allowed = manifest.imports[pe.imports[0]!.dll]!;
   manifest.imports[pe.imports[0]!.dll] = allowed.filter(n => n !== first);

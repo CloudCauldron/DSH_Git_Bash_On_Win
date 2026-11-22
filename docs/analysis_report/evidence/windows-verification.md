@@ -136,3 +136,21 @@ The resulting 23,040-byte DLL reproduced in two isolated builds with the recorde
 A third independent review found no outstanding Phase 1 issue at `c6ba4eb`. On Windows 11 build 26200.9974 in native Git Bash, `pnpm check` and `pnpm lint` passed. The full ucrt64 2.56.0 Windows suite passed 228 of 228 on the final DLL. The browser suite passed 1 of 1 with an invalid compiler override. All three positive suites recorded zero skips, cancellations or failures.
 
 An isolated archive of the commit produced the expected browser preflight error with the DLL removed. Normal `pnpm pack` then ran the strict release build. The 51-entry tarball contained one DLL matching the approved hash and excluded test sources, build tools and compiler intermediates. A separate byte comparison of both real MSYS images found all 14 original section headers, all original section payloads and the COFF tail intact after the 512-byte insertion. All four on-disk locale checksums matched Phase 0.
+
+### Independent report review
+
+The reviewed baseline was `21aea77`. A fresh release build reproduced its 23,040-byte DLL and both Git layouts passed the baseline 29 PE checks. Independent reads of the three historical DLL blobs and all four on-disk locale files matched the recorded hashes. The original build accepted a descriptor with a nonzero timestamp and forwarder chain, duplicate section addresses after an empty section, and empty import names. ImageHlp calculated a different checksum for a fixture with an odd NT header offset.
+
+On Windows Node 26.12.1, a 353-character tilde path failed Win32 long-name expansion with error 3 and its 357-character extended form succeeded. On both real Git layouts, five source path spellings ran an owned `true.exe` while its private copy existed and all five failed after that copy was removed. Both MSYS binaries contained the global and session namespace templates. The `cygpid` object for a live process in each layout was in its global MSYS directory. The pinned upstream section-creation code explains the distinct use of the session directory.
+
+The lowercase-drive invocation processed an invalid CLI flag in this environment. The build now uses Node’s entry-point flag directly. Supplying both explicit tool roots also worked with `ProgramFiles(x86)` absent. The native observer read U+FFFD after Node assigned a lone surrogate to an environment value. Its replacement test passes the UTF-16 code unit directly through Win32 inside a DSH workspace-write process and checks the conversion error.
+
+The reviewed candidate built to 22,528 bytes. Two isolated MSVC builds with invalid ambient compiler and linker settings produced SHA-256 `8772d736117ea2de013eac37b2d51e115ed87ca06e7b07c06d00e9876ba3b27f`. Dumpbin confirmed the imports, anchor export and mitigations. The final strict build and the single DLL in the 51-entry prepack tarball reproduced that hash.
+
+| Check on Windows 11 build 26200.9974, native Git Bash | Result |
+| --- | --- |
+| PE and native suites on real Git 2.55.0 mingw64 and 2.56.0 ucrt64 | 48/48 on each. Both ran on `WinSta0\Default` with live DSH read-only and workspace-write tokens at integrity RID 4096, plus full access. |
+| `pnpm test:release` with the installed ucrt64 Git | Typecheck and lint passed. The full Windows suite passed 235/235, including all ten bootstrap tests. |
+| Browser suite with a nonexistent compiler override | 1/1. Removing the DLL from a separate fixture produced the expected early diagnostic. |
+
+All positive suites reported zero failures, cancellations or skips. The four locale file hashes matched Phase 0. During verification, a test-only linker error was corrected and the frozen offline install restored checkout dependency links that a temporary baseline build had redirected. The final results above were collected with the repaired checkout. The lockfile retained its original bytes.

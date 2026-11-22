@@ -131,18 +131,18 @@ await test('retain-before-await protects an acquiring use through retirement and
 
 await test('session view promises are shared, agentless views are distinct, and cancelled waiters unwind', nativeOnly, async t => {
   const fixture = await runtimeFixture(t), pin = await fixture.prepare(), cancelled = new AbortController();
-  const originalWorkspace = fsp.realpath, originalTarget = fs.realpathSync;
+  const originalWorkspace = fsp.realpath, originalTarget = fs.readlinkSync;
   const workspace = await originalWorkspace(fixture.workspace);
   let resume!: (path: string) => void, created = '';
   const resolved = new Promise<string>(resolve => { resume = resolve; });
   const admission = t.mock.method(fsp, 'realpath', ((...args: Parameters<typeof fsp.realpath>) =>
     String(args[0]) === fixture.workspace ? resolved : originalWorkspace(...args)) as typeof fsp.realpath);
-  const target = t.mock.method(fs, 'realpathSync', ((...args: Parameters<typeof fs.realpathSync>) => {
+  const target = t.mock.method(fs, 'readlinkSync', ((...args: Parameters<typeof fs.readlinkSync>) => {
     if (!created && basename(dirname(dirname(String(args[0])))) === 'views') {
       created = String(args[0]); cancelled.abort();
     }
     return originalTarget(...args);
-  }) as typeof fs.realpathSync); syncBuiltinESMExports();
+  }) as typeof fs.readlinkSync); syncBuiltinESMExports();
   const failed = pin.lease(scope(fixture.workspace, 'session'), cancelled.signal);
   const active = pin.lease(scope(fixture.workspace, 'session'), signal());
   // Both workspace awaits resume before the shared view's creation microtask.
@@ -260,12 +260,12 @@ await test('unexpected namespace EEXIST grants no ownership for retry or pin cle
 });
 
 await test('failed junction admission cleans only its created target and the shared view can retry', nativeOnly, async t => {
-  const f = await runtimeFixture(t), pin = await f.prepare(), original = fs.realpathSync;
+  const f = await runtimeFixture(t), pin = await f.prepare(), original = fs.readlinkSync;
   let attempted = '';
-  const mock = t.mock.method(fs, 'realpathSync', ((...args: Parameters<typeof fs.realpathSync>) => {
+  const mock = t.mock.method(fs, 'readlinkSync', ((...args: Parameters<typeof fs.readlinkSync>) => {
     if (String(args[0]).includes('\\views\\')) { attempted = String(args[0]); throw new Error('fixture view admission failed'); }
     return original(...args);
-  }) as typeof fs.realpathSync);
+  }) as typeof fs.readlinkSync);
   syncBuiltinESMExports();
   try {
     const outcomes = await Promise.allSettled([
@@ -281,13 +281,13 @@ await test('failed junction admission cleans only its created target and the sha
 });
 
 await test('a shared creation promise evicts even when its partial-target cleanup fails', nativeOnly, async t => {
-  const f = await runtimeFixture(t), pin = await f.prepare(), originalRealpath = fs.realpathSync;
+  const f = await runtimeFixture(t), pin = await f.prepare(), originalReadlink = fs.readlinkSync;
   const originalCanonical = NativeHold.prototype.canonicalPath;
   let attempted = '', cleanupFailed = false;
-  const target = t.mock.method(fs, 'realpathSync', ((...args: Parameters<typeof fs.realpathSync>) => {
+  const target = t.mock.method(fs, 'readlinkSync', ((...args: Parameters<typeof fs.readlinkSync>) => {
     if (String(args[0]).includes('\\views\\')) { attempted = String(args[0]); throw new Error('fixture view admission failed'); }
-    return originalRealpath(...args);
-  }) as typeof fs.realpathSync);
+    return originalReadlink(...args);
+  }) as typeof fs.readlinkSync);
   const cleanup = t.mock.method(NativeHold.prototype, 'canonicalPath', function (this: NativeHold) {
     if (attempted && this.path.includes('\\views\\')) { cleanupFailed = true; throw new Error('fixture cleanup observation failed'); }
     return originalCanonical.call(this);
@@ -383,7 +383,7 @@ await test('a reused session view performs no metadata, anchor, tree or junction
     // All native observations would be redundant for this reused session view.
     return fail();
   });
-  const tree = t.mock.method(fsp, 'readdir', fail), target = t.mock.method(fs, 'realpathSync', fail);
+  const tree = t.mock.method(fsp, 'readdir', fail), target = t.mock.method(fs, 'readlinkSync', fail);
   syncBuiltinESMExports();
   let second;
   try {

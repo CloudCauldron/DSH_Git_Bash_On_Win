@@ -6,7 +6,7 @@ import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
 import {
   admitChildDirectory, admitDirectory, admitJunction, createDirectory, createHardlink, createJunction,
   isMissing, openOrdinaryFile, ordinaryFileExists, overlaps, pathExists, pinDirectory, readFileBytes,
-  revalidateDirectory, sameIdentity, samePath, writeNewFile, type Directory, type FileIdentity,
+  revalidateDirectory, sameIdentity, writeNewFile, type Directory, type FileIdentity,
 } from './ntfs-filesystem.ts';
 import { patchMsysDll } from './pe.ts';
 import { LocalizedError } from '../locale/errors.ts';
@@ -53,16 +53,18 @@ export function discoverGitInstallation(setting?: string): GitInstallation {
       throw error;
     }
     const parent = dirname(resolve(candidate));
-    if (basename(executable).toLowerCase() !== 'bash.exe' || !/[\\/](?:usr[\\/])?bin$/i.test(parent)) continue;
-    const internalBin = /[\\/]usr[\\/]bin$/i.test(parent);
-    const rootPath = resolve(parent, internalBin ? '../..' : '..');
-    // Resolve a Git-root alias, but admit bin, usr/bin and the selected file without following interior reparses.
-    const root = admitDirectory(samePath(candidate, executable) ? rootPath : realpathSync(rootPath));
-    try { sourceJunctionTargets(root); }
-    catch (error) { if (isMissing(error)) continue; throw error; }
-    if (!hasSourceFile(root, 'usr/bin/bash.exe') || !hasSourceFile(root, 'usr/bin/msys-2.0.dll')) continue;
-    for (const layout of ['ucrt64', 'mingw64'] as const) {
-      if (hasSourceFile(root, `${layout}/bin/git.exe`)) return { root: root.path, layout };
+    if (basename(executable).toLowerCase() !== 'bash.exe' || basename(parent).toLowerCase() !== 'bin') continue;
+    const nativeRoot = dirname(parent);
+    // A root (or its alias) can itself be named usr. Only the two supported entry paths can identify a root.
+    const usrBin = /[\\/]usr[\\/]bin$/i;
+    const roots = usrBin.test(parent) && usrBin.test(dirname(executable)) ? [dirname(nativeRoot), nativeRoot] : [nativeRoot];
+    for (const rootPath of roots) {
+      const root = admitDirectory(realpathSync(rootPath));
+      const layout = (['ucrt64', 'mingw64'] as const).find(name => hasSourceFile(root, `${name}/bin/git.exe`));
+      if (!layout) continue;
+      try { sourceJunctionTargets(root); }
+      catch (error) { if (isMissing(error)) continue; throw error; }
+      if (hasSourceFile(root, 'usr/bin/bash.exe') && hasSourceFile(root, 'usr/bin/msys-2.0.dll')) return { root: root.path, layout };
     }
   }
   throw new LocalizedError('error.gitNotFound', { bin: 'bin/bash.exe', usrBin: 'usr/bin/bash.exe' });

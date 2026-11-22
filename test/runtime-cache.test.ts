@@ -678,6 +678,35 @@ await test('shallow copies preserve flat names and private bytes, junctions reta
   assert.equal(await readFile(join(origin, 'helper'), 'utf8'), 'replacement');
 });
 
+await test('junction admission uses NTFS identity across case spellings and rejects intermediate reparses', nativeOnly, async t => {
+  const f = await runtimeFixture(t), root = admitDirectory(f.directory);
+  const ascii = createDirectory(root, 'K'), kelvin = createDirectory(root, 'K');
+  const expected = createDirectory(ascii, 'bin'), other = createDirectory(kelvin, 'bin');
+  assert.equal(expected.path.toLowerCase(), other.path.toLowerCase());
+  assert.notEqual(expected.fileId, other.fileId);
+  createJunction(root, 'view', other);
+  assert.throws(() => admitJunction(root, 'view', expected), /Unexpected runtime junction/);
+  unlinkEntry(root, 'view');
+  removeTree(root, 'K');
+  createJunction(root, 'K', ascii);
+  await symlink(other.path, join(root.path, 'view'), 'junction');
+  assert.throws(() => admitJunction(root, 'view', expected), /Unexpected runtime junction/);
+  unlinkEntry(root, 'view');
+  const spelling = join(root.path, 'k', 'BIN');
+  await symlink(spelling, join(root.path, 'view'), 'junction');
+  admitJunction(root, 'view', expected);
+  const close = NativeHold.prototype.close, fault = new Win32Error('CloseHandle', 6, spelling);
+  const mock = t.mock.method(NativeHold.prototype, 'close', function (this: NativeHold) {
+    close.call(this);
+    if (this.path === spelling) throw fault;
+  });
+  try { assert.throws(() => admitJunction(root, 'view', expected), error => error === fault); }
+  finally { mock.mock.restore(); }
+  await rename(expected.path, expected.path + '-saved');
+  await mkdir(expected.path);
+  assert.throws(() => admitJunction(root, 'view', expected), /Unexpected runtime junction/);
+});
+
 await test('both Bash entry points require ordinary etc, bin and the native wrapper before construction', nativeOnly, async t => {
   const f = await copyFixture(t);
   const selection = discoverGitInstallation(f.request.gitBashPath);
@@ -703,6 +732,12 @@ await test('both Bash entry points require ordinary etc, bin and the native wrap
   for (const dir of ['bin', 'usr/bin']) for (const tail of ['/bash.exe', '/./bash.exe', '//bash.exe']) {
     assert.deepEqual(discoverGitInstallation(join(f.source, dir) + tail), selection);
   }
+  const usr = join(f.directory, 'usr');
+  createJunction(f.parent, 'usr', admitDirectory(f.source));
+  for (const dir of ['bin', 'usr/bin']) assert.deepEqual(discoverGitInstallation(join(usr, dir, 'bash.exe')), selection);
+  unlinkEntry(f.parent, 'usr');
+  await rename(f.source, usr);
+  for (const dir of ['bin', 'usr/bin']) assert.equal(discoverGitInstallation(join(usr, dir, 'bash.exe')).root, usr);
 });
 
 await test('copy refuses admitted reparses and a reserved shim name at any flat entry type', nativeOnly, async t => {

@@ -34,6 +34,7 @@ window.__ModuleLoader__.load({
     }
 
     function pathChange(text: string, snapshot: Snapshot) {
+      if (!snapshot.writable && text === (snapshot.value?.gitBashPath ?? '')) return;
       if (!text.trim()) {
         if (snapshot.user && Object.hasOwn(snapshot.user, 'gitBashPath')) return { op: 'unset' as const, path: ['gitBashPath'] };
       } else if (text !== snapshot.value?.gitBashPath) {

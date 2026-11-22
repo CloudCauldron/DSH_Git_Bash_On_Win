@@ -303,10 +303,14 @@ await test('an already rejected preparation retains its native close failure acr
     await assert.rejects(f.run(), error => error === failure);
     assert.ok(injected);
     const before = await f.current();
-    await assert.rejects(f.executor.rebuildRuntime(), error => error instanceof AggregateError && error.errors.includes(failure));
+    const onlyFailure = (error: unknown) => error instanceof AggregateError && error.errors.length === 1 && error.errors[0] === failure;
+    for (let retry = 0; retry < 2; retry++) {
+      await assert.rejects(f.executor.rebuildRuntime(), onlyFailure);
+      await assert.rejects(f.run(), onlyFailure);
+    }
     assert.equal((await f.current()).generationId, before.generationId);
     await f.dispose();
-    assert.ok(logged.flat().some(value => value instanceof AggregateError && /owned resources/.test(value.message)));
+    assert.ok(logged.flat().some(onlyFailure));
   } finally { mock.mock.restore(); log.mock.restore(); }
 });
 
@@ -438,7 +442,7 @@ await test('range observation failure survives cancellation and retains the last
 
 await test('final environment uses DSH enumeration order, preserves tombstones and runner temp', nativeOnly, async t => {
   const f = await executorFixture(t), run = await f.run({
-    env: { PATH: 'X:/first', Path: f.source + '/bin;X:/second', TeMp: 'original', TMP: undefined, KEEP: 'caller' } as unknown as ShellExecRequest['env'],
+    env: { PATH: 'X:/first', Path: f.source + '/bin;X:/second', TeMp: 'original', TMP: undefined, KEEP: 'caller', ['__proto__']: 'child value' } as unknown as ShellExecRequest['env'],
     dshEnv: { PATH: 'X:/last', GIt_ExeC_PAth: 'wrong', mSyS2_pAtH_tYpE: undefined, KEEP: undefined } as unknown as ShellExecRequest['dshEnv'],
   });
   const spec = f.spawned[0]!.spec, env = spec.env!, { view } = invocation(spec);
@@ -447,6 +451,7 @@ await test('final environment uses DSH enumeration order, preserves tombstones a
   assert.equal(env.GIT_TEMPLATE_DIR, join(view, 'ucrt64/share/git-core/templates').replaceAll('\\', '/'));
   assert.equal(env.MSYS2_PATH_TYPE, 'inherit');
   assert.equal(env.TeMp, 'original');
+  assert.equal(Object.getOwnPropertyDescriptor(env, '__proto__')?.value, 'child value');
   for (const name of ['TMP', 'KEEP']) assert.ok(Object.hasOwn(env, name) && env[name] === undefined);
   assert.ok(!Object.hasOwn(env, 'Path') && !Object.hasOwn(env, 'GIt_ExeC_PAth'));
   f.spawned[0]!.finish(); await run.done;
@@ -512,20 +517,31 @@ await test('native workspace resolution can fail or outlive cancellation without
   const f = await executorFixture(t); await f.executor.rebuildRuntime();
   const entered = deferred<void>(), resume = deferred<void>(), original = fs.realpath.native;
   const failure = Object.assign(Error('fixture native realpath'), { code: 'EACCES' });
-  let delayed = false, granted = false;
+  let delayed = false, granted = false, waiting = 0;
   const confine = f.controls.confine;
   f.controls.confine = async argv => { granted = true; return confine(argv); };
   const hook = t.mock.method(fs.realpath, 'native', ((path, cb) => {
     if (!delayed) { cb(failure); return; }
-    entered.resolve();
+    if (++waiting === 2) entered.resolve();
     void resume.promise.then(() => original(path, cb));
   }) as (path: string, cb: (error: NodeJS.ErrnoException | null, path?: string) => void) => void);
   try {
     await assert.rejects(f.run(), error => error === failure);
     delayed = true;
-    const controller = new AbortController(), operation = assert.rejects(f.run({ signal: controller.signal }), /left realm/);
-    await entered.promise; controller.abort(Error('left realm')); resume.resolve(); await operation;
+    const controller = new AbortController();
+    const cancelled = assert.rejects(f.run({ signal: controller.signal }), /left realm/);
+    const deadline = f.run({ onExpiry: 'kill', timeoutMs: 20 }).then(ex => ex.result());
+    await entered.promise;
+    controller.abort(Error('left realm'));
+    const result = await Promise.race([Promise.all([cancelled, deadline]), delay(500, undefined)]);
+    assert.ok(result?.[1].timedOut, 'both callers must settle while native realpath is still pending');
+    let disposed = false;
+    const disposing = f.dispose().then(() => { disposed = true; });
+    await turn();
+    assert.equal(disposed, false);
+    resume.resolve(); await disposing;
     assert.equal(granted, false); assert.equal(f.spawned.length, 0);
+    await purgeRuntimeCache(f.cache);
   } finally { resume.resolve(); hook.mock.restore(); }
 });
 
@@ -677,7 +693,7 @@ await test('native DSH Bash execution across all modes', nativeOnly, async t => 
       }
       // Gate 4 supplies these spellings to DSH's native spawn, before any MSYS parent exists.
       const provider = f.ctx.subprocess, original = provider.spawn.bind(provider);
-      for (const [entry, expectedStatus] of [[shortPath(msys), 0], [toNamespacedPath(msys), 0], [wrapper, full ? 0 : 0xc0000142]] as const) {
+      for (const [entry, expectedStatus] of [[join(shortPath(view), 'usr/bin/bash.exe'), 0], [toNamespacedPath(msys), 0], [wrapper, full ? 0 : 0xc0000142]] as const) {
         const hook = t.mock.method(provider, 'spawn', (spec: SubprocessSpawnSpec) => {
           assert.equal(spec.argv.at(-5), msys);
           return original({ ...spec, argv: [...spec.argv.slice(0, -5), entry, ...spec.argv.slice(-4)] });

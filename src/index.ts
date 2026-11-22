@@ -111,6 +111,12 @@ export default class GitBashExecutor extends SandboxBashExecutor {
     }), this.cleanup);
   }
 
+  /** Record native close failures at the operation that incurred them, before notifying shared waiters. */
+  private rethrowPreparationError = (error: unknown): never => {
+    if (hasCloseFailure(error)) this.cleanupErrors.push(error);
+    throw error;
+  };
+
   private retireAttempt() {
     const attempt = this.attempt;
     this.attempt = undefined;
@@ -137,10 +143,7 @@ export default class GitBashExecutor extends SandboxBashExecutor {
       if (this.cleanupErrors.length) throw new LocalizedAggregateError(this.cleanupErrors, 'error.priorCleanupFailed');
       this.observeSelection();
       controller.signal.throwIfAborted();
-      const pin = await prepareRuntime({ cacheDirectory: this.cache, gitBashPath: selection, rebuild }, controller.signal).catch(error => {
-        if (hasCloseFailure(error)) this.cleanupErrors.push(error);
-        throw error;
-      });
+      const pin = await prepareRuntime({ cacheDirectory: this.cache, gitBashPath: selection, rebuild }, controller.signal).catch(this.rethrowPreparationError);
       this.observeSelection();
       if (controller.signal.aborted) { await this.ownCleanup(pin.release()); controller.signal.throwIfAborted(); }
       const previous = this.ready;
@@ -200,10 +203,12 @@ export default class GitBashExecutor extends SandboxBashExecutor {
         if (!this.attempt) {
           // A cold command must admit its workspace before starting a shared cache write.
           if (!workspace) { workspace = await canonicalWorkspace(workspaceRoot); continue; }
-          const home = admitDirectory(dirname(this.cache));
-          if (overlaps(workspace, join(home.path, basename(this.cache))) || overlaps(workspace, discoverGitInstallation(selection).root)) {
-            throw new LocalizedError('error.workspaceOverlap');
-          }
+          try {
+            const home = admitDirectory(dirname(this.cache));
+            if (overlaps(workspace, join(home.path, basename(this.cache))) || overlaps(workspace, discoverGitInstallation(selection).root)) {
+              throw new LocalizedError('error.workspaceOverlap');
+            }
+          } catch (error) { this.rethrowPreparationError(error); }
         }
         const attempt = this.attempt ?? this.prepare(selection, false);
         try { await waitForReady(attempt, signal); }
@@ -225,18 +230,19 @@ export default class GitBashExecutor extends SandboxBashExecutor {
       if (this.ready?.pin !== pin) throw new LocalizedError('error.changedDuringConfinement');
       if (argv.at(-3) !== 'bash' || argv.at(-2) !== '-c' || argv.at(-1) !== spec.command) throw new LocalizedError('error.unexpectedShellArguments');
       const prefix = argv.slice(0, -3);
-      view = use.bindView({ workspace, sessionId, prefix: viewPrefix(prefix, mode, workspace, sessionId) });
+      try { view = use.bindView({ workspace, sessionId, prefix: viewPrefix(prefix, mode, workspace, sessionId) }); }
+      catch (error) { this.rethrowPreparationError(error); }
       return [...prefix, join(view, 'usr/bin/bash.exe'), '--noprofile', '--norc', '-c', spec.command];
     };
-    return this.track(super.executeArgv.call(receiver, spec, signal => preparation = this.track(prepare(signal).catch(error => {
-      if (hasCloseFailure(error) && !this.cleanupErrors.includes(error)) this.cleanupErrors.push(error);
-      throw error;
-    })), onStarted)
-      .finally(async () => {
-        if (!command.child) {
-          await preparation?.catch(() => {});
-          await command.release();
+    return this.track(super.executeArgv.call(receiver, spec, signal => preparation = this.track(prepare(signal)), onStarted)
+      .finally(() => {
+        if (command.child) return;
+        if (preparation && this.work.has(preparation)) {
+          // DSH has already stopped waiting. Keep the use until our abandoned preparation settles.
+          void this.track(preparation.then(command.release, command.release));
+          return;
         }
+        return command.release();
       }));
   }
 

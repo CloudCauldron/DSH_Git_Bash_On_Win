@@ -66,6 +66,8 @@ export function isBusy(error: unknown): boolean {
     || ['EBUSY', 'ENOTEMPTY'].includes((error as NodeJS.ErrnoException)?.code ?? '');
 }
 
+export const payloadLimit = 64 * 1024 * 1024;
+
 export class InvalidFileSizeError extends LocalizedError {}
 export class WrongEntryKindError extends LocalizedError {}
 
@@ -208,8 +210,8 @@ function inspect(path: string): FileInformation {
 }
 
 /** Walk ancestors before opening a target; cache/source policy stays with callers. */
-export function admitDirectory(path: string, expected?: FileIdentity): Directory {
-  return admitDirectoryPath(absolutePath(path), expected);
+export function admitDirectory(path: string): Directory {
+  return admitDirectoryPath(absolutePath(path));
 }
 
 function admitDirectoryPath(path: string, expected?: FileIdentity): Directory {
@@ -229,7 +231,7 @@ function admitDirectoryPath(path: string, expected?: FileIdentity): Directory {
   } finally { hold.close(); }
 }
 
-export function revalidateDirectory(directory: Directory): void {
+function revalidateDirectory(directory: Directory): void {
   directoryHold(directory, 0, SHARE_ALL).close();
 }
 
@@ -241,11 +243,9 @@ function childPath(parent: Pick<Directory, 'path'>, name: string): string {
 }
 
 /** Resolve one ordinary child on the admitted parent volume. */
-export function admitChildDirectory(parent: Directory, name: string, expected?: FileIdentity): Directory {
+export function admitChildDirectory(parent: Directory, name: string): Directory {
   const path = childPath(parent, name);
-  const info = inspect(path);
-  if (expected && !sameIdentity(info, expected)) throw new LocalizedError('error.directoryIdentityChanged', { path });
-  return observedDirectory(path, info, parent.volumeSerial);
+  return observedDirectory(path, inspect(path), parent.volumeSerial);
 }
 
 function observedDirectory(path: string, info: FileInformation, volumeSerial: string): Directory {
@@ -313,7 +313,9 @@ export function writeNewMetadata(parent: Directory, name: string, value: unknown
 
 /** The caller holds the parent across creation and any rollback. */
 export function writeNewFile(parent: Directory, name: string, bytes: Buffer): void {
-  const fd = openSync(toNamespacedPath(childPath(parent, name)), 'wx', 0o600);
+  const path = childPath(parent, name);
+  if (bytes.length > payloadLimit) throw new InvalidFileSizeError('error.fileTooLarge', { path, size: bytes.length, limit: payloadLimit });
+  const fd = openSync(toNamespacedPath(path), 'wx', 0o600);
   const errors: unknown[] = [];
   try { writeFileSync(fd, bytes); } catch (error) { errors.push(error); }
   try { closeSync(fd); } catch (error) { errors.push(error); }

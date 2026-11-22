@@ -173,6 +173,31 @@ await test('root creation unwinds an empty directory when its ownership-marker w
   const pin = await fixture.prepare(); await pin.release();
 });
 
+await test('an owner marker that grows during the optimistic read is rechecked under the lock', nativeOnly, async t => {
+  const f = await runtimeFixture(t);
+  await (await f.prepare()).release();
+  const selected = await f.current(), path = join(f.cache, '.owner.json'), marker = await readFile(path);
+  const information = NativeHold.prototype.information, lockedReads: boolean[] = [];
+  const hook = t.mock.method(NativeHold.prototype, 'information', function (this: NativeHold) {
+    const info = information.call(this);
+    if (this.path === path) {
+      lockedReads.push(pathExists(f.cache + '.writer-lock'));
+      if (info.size === '0') fs.writeFileSync(path, marker);
+    }
+    return info;
+  });
+  try {
+    await writeFile(path, '');
+    await (await f.prepare()).release();
+    assert.deepEqual(lockedReads, [false, true]);
+    assert.deepEqual(await f.current(), selected);
+    await writeFile(path, Buffer.alloc(256 * 1024 + 1));
+    await assert.rejects(f.prepare(), /262145/);
+    assert.deepEqual(lockedReads.slice(2), [false, true]);
+    assert.equal((await stat(path)).size, 256 * 1024 + 1);
+  } finally { hook.mock.restore(); await writeFile(path, marker); }
+});
+
 await test('cancellation before atomic publication preserves the selected generation', nativeOnly, async t => {
   const fixture = await runtimeFixture(t), first = await fixture.prepare();
   await first.release();
@@ -267,7 +292,7 @@ await test('concurrent preparations recheck under the writer lock and own indepe
   try { assert.equal((await fixture.current()).generationId, id); } finally { await alias.release(); }
 });
 
-await test('independent processes share the first generation and create separate views', nativeOnly, async t => {
+await test('independent processes converge on cold start and after a Git-only update with separate views', nativeOnly, async t => {
   const fixture = await runtimeFixture(t);
   const program = `
     const [module, cacheDirectory, gitBashPath, workspaceRoot] = process.argv.slice(1);
@@ -283,14 +308,22 @@ await test('independent processes share the first generation and create separate
   const worker = () => promisify(execFile)(process.execPath, ['--input-type=module', '-e', program,
     new URL('../src/runtime/runtime-cache.ts', import.meta.url).href, fixture.cache, fixture.request.gitBashPath!, fixture.workspace],
   { timeout: 20_000 });
-  const results = await Promise.allSettled([worker(), worker()]);
-  const [first, second] = results.map(result => {
-    if (result.status === 'rejected') throw result.reason;
-    return result.value.stdout.trim();
-  });
-  assert.equal(dirname(first!), dirname(second!));
-  assert.notEqual(first, second);
-  assert.deepEqual(readdirSync(join(fixture.cache, 'g')), [(await fixture.current()).generationId]);
+  async function prepareBoth() {
+    const results = await Promise.allSettled([worker(), worker()]);
+    const [first, second] = results.map(result => {
+      if (result.status === 'rejected') throw result.reason;
+      return result.value.stdout.trim();
+    });
+    const { generationId } = await fixture.current();
+    assert.equal(dirname(first!), join(fixture.cache, 'g', generationId, 'v'));
+    assert.equal(dirname(second!), dirname(first!));
+    assert.notEqual(first, second);
+    assert.deepEqual(readdirSync(join(fixture.cache, 'g')), [generationId]);
+    return generationId;
+  }
+  const cold = await prepareBoth();
+  await writeFile(join(fixture.source, 'ucrt64/bin/git.exe'), 'updated Git');
+  assert.notEqual(await prepareBoth(), cold);
 });
 
 await test('a failed guard close releases the pending lease or generation pin', nativeOnly, async t => {
@@ -892,6 +925,36 @@ await test('warm validation repairs ordinary payload loss and digest mismatches 
   await unlink(join(bin, 'sh.exe')); await symlink(f.workspace, join(bin, 'sh.exe'), 'junction');
   await assert.rejects(f.prepare(), /reparse/);
   assert.equal((await f.current()).generationId, before.generationId);
+});
+
+await test('warm validation reports hard errors in remaining payloads after finding stale bytes', nativeOnly, async t => {
+  const f = await runtimeFixture(t);
+  await (await f.prepare()).release();
+  const before = await f.current(), bin = join(f.cache, 'g', before.generationId, 'r/usr/bin');
+  const bash = join(bin, 'bash.exe'), shim = join(bin, 'dsh-msys-compat.dll');
+  await unlink(bash);
+  const blocker = blockFile(shim);
+  try { await assert.rejects(f.prepare(), isBusy); } finally { blocker.close(); }
+  await writeFile(bash, 'restored');
+  await writeFile(join(bin, 'msys-2.0.dll'), 'stale digest');
+  await unlink(shim); await symlink(f.workspace, shim, 'junction');
+  await assert.rejects(f.prepare(), /reparse/);
+  assert.deepEqual(await f.current(), before);
+});
+
+await test('a source DLL whose patch exceeds the payload limit cannot replace the selector', nativeOnly, async t => {
+  const f = await runtimeFixture(t);
+  await (await f.prepare()).release();
+  const before = await f.current(), path = join(f.source, 'usr/bin/msys-2.0.dll');
+  const image = await readFile(path), strings = Buffer.alloc(4), limit = 64 * 1024 * 1024;
+  // Extend the fixture with a valid COFF string table up to the source read limit.
+  image.writeUInt32LE(image.length, image.readUInt32LE(0x3c) + 12);
+  strings.writeUInt32LE(limit - image.length);
+  await writeFile(path, Buffer.concat([image, strings]));
+  await fsp.truncate(path, limit);
+  await assert.rejects(f.prepare(), /msys-2\.0\.dll has \d+ bytes\. The limit is 67108864/);
+  assert.deepEqual(await f.current(), before);
+  assert.deepEqual(readdirSync(join(f.cache, 'g')), [before.generationId]);
 });
 
 await test('failed automatic rebuilding and final-key changes preserve the last publication', nativeOnly, async t => {

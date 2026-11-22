@@ -18,7 +18,6 @@ export declare function buildRuntimeEnvironment(installationRoot: string, source
 export declare function discoverGitInstallation(setting?: string): GitInstallation;
 /** MSYS budgets the normalized NT image path, including the terminating byte. */
 export declare function requireViewPathBudget(view: string): void;
-export declare const payloadLimit: number;
 /** Called on an unpublished, exclusively created generation after discovery. Its owner handles whole-generation rollback. */
 export declare function buildCopyLayout(generation: Directory, installation: GitInstallation, shim: Buffer, signal: AbortSignal): Promise<{
     runtime: Directory;

@@ -19,6 +19,8 @@ export default class GitBashExecutor extends SandboxBashExecutor {
     constructor(ctx: Context, config: Config);
     private track;
     private ownCleanup;
+    /** Record native close failures at the operation that incurred them, before notifying shared waiters. */
+    private rethrowPreparationError;
     private retireAttempt;
     private observeSelection;
     private prepare;

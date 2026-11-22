@@ -7,11 +7,11 @@ import { writeFileAtomic } from '@deepseek-ai/dsh-atomic-write';
 import {
   absolutePath, acquireWriterLock, admitChildDirectory, admitDirectory, admitJunction, bestEffort,
   children, claimDirectory, createDirectory, createJunction, ensureDirectory, InvalidFileSizeError, isBusy,
-  isMissing, openOrdinaryFile, ordinaryChildDirectory, overlaps, pathExists, pinDirectory, readFileBytes,
+  isMissing, ordinaryChildDirectory, ordinaryFileExists, overlaps, pathExists, payloadLimit, pinDirectory, readFileBytes,
   readMetadata, removeDirectoryTree, removeEmptyDirectory, removeTree, sameIdentity, samePath, unlinkEntry,
   writeNewMetadata, type Directory, type FileIdentity, type NativeHold,
 } from './ntfs-filesystem.ts';
-import { admitCopyJunctions, buildCopyLayout, discoverGitInstallation, payloadLimit, readSourceFreshness,
+import { admitCopyJunctions, buildCopyLayout, discoverGitInstallation, readSourceFreshness,
   requireViewPathBudget, type GitInstallation, type GitLayout, type SourceFreshness } from './git-installation.ts';
 import { LocalizedAggregateError, LocalizedError } from '../locale/errors.ts';
 
@@ -120,11 +120,19 @@ function tryWarm(root: Directory, source: Directory, layout: GitLayout, shimHash
     const runtime = admitChildDirectory(generation, 'r'), views = admitChildDirectory(generation, 'v');
     const bin = admitChildDirectory(admitChildDirectory(runtime, 'usr'), 'bin');
     admitCopyJunctions(runtime, source, layout);
-    try {
-      for (const name of ['bash.exe', 'sh.exe']) openOrdinaryFile(bin, name).close();
-      if (digest(readFileBytes(bin, 'msys-2.0.dll', payloadLimit)) !== record.patchedMsysSha256
-        || digest(readFileBytes(bin, 'dsh-msys-compat.dll', payloadLimit)) !== shimHash) return;
-    } catch (error) { if (isMissing(error)) return; throw error; }
+    let stale = false;
+    for (const name of ['bash.exe', 'sh.exe']) {
+      if (!ordinaryFileExists(bin, name)) stale = true;
+    }
+    for (const [name, expected] of [['msys-2.0.dll', record.patchedMsysSha256], ['dsh-msys-compat.dll', shimHash]] as const) {
+      try {
+        if (digest(readFileBytes(bin, name, payloadLimit)) !== expected) stale = true;
+      } catch (error) {
+        if (!isMissing(error)) throw error;
+        stale = true;
+      }
+    }
+    if (stale) return;
     const pin = new RuntimePin(root, runtime, views, record, hold);
     transferred = true;
     return pin;
@@ -145,7 +153,7 @@ export async function prepareRuntime(request: RuntimePreparation, signal: AbortS
     try { root = admitRoot(path, false); }
     catch (error) {
       // A competing writer may still be installing its first owner marker.
-      if (!isMissing(error) && !(error instanceof SyntaxError)) throw error;
+      if (!isMissing(error) && !(error instanceof SyntaxError) && !(error instanceof InvalidFileSizeError)) throw error;
     }
     if (root) {
       if (overlaps(root.path, source.path)) throw new LocalizedError('error.cacheOverlap');

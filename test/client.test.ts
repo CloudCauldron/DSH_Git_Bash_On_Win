@@ -286,4 +286,14 @@ await test('Save and rebuild fences the path write and rebuilds once after confi
     await act(async () => { if (success) pending.resolve(true); else pending.reject(Error('disconnected')); });
     assert.equal(renderer.root.findAllByType(Modal).length + renderer.root.findAllByType(Toast).length, 0);
   }
+  const writes = mutate.mock.callCount();
+  for (const blank of ['', '   ']) {
+    await act(async () => { publish({ status: 'ready', writable: false, user: { gitBashPath: blank }, value: { gitBashPath: blank } }); });
+    const posts = rebuild.mock.callCount();
+    assert.equal(field().props.disabled, true);
+    assert.equal(button().props.disabled, false);
+    await act(async () => { click(); });
+    assert.equal(rebuild.mock.callCount(), posts + 1);
+    assert.equal(mutate.mock.callCount(), writes);
+  }
 });

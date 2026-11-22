@@ -4,7 +4,7 @@ import { basename, dirname, isAbsolute, join, parse, posix, resolve, toNamespace
 import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
 import {
   admitChildDirectory, admitDirectory, admitJunction, createDirectory, createJunction,
-  hasCloseFailure, isMissing, openOrdinaryFile, ordinaryFileExists, overlaps, pathExists, pinDirectory, readFileBytes,
+  hasCloseFailure, isMissing, openOrdinaryFile, ordinaryFileExists, overlaps, pathExists, payloadLimit, pinDirectory, readFileBytes,
   writeNewFile, WrongEntryKindError, type Directory, type FileIdentity,
 } from './ntfs-filesystem.ts';
 import { patchMsysDll } from './pe.ts';
@@ -18,7 +18,7 @@ export interface SourceFreshness { readonly git: FileStamp; readonly msys: FileS
 /** Apply DSH's already assembled explicit map in its enumeration order. */
 export function buildRuntimeEnvironment(installationRoot: string, sourceRoot: string, layout: GitLayout, explicit: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   let existing = process.env.PATH;
-  const env: NodeJS.ProcessEnv = {};
+  const env: NodeJS.ProcessEnv = Object.create(null);
   for (const [key, value] of Object.entries(explicit)) {
     const folded = key.toUpperCase();
     if (folded === 'PATH') existing = value;
@@ -100,8 +100,6 @@ export function requireViewPathBudget(view: string): void {
   if (Buffer.byteLength(path) + 1 > 260) throw new LocalizedError('error.viewPathBudget', { path });
 }
 
-export const payloadLimit = 64 * 1024 * 1024;
-
 /** Root and usr expose only directories. In usr/bin retain the ordinary filenames for the flat copy pass. */
 function junctionDirectories(source: Directory, destination: Directory, handled?: readonly string[]): string[] {
   const files: string[] = [];
@@ -145,7 +143,7 @@ export async function buildCopyLayout(generation: Directory, installation: GitIn
       bytes = patchMsysDll(bytes);
       patchedMsysSha256 = createHash('sha256').update(bytes).digest('hex');
     }
-   writeNewFile(destBin, name, bytes);
+    writeNewFile(destBin, name, bytes);
     await yieldToEventLoop();
   }
   signal.throwIfAborted();

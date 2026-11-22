@@ -632,11 +632,13 @@ await test('optimized shim admission, forks, images and IPC under real DSH polic
       const r = await runFixtureCommand(spawn, spec.argv, f.workspace, spec.env, t.signal);
       assert.equal(r.exitCode, 0xc0000142, `${mode}/${leaf}: ${r.stderr}`);
       assert.doesNotMatch(r.stdout, /MUST_NOT_RUN/);
-      const short = [...spec.argv];
-      short[short.length - 5] = shortPath(short.at(-5)!);
-      const alias = await runFixtureCommand(spawn, short, f.workspace, spec.env, t.signal);
-      assert.equal(alias.exitCode, 0xc0000142, `${mode}/${leaf}: shortened spelling admitted`);
-      assert.doesNotMatch(alias.stdout, /MUST_NOT_RUN/);
+      if (leaf.length > 8) {
+        const short = [...spec.argv];
+        short[short.length - 5] = join(shortPath(spec.view), 'usr/bin/bash.exe');
+        const alias = await runFixtureCommand(spawn, short, f.workspace, spec.env, t.signal);
+        assert.equal(alias.exitCode, 0xc0000142, mode + '/' + leaf + ': shortened spelling admitted');
+        assert.doesNotMatch(alias.stdout, /MUST_NOT_RUN/);
+      }
       await unlink(spec.view);
     }
   });

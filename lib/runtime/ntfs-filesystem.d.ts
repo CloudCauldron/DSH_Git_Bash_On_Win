@@ -15,6 +15,7 @@ interface FileInformation extends FileIdentity {
 }
 export declare function isMissing(error: unknown): boolean;
 export declare function isBusy(error: unknown): boolean;
+export declare const payloadLimit: number;
 export declare class InvalidFileSizeError extends LocalizedError {
 }
 export declare class WrongEntryKindError extends LocalizedError {
@@ -42,10 +43,9 @@ export declare function samePath(a: string, b: string): boolean;
 export declare function sameIdentity(a: FileIdentity, b: FileIdentity): boolean;
 export declare function overlaps(a: string, b: string): boolean;
 /** Walk ancestors before opening a target; cache/source policy stays with callers. */
-export declare function admitDirectory(path: string, expected?: FileIdentity): Directory;
-export declare function revalidateDirectory(directory: Directory): void;
+export declare function admitDirectory(path: string): Directory;
 /** Resolve one ordinary child on the admitted parent volume. */
-export declare function admitChildDirectory(parent: Directory, name: string, expected?: FileIdentity): Directory;
+export declare function admitChildDirectory(parent: Directory, name: string): Directory;
 export declare function createDirectory(parent: Directory, name: string): Directory;
 export declare function ensureDirectory(parent: Directory, name: string): Directory;
 export declare function openOrdinaryFile(parent: Directory, name: string): NativeHold;

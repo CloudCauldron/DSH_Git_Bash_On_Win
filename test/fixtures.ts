@@ -182,7 +182,9 @@ export function shortPath(path: string) {
   const get = koffi.load('kernel32.dll').func('uint32 GetShortPathNameW(str16,void*,uint32)');
   const buffer = Buffer.alloc(65536), length = get(path, buffer, buffer.length / 2) as number;
   assert.ok(length > 0 && length < buffer.length / 2, path);
-  return buffer.toString('utf16le', 0, length * 2);
+  const short = buffer.toString('utf16le', 0, length * 2);
+  assert.notEqual(basename(short).toLowerCase(), basename(path).toLowerCase(), 'UNVERIFIED: Windows did not supply an 8.3 alias for ' + path);
+  return short;
 }
 
 export function expectedMsysKey(view: string) {

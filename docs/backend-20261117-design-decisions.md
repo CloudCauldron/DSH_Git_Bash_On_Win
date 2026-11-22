@@ -1,10 +1,12 @@
 # Historical backend design decisions
 
-This record describes the November 17 backend. The [November 22 design decisions](backend-20261122-design-decisions.md) govern the current release.
+This record describes the November 17 backend. Its hardlink cache and debugger supervisor have been superseded. The [November 22 design](backend-20261122-design-decisions.md) governs the current release.
 
-The backend design took shape on 15–17 November 2026. It lets a DSH profile run Git Bash on native Windows x64 under DSH's selected execution policy. The supported host is DSH 0.2.2-rc.5 with Node `^24.21.0 || >=26`, including Desktop's bundled Node 24.21.0. An installation can use the `ucrt64` or `mingw64` Git for Windows layout.
+The backend design took shape on 15–17 November 2026. It lets a DSH profile run Git Bash on native Windows x64 under DSH's selected execution policy. Later revisions supported DSH 0.2.2-rc.5 with Node `^24.21.0 || >=26`, including Desktop's bundled Node 24.21.0. An installation can use the `ucrt64` or `mingw64` Git for Windows layout.
 
 Four observations drove the design. Stock Git Bash failed to start its Unix compatibility runtime, MSYS, in read-only and workspace-write modes. The first working executor scanned the source and three runtime trees on every command. Its cleanup could delete existing files in a directory it mistook for its cache, and its elevation worker could mistake a failed wait for helper exit. The backend kept the working DSH integration and changed how it starts Bash, owns storage and confirms completion.
+
+[DSH integration](#integration-with-dsh) · [Process family](#why-bash-uses-a-private-process-family) · [Cache setup](#root-ownership-and-confined-setup) · [Command lifetimes](#command-view-and-rebuild-lifetimes) · [Removal](#collection-shutdown-and-complete-removal)
 
 ## Integration with DSH
 
@@ -106,4 +108,4 @@ Offline recovery uses the packaged purge entry with the absolute shared cache pa
 
 ## Verification behind these choices
 
-The maintained tests use temporary DSH profiles and owned copies of Git. They cover markerless roots, junction targets, pin and collector exclusion in both orders, interrupted collection, cancellation, failed native waits, and rebuilds with commands in flight. Native integration runs Bash and Git through the installed DSH providers in all three modes. Teardown compares source contents, link counts and ACLs after strict purge. Separate operator-assisted checks exercised Windows approval, denial with error 1223, and delayed consent.
+The tests at the historical revisions used temporary DSH profiles and owned copies of Git. They covered markerless roots, junction targets, pin and collector exclusion in both orders, interrupted collection, cancellation, failed native waits, and rebuilds with commands in flight. Native integration ran Bash and Git through the installed DSH providers in all three modes. Teardown compared source contents, link counts and ACLs after strict purge. Separate operator-assisted checks exercised Windows approval, denial with error 1223, and delayed consent. [Feasibility and installed-profile results](analysis_report/historical-process-family/README.md) · [Supervisor timings](analysis_report/historical-supervisor-benchmark/README.md)

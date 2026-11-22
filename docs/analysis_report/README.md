@@ -1,9 +1,13 @@
-# Analysis findings
+# Windows backend analyses
 
-The November 12–19 Windows runs studied the historical process-family backend.
+The current Windows executor runs Git Bash from ordinary file copies and loads a compatibility DLL inside MSYS processes. The earlier executor used NTFS hardlinks and a debugger to supervise a private process family. Both were tested under DSH’s three execution policies.
 
-- **Can Bash run under the selected sandbox policy?** Stock MSYS failed to start in both restricted modes. The private process family ran Bash and its children in both. The controls failed as expected, the fixture's outside files kept their contents, and ordinary Git Bash still worked. [Feasibility results](evidence/feasibility.json)
-- **Can sessions share a runtime tree?** Two sessions in each of the three modes used one base and produced six distinct MSYS namespaces. On the measured Git installation this reduced the cache from 24,543 hardlinks to 8,181. Five warm opens took 23.31–36.87 ms. The release and installed-profile runs also covered cancellation, strict cache removal, restored source link counts and preservation of shared Shell settings. [Windows verification](evidence/windows-verification.md)
-- **What does supervision cost?** The original supervisor added 239 ms to the median time for a Bash builtin on the benchmark host. Skipping redundant thread-context writes cut those writes by 93–95% in the three measured workloads. The paired timings showed no consistent improvement in elapsed time. [Supervisor measurements](evidence/supervisor-benchmark.md)
+| Status and date (2026) | Analysis | Question |
+| --- | --- | --- |
+| Current · Nov 22–23 | [Ordinary-copy release verification](copy-backend-verification/README.md) | Which Git layouts, DSH hosts, upgrade and removal paths ran successfully? |
+| Current · Nov 21–23 | [Runtime performance and image-load delays](copy-backend-performance/README.md) | What did the packaged backend cost to prepare and run? Where did the earlier prototype stall? |
+| Pre-implementation · Nov 21–22 | [Windows design experiments](refactor-design-validation/README.md) | Which loader, token, process-lifetime and file-copy behaviors shaped the replacement? |
+| Historical · Nov 12–19 | [Process-family feasibility and lifecycle](historical-process-family/README.md) | Could a supervised Bash run confined, share one hardlink base and uninstall cleanly? |
+| Historical · Nov 18 | [Supervisor overhead](historical-supervisor-benchmark/README.md) | What did supervision cost, and did reducing thread-context writes help? |
 
-The 0.1.0 cleanup passed the native release and installed-browser checks on November 19. The current ordinary-copy backend has separate [release results](evidence/windows-verification.md#independent-phase-4-audit) and [reproduction steps](REPRODUCING.md).
+For the implementation contracts, see the [current backend design](../backend-20261122-design-decisions.md) and the [historical backend design](../backend-20261117-design-decisions.md).

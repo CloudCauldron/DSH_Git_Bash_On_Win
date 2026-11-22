@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { readdirSync, realpathSync } from 'node:fs';
 import { lstat, readdir } from 'node:fs/promises';
-import { basename, dirname, isAbsolute, join, posix, resolve, toNamespacedPath } from 'node:path';
+import { basename, dirname, isAbsolute, join, parse, posix, resolve, toNamespacedPath } from 'node:path';
 import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
 import {
   admitChildDirectory, admitDirectory, admitJunction, createDirectory, createHardlink, createJunction,
@@ -45,7 +45,8 @@ export function discoverGitInstallation(setting?: string): GitInstallation {
     ...process.env.LOCALAPPDATA ? [join(process.env.LOCALAPPDATA, 'Programs/Git/bin/bash.exe')] : [],
   ];
   for (const candidate of candidates) {
-    if (!isAbsolute(candidate) || basename(candidate).toLowerCase() !== 'bash.exe' || !pathExists(candidate)) continue;
+    if (!isAbsolute(candidate) || parse(candidate).root.length <= 1 || /[\\/]$/.test(candidate)
+      || basename(candidate).toLowerCase() !== 'bash.exe' || !pathExists(candidate)) continue;
     let executable: string;
     try { executable = realpathSync(candidate); }
     catch (error) {
@@ -69,7 +70,7 @@ export function discoverGitInstallation(setting?: string): GitInstallation {
       } catch (error) {
         if (hasCloseFailure(error)) throw error;
         const incompleteDefault = setting === undefined && error instanceof WrongEntryKindError;
-        if (!isMissing(error) && !incompleteDefault) admissionError ??= error;
+        if (!isMissing(error) && !incompleteDefault && (admissionError === undefined || admissionError instanceof WrongEntryKindError)) admissionError = error;
       }
     }
     if (admissionError) throw admissionError;

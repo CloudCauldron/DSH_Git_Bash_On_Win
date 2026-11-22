@@ -326,6 +326,7 @@ export function openOrdinaryFile(parent: Directory, name: string, writable = fal
 /** Read one no-follow file under its admitted parent. Writers and deletion are excluded until close. */
 export function readFileBytes(parent: Directory, name: string, maxBytes: number): Buffer {
   using hold = open(childPath(parent, name), READ, SHARE_READ);
+  if (hold.information().volumeSerial !== parent.volumeSerial) throw new LocalizedError('error.volumeBoundaryChanged', { path: hold.path });
   return hold.readBytes(maxBytes);
 }
 
@@ -458,9 +459,8 @@ export function createJunction(parent: Directory, name: string, target: Director
 export function admitJunction(parent: Directory, name: string, target: Directory): void {
   const path = childPath(parent, name), info = inspect(path);
   if (!(info.attributes & ATTR_REPARSE) || info.reparseTag !== MOUNT_POINT) throw new LocalizedError('error.unexpectedJunction', { path });
-  const link = toNamespacedPath(path);
   try {
-    const direct = ordinaryPath(readlinkSync(link));
+    const direct = ordinaryPath(readlinkSync(toNamespacedPath(path)));
     // The expected spelling bounds the lookup. NTFS verifies each component and the target file ID.
     if (direct.toLowerCase() === target.path.toLowerCase()) {
       admitDirectoryPath(direct, target);

@@ -677,7 +677,7 @@ await test('shallow copies preserve flat names and private bytes, junctions reta
   unlinkEntry(runtime, 'bin');
   createJunction(runtime, 'bin', nativeBin);
   await unlink(join(nativeBin.path, 'bash.exe'));
-  assert.throws(() => admitCopyJunctions(runtime, source, 'ucrt64'));
+  assert.throws(() => admitCopyJunctions(runtime, source, 'ucrt64'), { api: 'CreateFileW', win32Code: 2 });
   await rename(nativeBin.path, nativeBin.path + '-moved');
   assert.throws(() => admitJunction(runtime, 'bin', nativeBin), /Unexpected runtime junction/);
   removeTree(f.parent, 'one');
@@ -716,18 +716,27 @@ await test('junction admission uses NTFS identity across case spellings and reje
 await test('both Bash entry points require ordinary etc, bin and the native wrapper before construction', nativeOnly, async t => {
   const f = await copyFixture(t);
   const selection = discoverGitInstallation(f.request.gitBashPath);
+  const wrapperTarget = join(f.workspace, 'bash.exe');
+  await mkdir(wrapperTarget);
   for (const path of ['etc', 'bin', 'bin/bash.exe', selection.layout]) {
     const original = join(f.source, path), moved = original + '.saved';
     await rename(original, moved);
     for (const kind of ['missing', 'junction', 'wrong type']) {
-      if (kind === 'junction') await symlink(path === 'bin/bash.exe' ? f.workspace : moved, original, 'junction');
+      if (kind === 'junction') await symlink(path === 'bin/bash.exe' ? wrapperTarget : moved, original, 'junction');
       if (kind === 'wrong type') {
         if (path === 'bin/bash.exe') await mkdir(original);
         else await writeFile(original, 'ordinary file');
       }
-      for (const entry of ['bin/bash.exe', 'usr/bin/bash.exe']) assert.throws(() => discoverGitInstallation(join(f.source, entry)));
+      const structuralError = kind === 'junction' ? { message: `Refusing reparse point: ${original}` }
+        : { message: `Expected ordinary ${path === 'bin/bash.exe' ? 'file' : 'directory'}: ${original}` };
+      for (const entry of ['bin/bash.exe', 'usr/bin/bash.exe']) {
+        const notFound = kind === 'missing' || (kind === 'wrong type'
+          && (path === selection.layout || (path === 'bin' && entry === 'bin/bash.exe')));
+        assert.throws(() => discoverGitInstallation(join(f.source, entry)), notFound ? /Supported Git for Windows was not found/ : structuralError);
+      }
       const generation = createDirectory(f.parent, 'pending');
-      await assert.rejects(buildCopyLayout(generation, selection, f.shim, t.signal));
+      await assert.rejects(buildCopyLayout(generation, selection, f.shim, t.signal),
+        kind === 'missing' ? { api: 'CreateFileW', win32Code: 2 } : structuralError);
       assert.deepEqual(readdirSync(generation.path), []);
       removeTree(f.parent, 'pending');
       if (kind !== 'missing') removeTree(admitDirectory(dirname(original)), path.split('/').at(-1)!);
@@ -737,6 +746,10 @@ await test('both Bash entry points require ordinary etc, bin and the native wrap
   assert.equal(pathExists(f.cache), false);
   for (const dir of ['bin', 'usr/bin']) for (const tail of ['/bash.exe', '/./bash.exe', '//bash.exe']) {
     assert.deepEqual(discoverGitInstallation(join(f.source, dir) + tail), selection);
+  }
+  const bash = join(f.source, 'bin/bash.exe'), rooted = bash.slice(2);
+  for (const invalid of [rooted, rooted.replaceAll('\\', '/'), bash + '/', bash + '\\']) {
+    assert.throws(() => discoverGitInstallation(invalid), /Supported Git for Windows was not found/);
   }
   const usr = join(f.directory, 'usr');
   createJunction(f.parent, 'usr', admitDirectory(f.source));
@@ -756,8 +769,14 @@ await test('both Bash entry points require ordinary etc, bin and the native wrap
   });
   try { assert.throws(() => discoverGitInstallation(join(usr, 'bin/bash.exe')), error => error === fault); }
   finally { mock.mock.restore(); }
+  const etc = join(usr, 'etc'), wrapper = join(usr, 'bin/bash.exe');
+  await rename(etc, etc + '.saved');
+  await symlink(etc + '.saved', etc, 'junction');
+  assert.throws(() => discoverGitInstallation(wrapper), { message: `Refusing reparse point: ${etc}` });
+  unlinkEntry(admitDirectory(usr), 'etc');
+  await rename(etc + '.saved', etc);
   await unlink(join(usr, 'usr/bin/bash.exe'));
-  assert.throws(() => discoverGitInstallation(join(usr, 'bin/bash.exe')), error => error instanceof Error && error.message.includes(outsideBin));
+  assert.throws(() => discoverGitInstallation(wrapper), error => error instanceof Error && error.message.includes(outsideBin));
 });
 
 await test('copy refuses admitted reparses and a reserved shim name at any flat entry type', nativeOnly, async t => {
@@ -831,6 +850,8 @@ await test('bounded native reads check declared size before allocation and requi
   const f = await copyFixture(t), file = join(f.directory, 'bytes');
   await writeFile(file, '');
   assert.equal(readFileBytes(f.parent, 'bytes', 0).length, 0);
+  const otherVolume = { ...f.parent, volumeSerial: String(BigInt(f.parent.volumeSerial) + 1n) };
+  assert.throws(() => readFileBytes(otherVolume, 'bytes', 0), { message: `Volume boundary changed: ${file}` });
   for (const limit of [256 * 1024, 512 * 1024, 64 * 1024 * 1024]) {
     fs.truncateSync(file, limit);
     assert.equal(readFileBytes(f.parent, 'bytes', limit).length, limit);
@@ -873,15 +894,24 @@ await test('exclusive byte writes preserve collisions and every write, close and
   const original = fs.closeSync;
   t.mock.method(fs, 'writeFileSync', () => { throw write; });
   t.mock.method(fs, 'closeSync', (fd: number) => { original(fd); throw close; });
-  t.mock.method(NativeHold.prototype, 'deleteEntry', () => { throw rollback; });
+  t.mock.method(NativeHold.prototype, 'deleteEntry', () => { throw rollback; }, { times: 1 });
+  const nativePath = join(f.parent.path, 'partial-native'), closeHold = NativeHold.prototype.close;
+  const nativeClose = new Win32Error('CloseHandle', 6, nativePath);
+  t.mock.method(NativeHold.prototype, 'close', function (this: NativeHold) {
+    closeHold.call(this);
+    if (this.path === nativePath) throw nativeClose;
+  });
   syncBuiltinESMExports();
   try {
-    assert.throws(() => writeNewFile(f.parent, 'partial', bytes), error => {
-      assert.ok(error instanceof AggregateError);
-      assert.deepEqual(error.errors, [write, close, rollback]);
-      assert.equal(hasRuntimeCleanupFailure(error), false);
-      return true;
-    });
+    for (const [name, cause] of [['partial', rollback], ['partial-native', nativeClose]] as const) {
+      assert.throws(() => writeNewFile(f.parent, name, bytes), error => {
+        assert.ok(error instanceof AggregateError);
+        assert.deepEqual(error.errors, [write, close, cause]);
+        assert.equal(hasRuntimeCleanupFailure(error), cause === nativeClose);
+        return true;
+      });
+    }
+    assert.equal(pathExists(nativePath), false);
   } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
 });
 

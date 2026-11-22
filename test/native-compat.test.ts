@@ -12,7 +12,7 @@ import koffi from 'koffi';
 import type { SandboxExecutionPolicy } from '@deepseek-ai/dsh-sandbox';
 import { readPe } from '../src/runtime/pe.ts';
 import { compilerFlags, linkerFlags, nativeToolchain } from '../scripts/build-compat-dll.ts';
-import { nativeOnly, compatFixture, runFixtureCommand, success, msysHolderCommand,
+import { shortPath, nativeOnly, compatFixture, runFixtureCommand, success, msysHolderCommand,
   observeMsysImages, expectedMsysKey, type probeTokenLogonSid } from './fixtures.ts';
 
 // Compile the actual static functions, with test-only syscall fault injection.
@@ -632,6 +632,11 @@ await test('optimized shim admission, forks, images and IPC under real DSH polic
       const r = await runFixtureCommand(spawn, spec.argv, f.workspace, spec.env, t.signal);
       assert.equal(r.exitCode, 0xc0000142, `${mode}/${leaf}: ${r.stderr}`);
       assert.doesNotMatch(r.stdout, /MUST_NOT_RUN/);
+      const short = [...spec.argv];
+      short[short.length - 5] = shortPath(short.at(-5)!);
+      const alias = await runFixtureCommand(spawn, short, f.workspace, spec.env, t.signal);
+      assert.equal(alias.exitCode, 0xc0000142, `${mode}/${leaf}: shortened spelling admitted`);
+      assert.doesNotMatch(alias.stdout, /MUST_NOT_RUN/);
       await unlink(spec.view);
     }
   });

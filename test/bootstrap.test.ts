@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
-import { mkdir, rmdir, symlink, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, rmdir, unlink, writeFile } from 'node:fs/promises';
 import { createRequire, findPackageJSON } from 'node:module';
 import { dirname, join, relative, resolve } from 'node:path';
 import { test } from 'node:test';
@@ -23,7 +23,6 @@ import * as BashTool from '../src/tool.ts';
 import { findInstalledDshManifest, installedDsh, SUPPORTED_DSH } from '../scripts/installed-dsh.ts';
 import { profileEnvironment, localSpawn, runFixtureCommand, success, runtimeFixture, temporaryDirectory, readAclRecords } from './fixtures.ts';
 import { pathExists } from '../src/runtime/ntfs-filesystem.ts';
-import { discoverGitInstallation } from '../src/runtime/git-installation.ts';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const require = createRequire(import.meta.url);
@@ -126,7 +125,7 @@ await test('bundle adaptation preserves Loader entry/config identity and restore
 await test('the classic client registers dictionaries and the bundle slot after one locale request', async t => {
   const ns = 'dsh-git-bash-on-win', slot = 'plugins.bundle.config';
   assert.deepEqual(packageJson.dsh.client, { platform: 'web', inject: [
-    '@deepseek-ai/dsh-api-gateway', '@deepseek-ai/dsh-client-ui-plugin-manager', '@deepseek-ai/dsh-client-ui-settings', '@deepseek-ai/dsh-client-locale',
+    '@deepseek-ai/dsh-client-ui-plugin-manager', '@deepseek-ai/dsh-client-ui-settings', '@deepseek-ai/dsh-client-locale',
   ] });
   type ClientPlugin = { inject: string[]; apply(ctx: unknown): Promise<void> };
   type Registration = { id: string; factory(require: (name: string) => unknown): ClientPlugin };
@@ -145,12 +144,12 @@ await test('the classic client registers dictionaries and the bundle slot after 
   const [entry] = load.mock.calls[0]!.arguments;
   assert.equal(entry.id, ns);
   const hostRequire = t.mock.fn((name: string) => {
-    assert.ok(['react', '@deepseek-ai/dsh-client-store', '@deepseek-ai/dsh-client-ui-primitives'].includes(name));
-    return name === '@deepseek-ai/dsh-client-store' ? { createSnapshotStore: () => ({}) } : {};
+    assert.ok(['react', '@deepseek-ai/dsh-client-ui-primitives'].includes(name));
+    return {};
   });
   const plugin = entry.factory(hostRequire);
-  assert.deepEqual(hostRequire.mock.calls.map(call => call.arguments[0]), ['react', '@deepseek-ai/dsh-client-store', '@deepseek-ai/dsh-client-ui-primitives']);
-  assert.deepEqual([...plugin.inject], ['slots', 'configForms', 'locale', 'remote']);
+  assert.deepEqual(hostRequire.mock.calls.map(call => call.arguments[0]), ['react', '@deepseek-ai/dsh-client-ui-primitives']);
+  assert.deepEqual([...plugin.inject], ['slots', 'configForms', 'locale']);
   assert.equal(request.mock.callCount(), 0);
 
   const ctx = new Context();
@@ -161,11 +160,11 @@ await test('the classic client registers dictionaries and the bundle slot after 
   const registerLocale = t.mock.fn<(ns: string, dictionaries: Record<string, unknown>) => () => void>(() => disposeLocale);
   const form = {};
   const get = t.mock.fn<(id: string) => object>(() => form);
-  type SlotEntry = { name: string; key?: string; id?: string; locale: string; inject(): { shellForm: unknown; hooks: { shellForm: unknown }; notify: unknown } };
+  type SlotEntry = { name: string; key?: string; id?: string; locale: string; inject(): { shellForm: unknown; hooks: { shellForm: unknown } } };
   const register = t.mock.fn<(entry: SlotEntry, component: unknown) => void>();
   const context = {
     fiber, effect: fiber.effect.bind(fiber), locale: { register: registerLocale }, configForms: { get },
-    slots: { inject(name: string, setup: () => void) { assert.ok([slot, 'shell.overlay'].includes(name)); setup(); }, register },
+    slots: { inject(name: string, setup: () => void) { assert.equal(name, slot); setup(); }, register },
   };
 
   request.mock.mockImplementationOnce(async () => new Response(null, { status: 404 }));
@@ -186,15 +185,11 @@ await test('the classic client registers dictionaries and the bundle slot after 
   assert.equal(request.mock.callCount(), 3, 'one request per activation');
   assert.deepEqual(structuredClone(registerLocale.mock.calls.map(call => call.arguments)), [[ns, dictionaries]]);
   assert.deepEqual(get.mock.calls.map(call => call.arguments[0]), ['pwsh-sandbox']);
-  assert.equal(register.mock.callCount(), 2);
-  const [overlay, overlayComponent] = register.mock.calls[0]!.arguments;
-  assert.deepEqual([overlay.name, overlay.id, overlay.locale], ['shell.overlay', ns, ns]);
-  assert.equal(typeof overlayComponent, 'function');
-  const [config, component] = register.mock.calls[1]!.arguments;
+  assert.equal(register.mock.callCount(), 1);
+  const [config, component] = register.mock.calls[0]!.arguments;
   assert.deepEqual([config.name, config.key, config.locale], [slot, ns, ns]);
   assert.equal(typeof component, 'function');
   const injection = config.inject();
-  assert.equal(typeof injection.notify, 'function');
   assert.equal(injection.shellForm, form);
   assert.equal(injection.hooks.shellForm, form);
   let respond!: (response: Response) => void;
@@ -205,7 +200,7 @@ await test('the classic client registers dictionaries and the bundle slot after 
   await pending;
   assert.equal(registerLocale.mock.callCount(), 1);
   assert.equal(disposeLocale.mock.callCount(), 1);
-  assert.equal(register.mock.callCount(), 2);
+  assert.equal(register.mock.callCount(), 1);
 
   const englishOnly = ctx.plugin(() => {});
   await englishOnly;
@@ -217,6 +212,8 @@ await test('the classic client registers dictionaries and the bundle slot after 
 
 await test('public pinned dependencies resolve and atomic-write is usable', async t => {
   assert.equal(packageJson.engines.dsh, SUPPORTED_DSH);
+  assert.deepEqual(Object.keys(packageJson.dependencies).sort(), ['@deepseek-ai/dsh-atomic-write', '@deepseek-ai/dsh-error',
+    '@deepseek-ai/dsh-win32-process', '@deepseek-ai/schemastery', 'koffi']);
   const dshDevDependencies = Object.entries(packageJson.devDependencies).filter(([name]) => name.startsWith('@deepseek-ai/dsh-'));
   const dependencies = [...Object.entries(packageJson.dependencies), ...Object.entries(packageJson.peerDependencies), ...dshDevDependencies];
   for (const [name, version] of dependencies) {
@@ -489,18 +486,7 @@ await test('checkout install, offline recovery and removal preserve shared Shell
       assert.equal(rebuilds.mock.callCount(), 0);
       assert.equal(readFileSync(patchFile, 'utf8'), beforeRead);
       const feedbackUrl = 'http://localhost/api/git-bash-on-win/feedback';
-      for (const method of ['GET', 'POST']) assert.equal((await routes.fetch(new Request(feedbackUrl, { method }),
-        { principal: { kind: 'other' } })).status, 403);
-      const { NativeHold } = await import(${JSON.stringify(pathToFileURL(join(packageRoot, 'lib/runtime/ntfs-filesystem.js')).href)});
-      const denied = mock.method(NativeHold.prototype, 'linkTo', () => { throw Object.assign(new Error('fixture probe denial'), { win32Code: 5 }); });
-      syncBuiltinESMExports();
-      try {
-        await assert.rejects(ctx.shell.execute(ctx.shell.resolve({ command: 'true', sandboxPolicy: { mode: 'read-only', workspaceRoot: home } })), error => {
-          assert.equal(error.messages[0].key, 'error.confirmationUnavailable');
-          fs.writeFileSync(join(home, 'recovery-command'), error.messages[0].params.command);
-          return true;
-        });
-      } finally { denied.mock.restore(); syncBuiltinESMExports(); }
+      for (const method of ['GET', 'POST']) assert.equal((await routes.fetch(new Request(feedbackUrl, { method }), ctx.connection.browserPeer)).status, 404);
       const first = rebuild();
       const busy = await rebuild();
       assert.equal(busy.ok, false);
@@ -523,51 +509,37 @@ await test('checkout install, offline recovery and removal preserve shared Shell
     success(await run([process.execPath, identityEntry, profile, home, runtime.manifest]));
     const published = JSON.parse(readFileSync(join(cache, 'current.json'), 'utf8')) as { sourceRoot: string };
     assert.equal(published.sourceRoot, fixture.source);
-    assert.ok(statSync(sourceFile).nlink > before.links);
+    assert.equal(statSync(sourceFile).nlink, before.links);
   } finally { success(await purge()); }
   assert.equal(statSync(sourceFile).nlink, before.links);
   assert.deepEqual(parse(readFileSync(patchPath, 'utf8')), patches);
-  const recovery = readFileSync(join(home, 'recovery-command'), 'utf8');
-  assert.ok(recovery.endsWith("/package.json'"), 'the command includes the DSH installation anchor');
-  const git = discoverGitInstallation(process.env.DSH_TEST_GIT_BASH);
-  success(await run([join(git.root, 'bin/bash.exe'), '--noprofile', '--norc', '-c', 'unset ELECTRON_RUN_AS_NODE\nPATH=/usr/bin\n' + recovery]));
-  const sharedGeneration = readFileSync(join(cache, 'current.json'), 'utf8');
-  const sharedLinks = statSync(sourceFile).nlink;
-  // Application-owned profiles can live anywhere. DSH selects an installation bundle before a profile-local copy.
-  const appProfile = join(home, 'application-data'), install = join(home, 'application-installation');
-  const name = 'dsh-git-bash-on-win';
-  initProfile(appProfile, [name]);
-  const appAnchor = join(install, 'package.json');
-  const scoped = join(install, 'node_modules', '@deepseek-ai');
-  await mkdir(scoped, { recursive: true });
-  await writeFile(appAnchor, '{}');
-  await symlink(dirname(runtime.cliRequire.resolve('@deepseek-ai/dsh-app-boot/package.json')), join(scoped, 'dsh-app-boot'), 'junction');
-  await symlink(packageRoot, join(install, 'node_modules', name), 'junction');
-  const otherCopy = join(appProfile, 'node_modules', name);
-  await mkdir(otherCopy, { recursive: true });
-  await writeFile(join(otherCopy, 'package.json'), JSON.stringify({ name }));
-  const appRecovery = (anchor: string) => run([process.execPath, join(packageRoot, 'lib/link-runtime-cache.js'),
-    home, appProfile, sourceFile, anchor]);
-  const mismatch = await appRecovery(runtime.manifest);
-  assert.notEqual(mismatch.exitCode, 0);
-  assert.match(mismatch.stderr, /this copy of DSH Git Bash on Windows/);
-  assert.equal(readFileSync(join(cache, 'current.json'), 'utf8'), sharedGeneration);
-  try {
-    success(await appRecovery(appAnchor));
-    assert.equal(readFileSync(join(cache, 'current.json'), 'utf8'), sharedGeneration, 'both profiles reuse the published generation');
-    assert.equal(statSync(sourceFile).nlink, sharedLinks);
-  } finally { success(await purge()); }
-  assert.equal(statSync(sourceFile).nlink, before.links);
-  const prepare = () => fixture.prepare(false, new AbortController().signal, cache);
-  // Standalone script imports must resolve with native profile autoInstallPeers:false.
-  // No repository node_modules junction or custom module resolver hides omissions.
-  const invalidHelper = await run([process.execPath, join(packageRoot, 'lib/setup/link-helper.js')]);
-  assert.notEqual(invalidHelper.exitCode, 0);
-  assert.match(invalidHelper.stderr, /Expected a setup plan path and digest/);
-  const invalidLauncher = await run([process.execPath, join(packageRoot, 'lib/bash-launcher.js')]);
-  assert.notEqual(invalidLauncher.exitCode, 0);
-  assert.match(invalidLauncher.stderr, /Invalid private Git Bash invocation/);
-
+  for (const dead of ['debugger', 'setup', 'bash-launcher.js', 'link-runtime-cache.js', 'rebuild-feedback.js']) {
+    assert.equal(pathExists(join(packageRoot, 'lib', dead)), false);
+  }
+  // Replace the bundled file only inside this owned installation, detaching the package-store hardlink.
+  const shimCheck = join(fixture.directory, 'shim-refresh.mjs');
+  await writeFile(shimCheck, `
+    import assert from 'node:assert/strict';
+    import { readFile, writeFile, rename, unlink } from 'node:fs/promises';
+    import { join } from 'node:path';
+    import { prepareRuntime, bundledShimUrl } from ${JSON.stringify(pathToFileURL(join(packageRoot, 'lib/runtime/runtime-cache.js')).href)};
+    const [cacheDirectory, gitBashPath] = process.argv.slice(2);
+    const prepare = async () => {
+      await (await prepareRuntime({ cacheDirectory, gitBashPath }, new AbortController().signal)).release();
+      return JSON.parse(await readFile(join(cacheDirectory, 'current.json'), 'utf8'));
+    };
+    const before = await prepare(), bytes = await readFile(bundledShimUrl);
+    const saved = new URL('./original.dll', bundledShimUrl);
+    await rename(bundledShimUrl, saved);
+    try {
+      await writeFile(bundledShimUrl, Buffer.concat([bytes, Buffer.from([0])]), { flag: 'wx' });
+      const after = await prepare();
+      assert.notEqual(before.generationId, after.generationId);
+      assert.equal(before.patchAbi, after.patchAbi);
+    } finally { await unlink(bundledShimUrl); await rename(saved, bundledShimUrl); }
+  `);
+  success(await run([process.execPath, shimCheck, cache, sourceFile]));
+  const prepare = () => fixture.prepare(false, t.signal, cache);
   const pin = await prepare();
   try {
     const blocked = await operation('remove', 'dsh-git-bash-on-win', '--purge-cache');

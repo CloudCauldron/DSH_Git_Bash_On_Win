@@ -14,26 +14,22 @@
 
 ## **2 - 核心特性**
 
-- **完整支持 DSH 三种沙箱模式**
-  在 `read-only`、`workspace-write` 与 `danger-full-access` 下均可直接运行 Git Bash，无需放宽沙箱或改用 WSL，支持管道、子 Shell、原生子进程与多会话并发。
-- **单份硬链接共享，几乎不额外占用磁盘空间**
-  通过 NTFS 硬链接复用本机 Git 文件，全模式共用同一份基础目录，无需复制额外副本。
-- **同一 DSH 主目录内共享运行时缓存**
-  运行时文件与硬链接均保存在 DSH 主目录的共享缓存中，不修改 Windows 注册表、全局 `PATH`、环境变量及源 Git / DSH 的文件内容与权限（ACL），日常 Git Bash 与 WSL 不受影响。彻底卸载清理后可还原源文件硬链接计数（创建或移除硬链接可能更新 NTFS 变更时间、存档位及日志或审计记录）。
+- 支持 DSH 的三种沙箱模式，沿用原生的工作区授权、审批、超时、标准流与后台任务管理。
+- 每代运行环境独立复制 Git 的 `usr/bin` 普通文件（实测 ucrt64 约 89 MiB），其他资源通过目录联接访问。同一 DSH 主目录下的命令与配置共享匹配的版本。旧版本可能保留到下次构建或离线清理。
+- 缓存和写锁位于 DSH 主目录内。插件保持 Git 原文件及其权限、注册表、全局环境和日常 Git Bash 环境不变。
 
 ## **3 - 使用指南**
 
-### **3.1 - 配置 Git Bash 路径与手动链接**
+### **3.1 - 配置 Git Bash 路径与手动重建**
 
 1. 在 DSH Web 左侧边栏进入 **「插件」**，选择 **「DSH Git Bash on Windows」**。
-2. 在 **「Git Bash 路径」** 中按需填写并点击 **「保存并链接」**：
+2. 在 **「Git Bash 路径」** 中按需填写并点击 **「保存并重建」**：
    - **自动查找（推荐）**：留空即可自动探测常见安装目录下的 Git for Windows。
    - **手动指定**：便携版或自定义安装可填入 `bin/bash.exe` 或 `usr/bin/bash.exe` 的绝对路径。
-   - **恢复默认**：清空输入框并点击 **「保存并链接」**，清除覆盖路径并恢复默认探测。
-   - **链接进度**：输入框下方会显示链接进度和当前相对路径，链接结束后恢复路径说明。
+   - **恢复默认**：清空输入框并点击 **「保存并重建」**，清除覆盖路径并恢复默认探测。
 3. 常见操作说明：
    - **多标签页冲突**：若其他窗口先行保存过修改，界面会弹出 **「未保存」** 提示并列出最新路径，核对后重试即可。
-   - **保存后链接失败**：已保存的路径会继续保留，排除路径或权限问题后再次点击 **「保存并链接」** 即可。
+   - **保存后重建失败**：已保存的路径会继续保留，排除路径或权限问题后再次点击 **「保存并重建」** 即可。
    - **共享参数**：超时、输出上限、工作目录与退出宽限期仍在 **「Shell」** 设置页管理。
 
 若手动编辑配置的 `cordis.patch.yml`，修改 `pwsh-sandbox.config` 时请务必保留原有的共享 Shell 参数（DSH 会整段替换 `config`）：
@@ -45,34 +41,17 @@
     # 在此保留原有的 timeoutMs、maxOutputBytes、graceMs 等共享 Shell 设置
 ```
 
-### **3.2 - 自动建链、权限确认与无头模式**
+### **3.2 - 自动准备与 Git 升级**
 
-- **自动准备**：首次执行 Bash 命令或 Git 升级导致关键文件变更时自动建立硬链接，完成后提示 **「已建立链接」**。
-- **按需授权（UAC）**：若 Git 位于 `C:\Program Files\Git` 等受保护目录，建链时会按需请求一次管理员授权。授权仅用于创建硬链接，日常命令仍以普通权限运行。
-- **无头模式（`dsh headless`）**：无交互窗口且需提权时，终端会中止并打印修复命令；在 Windows Git Bash 中运行后重启 DSH 重试即可：
+首次执行命令时，插件以当前用户权限准备缓存，无头模式也使用相同流程。升级 Git 前先关闭所有共享该主目录的 DSH 实例，升级完成后再启动。下一条命令检查 Git、MSYS 和软件包清单，发现变更时自动重建。自定义修改或缓存损坏后，可点击 **「保存并重建」** 强制重新复制。
 
-    ```bash
-    node '<已安装插件目录>/lib/link-runtime-cache.js' '<DSH 主目录绝对路径>' '<DSH 配置目录绝对路径>' '<bash.exe 绝对路径>' ['<DSH 安装锚点路径>']
-    ```
+若升级时仍有 DSH 实例运行，请暂停命令并关闭所有实例，完成升级并修复更新程序报告的问题，再启动 DSH。重试前先检查被中断命令的执行结果。若仍有问题，可手动重建，或关闭全部实例后按第 6.2 节离线清理。
 
-## **4 - 注意事项**
+## **4 - 命令行为**
 
-<span style="margin-left:2em;">&#8203;</span>使用和排错时请注意以下事项：
+管道、脚本和 Git 使用 Bash 语法。Windows ACL、MSYS 路径转换、Git 随附工具和原生 Windows 程序决定实际行为。DSH 管理进程范围并等待其结束。Windows 打包应用启动的原生后代可能在 DSH 报告结束后继续运行。
 
-1. **Git 与 DSH 主目录须位于同一 NTFS 分区**
-   Windows 硬链接无法跨盘符创建，Git 安装目录与 `DSH_HOME` 必须处于同一 NTFS 卷。
-2. **勿在同一配置中混用其他改写 Shell 的插件**
-   插件直接复用原生 `pwsh-sandbox`、`tool-pwsh` 与 `preset-standard`、`preset-ptc`、`preset-cordis` 条目，请勿混用其他 Shell 替换插件或改动对应模块名。
-3. **源目录、缓存目录与工作区不得重叠**
-   各配置共享 `DSH_HOME/.dsh-git-bash-on-win`。Git 源目录、缓存目录与命令工作区三者不可相同或互相包含，路径沿途应避免经过 Junction 或符号链接。
-4. **源 Git 文件不可设为「只读」**
-   请选择运行时文件允许创建和移除硬链接的 Git 安装。同一文件的所有硬链接共享 Windows「只读」属性。
-5. **缓存体积与文件更新**
-   硬链接共享源文件磁盘数据，文件管理器显示的体积并非额外占用；原地修改源文件会同步生效。升级 Git 或附属文件缺失时，在插件页点击 **「保存并链接」** 即可重建。
-6. **普通权限运行，勿直接递归删除缓存**
-   安装、更新及日常使用请以普通权限启动 DSH；切勿用 `rm -rf` 或文件管理器强删 `.dsh-git-bash-on-win`，清理时须先关闭所有相关 DSH 实例再执行第 6.2 节命令。
-7. **禁用插件后开始新会话**
-   在 DSH `0.2.2-rc.5` 中，点击 **「新会话」** 可能会重新打开插件启用期间创建的空白会话。按 DSH 的设计，启用或禁用插件时，已打开的会话会继续使用原先的智能体预设版本。此时命令已由 PowerShell 执行，但模型看到的工具名仍是 `bash`，因此可能会先尝试 Bash 语法。禁用插件后创建的会话从一开始就使用 `pwsh`。如果 DSH 重新打开了之前的空白会话，请保持插件禁用，完全退出 DSH，再重新打开并开始新会话。
+优先使用运行环境 PATH 中的 bash 或 sh。原生 `bin/bash.exe` 包装程序会启动已安装的 MSYS，在受限模式下可能失败。MSYS 子进程通过已安装的 `usr/bin` 路径启动时会重定向，原生程序硬编码该路径时会绕过此处理。受限模式下 Node 管道子进程可能报告 EPERM。Bash 对带引号的 Windows 扩展路径的处理与原生 argv 不同。
 
 ## **5 - 环境要求**
 
@@ -86,6 +65,8 @@
 
 ### **6.1 - 从源码安装插件**
 
+从旧版硬链接后端切换前，请先用旧版的卸载流程彻底移除旧缓存。新格式会拒绝旧版缓存和无法确认所有权的目录。
+
 1. 在 **Windows 原生 Git Bash** 中进入仓库根目录安装依赖并注册插件（仓库已包含 `lib/`，改动过 `src/` 请先运行 `pnpm build`）：
 
     ```bash
@@ -97,7 +78,7 @@
     - 若安装到 **DSH Desktop**，将 `web` 改为 `desktop`；若有多个 DSH 安装，可用 `DSH_PACKAGE_JSON` 指定目标 `@deepseek-ai/dsh/package.json` 绝对路径。
     - 若 DSH 可按名称解析 `pnpm`，也可直接运行 `dsh plugin --profile web add "file:$(cygpath -m "$PWD")" --ignore-scripts`。
 
-2. 更新时，请先关闭共用该主目录的所有宿主，更新各个已安装此插件的配置，再以普通权限重启 DSH。
+2. 后续更新时，请先关闭共用该主目录的所有宿主，更新各个已安装此插件的配置，再以普通权限重启 DSH。
 
 ### **6.2 - 离线清理缓存与故障排查**
 
@@ -113,15 +94,14 @@ node '<已安装插件目录>/lib/purge-runtime-cache.js' '<DSH 主目录绝对�
 | :---: | :---: |
 | 无法确认所有权或含重解析点 | 核对路径是否为 `DSH_HOME` 下的 `.dsh-git-bash-on-win` |
 | 目录被占用或存在活动引用 | 关闭所有共用该主目录的 DSH 进程后重试 |
-| 存在未退出的提权计划或阻塞 | 等待提权辅助进程释放句柄后重新清理 |
-| 拒绝访问或只读文件阻碍 | 关闭占用文件的进程（若文件为只读，请先检查源 Git 安装再重试） |
-| 链接中断或源目录异常 | 检查源 Git 完整性后点击 **「保存并链接」** 重试 |
+| 拒绝访问或缓存文件被占用 | 解除报告的阻碍后重试离线清理 |
+| 准备中断或源目录异常 | 检查源 Git 完整性后点击 **「保存并重建」** 重试 |
 
-清理成功后重启 DSH 即可按需重建，或点击 **「保存并链接」** 立即重建。
+清理成功后重启 DSH 即可按需重建，或点击 **「保存并重建」** 立即重建。
 
 ### **6.3 - 彻底卸载插件**
 
-<span style="margin-left:2em;">&#8203;</span>若只从一个配置移除插件，请按第 1 步清除该配置的覆盖项，关闭使用它的宿主，并省略下方命令中的 `--purge-cache`，其他配置可继续使用缓存。如需彻底卸载插件并还原源文件硬链接计数，请按顺序操作：
+<span style="margin-left:2em;">&#8203;</span>若只从一个配置移除插件，请按第 1 步清除该配置的覆盖项，关闭使用它的宿主，并省略下方命令中的 `--purge-cache`，其他配置可继续使用缓存。如需彻底卸载插件，请按顺序操作：
 
 1. **移除配置项**：针对每个要卸载插件的配置，在原生配置编辑器或 `cordis.patch.yml` 中仅删去 `pwsh-sandbox` 下的 `gitBashPath`（保留 `timeoutMs`、`maxOutputBytes`、`graceMs` 等共享设置；若手动添加的条目已为空可一并删除）。
 2. **关闭相关 DSH 实例**：退出所有共用该主目录的 DSH 进程（含空闲实例），防止后台重建缓存。
@@ -138,7 +118,7 @@ node '<已安装插件目录>/lib/purge-runtime-cache.js' '<DSH 主目录绝对�
 
 <span style="margin-left:2em;">&#8203;</span>请在 **Windows 原生 Git Bash** 中执行以下命令。构建通过 `@typescript/native`（TypeScript 7）编译 `src/` 至受跟踪的 `lib/`，`typescript`（TypeScript 6）仅用于 ESLint；修改 `src/` 后请运行 `pnpm build` 并一并提交产物。
 
-完整构建还会使用 x64 MSVC 和 Windows SDK 编译 `native/dsh-msys-compat.c`。`native/build.json` 记录发布工具版本、经审查的导入函数和获准的 DLL 哈希。工具发现使用 `vswhere`，优先选择固定工具集；开发时可通过 `DSH_MSVC_TOOLS_DIR`、`DSH_WINSDK_DIR` 和 `DSH_WINSDK_VERSION` 指定工具。开发构建验证 DLL 并报告实际工具版本及哈希；`pnpm build:release` 和 `pnpm pack` 还会强制校验发布记录。安装后的包不需要编译器。原生产物在[后端重构](docs/backend-20261122-design-decisions.md)期间独立测试，现有执行器尚未切换至它。
+完整构建还会使用 x64 MSVC 和 Windows SDK 编译 `native/dsh-msys-compat.c`。`native/build.json` 记录发布工具版本、经审查的导入函数和获准的 DLL 哈希。工具发现使用 `vswhere`，优先选择固定工具集；开发时可通过 `DSH_MSVC_TOOLS_DIR`、`DSH_WINSDK_DIR` 和 `DSH_WINSDK_VERSION` 指定工具。开发构建验证 DLL 并报告实际工具版本及哈希；`pnpm build:release` 和 `pnpm pack` 还会强制校验发布记录。安装后的包不需要编译器。
 
 `pnpm build:js` 和 `pnpm test:browser` 会保留此前完整构建的 DLL。请先运行 `pnpm build`，修改原生代码后也必须重新完整构建。
 
@@ -152,18 +132,4 @@ pnpm test:release   # 环境预检 + check + lint + test:windows
 pnpm test:browser   # Playwright 浏览器配置与弹窗测试
 ```
 
-如需手动验证真实 UAC 弹窗或测量运行时冷复制耗时，先执行 `pnpm build`，再按需运行：
-
-```bash
-# 真实 UAC 弹窗验证（approve / deny / late）
-DSH_GIT_BASH_UAC_TEST=approve node --test --test-name-pattern='manual UAC' test/provisioning.test.ts
-DSH_GIT_BASH_UAC_TEST=deny node --test --test-name-pattern='manual UAC' test/provisioning.test.ts
-DSH_GIT_BASH_UAC_TEST=late node --test --test-name-pattern='manual UAC' test/provisioning.test.ts
-
-# 浏览器集成 UAC 验证
-DSH_GIT_BASH_UAC_TEST=deny pnpm test:browser
-DSH_GIT_BASH_UAC_TEST=approve pnpm test:browser
-
-# 运行时冷复制耗时
-DSH_BENCH_COLD_ONLY=1 node --test test/benchmark-runtime.ts
-```
+可通过 `DSH_BENCH_COLD_ONLY=1 node --test test/benchmark-runtime.ts` 测量冷复制耗时。

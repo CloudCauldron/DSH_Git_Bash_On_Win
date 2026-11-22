@@ -1,33 +1,8 @@
 import type {} from '@deepseek-ai/dsh-client-connection';
 import type { Context } from '@deepseek-ai/cordis';
 import type { Entry } from '@deepseek-ai/cordis-plugin-loader';
-import type { SubprocessSpawnSpec } from '@deepseek-ai/dsh-subprocess';
 import { registerCatalogs } from './locale/catalogs.ts';
 import { LocalizedError } from './locale/errors.ts';
-
-/** The pinned native Shell waits for target done, not managed-range settlement.
- * Shadow only this invocation's lookup; the provider still owns all processes. */
-export function commandReceiver<T extends object>(receiver: T, ctx: Context, onRangeFailure: (error: unknown) => void): T {
-  const provider = ctx.subprocess;
-  const scoped = ctx.extend({ subprocess: {
-    spawn(spec: SubprocessSpawnSpec) {
-      const child = provider.spawn(spec);
-      const join = async () => {
-        try {
-          if (!await child.waitForExit()) throw new LocalizedError('error.commandRangeUnconfirmed');
-        } catch (error) { onRangeFailure(error); throw error; }
-      };
-      return { ...child, done: child.done.then(
-        async outcome => { await join(); return outcome; },
-        async error => { await join(); throw error; },
-      ) };
-    },
-  } });
-  // Cordis traces ctx as read-only through the inherited service proxy. Define
-  // it on the derived receiver instead of assigning through that proxy.
-  Object.defineProperty(receiver, 'ctx', { value: scoped });
-  return receiver;
-}
 
 export const inject = { loader: { await: false } };
 

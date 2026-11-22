@@ -4,15 +4,13 @@ import { createRequire } from 'node:module';
 import { test } from 'node:test';
 import { Script } from 'node:vm';
 import React from 'react';
-import { Context } from '@deepseek-ai/cordis';
 import { describeFailure, LocalizedAggregateError, LocalizedError } from '../src/locale/errors.ts';
-import { RebuildFeedback, type RebuildNotice } from '../src/rebuild-feedback.ts';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 import type { ConfigFormSnapshot } from '@deepseek-ai/dsh-client-ui-settings/client';
 
 const require = createRequire(import.meta.url);
 
-await test('Save and link fences the path write and rebuilds once after confirmation or an unchanged path', async t => {
+await test('Save and rebuild fences the path write and rebuilds once after confirmation or an unchanged path', async t => {
   type Snapshot = ConfigFormSnapshot<{ gitBashPath?: string }>;
   let state: Snapshot = { status: 'loading', value: undefined, revision: undefined, writable: false, user: {}, base: {} };
   const listeners = new Set<() => void>();
@@ -29,16 +27,9 @@ await test('Save and link fences the path write and rebuilds once after confirma
   const ns = 'dsh-git-bash-on-win';
   const messages = (lang: string) => (require(ns + '/locale/' + lang + '.json') as { messages: Record<string, string> }).messages;
   const dictionaries = { zh: messages('zh'), en: messages('en') };
-  const host = new Context();
-  t.after(() => host.fiber.dispose());
-  const feedback = new RebuildFeedback(host);
-  const owner = host.extend({ invocation: { peer: { principal: { kind: 'owner' }, interactions: 'answer' } } });
-  const dismiss = t.mock.fn((url: string) => feedback.handle(new Request('http://localhost/' + url, { method: 'POST' })));
   const rebuild = t.mock.fn(async () => new Response(null, { status: 204 }));
   const fetch = t.mock.fn(async (url: string, options: RequestInit) => {
     if (url === 'api/git-bash-on-win/locales') return Response.json({ ok: true, dictionaries });
-    if (url === 'api/git-bash-on-win/feedback') return feedback.handle(new Request('http://localhost/' + url));
-    if (url.startsWith('api/git-bash-on-win/feedback?action=dismiss')) return dismiss(url);
     assert.equal(url, 'api/git-bash-on-win/rebuild');
     assert.deepEqual({ ...options }, { method: 'POST', redirect: 'error' });
     return rebuild();
@@ -46,11 +37,9 @@ await test('Save and link fences the path write and rebuilds once after confirma
   type PageProps = {
     shellForm: typeof form;
     useShellForm<T>(select: (s: Snapshot) => T): T;
-    hooks: { linkProgress: ReturnType<typeof createSnapshotStore<RebuildNotice['progress']>> };
-    useLinkProgress<T>(select: (s: RebuildNotice['progress']) => T): T;
     t(key: string, params?: Record<string, string>): string;
   };
-  let Page!: React.ComponentType<PageProps>, Overlay!: React.ComponentType<Pick<PageProps, 't'>>;
+  let Page!: React.ComponentType<PageProps>;
   let injected!: Partial<PageProps>;
   function Modal({ description, children }: { description?: React.ReactNode; children?: React.ReactNode }) {
     return React.createElement('section', null, description, children);
@@ -63,24 +52,13 @@ await test('Save and link fences the path write and rebuilds once after confirma
   }
   function SettingsValueField() { return null; }
   function Toast() { return null; }
-  function createSnapshotStore<T>(initial: T) {
-    let value = initial;
-    const listeners = new Set<() => void>();
-    return {
-      getSnapshot: () => value,
-      set(next: T) { value = next; for (const listener of listeners) listener(); },
-      subscribe(listener: () => void) { listeners.add(listener); return () => { listeners.delete(listener); }; },
-    };
-  }
   const applyContext = {
-    remote: { async $mount() {} }, get: () => owner.get('gitBashFeedback'),
     fiber: { uid: 1 }, effect: (setup: () => unknown) => setup(),
     locale: { register() {} }, configForms: { get: () => form },
     slots: {
       inject: (_slot: string, setup: () => void) => setup(),
-      register(entry: { name: string; inject(): Partial<PageProps> }, component: typeof Page & typeof Overlay) {
-        if (entry.name === 'shell.overlay') Overlay = component;
-        else { Page = component; injected = entry.inject(); }
+      register(entry: { name: string; inject(): Partial<PageProps> }, component: typeof Page) {
+        assert.equal(entry.name, 'plugins.bundle.config'); Page = component; injected = entry.inject();
       },
     },
   };
@@ -91,21 +69,14 @@ await test('Save and link fences the path write and rebuilds once after confirma
   });
   await load.mock.calls[0]!.arguments[0].factory(name => {
     if (name === 'react') return React;
-    if (name === '@deepseek-ai/dsh-client-store') return { createSnapshotStore };
     return { SettingsForm, SettingsValueField, Button: 'button', Modal, Toast };
   }).apply(applyContext);
 
   let language: keyof typeof dictionaries = 'en';
   const useShellForm = <T,>(select: (s: Snapshot) => T) => select(React.useSyncExternalStore(form.subscribe, form.getSnapshot));
-  const hooks = injected.hooks!;
-  const useLinkProgress: PageProps['useLinkProgress'] = select =>
-    select(React.useSyncExternalStore(hooks.linkProgress.subscribe, hooks.linkProgress.getSnapshot));
   const translate: PageProps['t'] = (key, params) => key === 'close' ? (language === 'en' ? 'Close' : '关闭')
     : (dictionaries[language][key] ?? key).replace(/\{(\w+)\}/g, (match, name: string) => params?.[name] ?? match);
-  const page = () => React.createElement(React.Fragment, null,
-    React.createElement(Page, { ...injected, shellForm: form, useShellForm, hooks, useLinkProgress, t: translate }),
-    React.createElement(Overlay, { t: translate }),
-  );
+  const page = () => React.createElement(Page, { ...injected, shellForm: form, useShellForm, t: translate });
   let renderer!: ReactTestRenderer;
   await act(async () => { renderer = create(page()); });
   t.after(() => { renderer.unmount(); });
@@ -120,14 +91,11 @@ await test('Save and link fences the path write and rebuilds once after confirma
     assert.equal(modal.props.title, translate(key));
     assert.equal(textOf(modal), description);
     assert.deepEqual(modal.findAllByType('code').map(textOf), code);
-    assert.equal(modal.props.children, undefined, 'feedback belongs in the description');
-    assert.equal(modal.findAllByType('pre').length, 0);
-    const blocks = modal.findAllByType('code').filter(node => node.props.style?.display === 'block');
-    assert.deepEqual(blocks.map(textOf), raw === undefined ? [] : [raw]);
-    for (const block of blocks) assert.equal(block.props.style.marginTop, 4);
+    assert.ok(modal.props.children);
+    if (raw !== undefined) assert.ok(modal.findAllByType('code').some(node => textOf(node) === raw));
     assert.equal(modal.props.closeLabel, translate('close'));
     assert.equal(renderer.root.findAllByType(Toast).length, 0);
-    assert.equal(renderer.root.findByType(Page).findAllByType(Modal).length, 0);
+    assert.equal(renderer.root.findByType(Page).findAllByType(Modal).length, 1);
   }
   const closeModal = () => act(() => { renderer.root.findByType(Modal).props.onClose(); });
   const edit = (value: string) => field().props.onEdit(value);
@@ -152,7 +120,7 @@ await test('Save and link fences the path write and rebuilds once after confirma
   assert.equal(field().props.label, dictionaries.zh['path.label']);
   assert.equal(field().props.hint, dictionaries.zh['path.hint']);
   assert.equal(field().props.placeholder, dictionaries.zh['path.placeholder']);
-  assert.deepEqual(button().children, [dictionaries.zh['action.saveLink']]);
+  assert.deepEqual(button().children, [dictionaries.zh['action.saveRebuild']]);
   assert.equal(field().props.text, text);
   assert.equal(mutate.mock.callCount(), 0);
   assert.equal(rebuild.mock.callCount(), 0);
@@ -202,7 +170,7 @@ await test('Save and link fences the path write and rebuilds once after confirma
   assert.equal(field().props.text, 'inherited');
   assert.equal(mutate.mock.callCount(), 2, 'no user override to clear');
   await act(async () => { priorToast(); });
-  assert.equal(renderer.root.findByType(Toast).props.text, translate('link.ok'), 'an expired toast cannot dismiss its successor');
+  assert.equal(renderer.root.findByType(Toast).props.text, translate('rebuild.ok'), 'an expired toast cannot dismiss its successor');
 
   await act(async () => { publish({ user: { gitBashPath: 'custom', timeoutMs: 500 }, value: { gitBashPath: 'custom' } }); });
   await act(async () => { edit(' '); });
@@ -229,43 +197,38 @@ await test('Save and link fences the path write and rebuilds once after confirma
   await act(async () => { click(); });
   assert.equal(rebuild.mock.callCount(), 4, 'the click lock covers the pending POST');
   const path = 'C:/Tools/{path}/<&>/bin/bash.exe';
-  await act(async () => { feedback.setProgress({ path, completed: 32, total: 64 }); });
-  assert.equal(field().props.hint, 'Linked 32 of 64 · ' + path);
-  assert.deepEqual(button().children, ['Linking…']);
-  await act(async () => { feedback.setProgress(undefined); });
-  assert.equal(field().props.hint, dictionaries.en['path.hint']);
   const diagnostic = 'Access denied\n<original> & {path}';
   const native = new Error(diagnostic);
-  const operation = new LocalizedError('error.readOnlySource', { path });
+  const operation = new LocalizedError('error.unexpectedJunction', { path });
   const rollback = new LocalizedAggregateError([new SuppressedError(native, operation)],
     'error.directoryRollbackFailed', { path }, { cause: native });
-  const failure = new LocalizedAggregateError([rollback, new LocalizedError('error.brokerRangeUnsettled')], 'error.elevatedCleanupFailed');
+  const failure = new LocalizedAggregateError([rollback, new LocalizedError('error.commandRangeUnconfirmed')], 'error.providerCleanupFailed');
   const reason = describeFailure(failure);
-  assert.deepEqual(reason.messages, [{ key: 'error.elevatedCleanupFailed' }, { key: 'error.directoryRollbackFailed', params: { path } },
-    { key: 'error.readOnlySource', params: { path } }, { key: 'error.brokerRangeUnsettled' }]);
+  assert.deepEqual(reason.messages, [{ key: 'error.providerCleanupFailed' }, { key: 'error.directoryRollbackFailed', params: { path } },
+    { key: 'error.unexpectedJunction', params: { path } }, { key: 'error.commandRangeUnconfirmed' }]);
   assert.equal(reason.diagnostic, diagnostic);
   assert.equal(rollback.cause, native);
   assert.equal(failure.errors[0], rollback);
   const explanation = () => reason.messages!.map(item => translate(item.key, { path })).join(translate('error.separator'));
   assert.equal(reason.error, explanation() + '; ' + diagnostic);
   await act(async () => { finish(Response.json(reason, { status: 500 })); });
-  checkModal('link.failedAfterSave', explanation() + diagnostic, [path, path, diagnostic], diagnostic);
+  checkModal('rebuild.failedAfterSave', explanation() + diagnostic, [path, path, diagnostic], diagnostic);
   assert.equal(field().props.text, text);
   assert.equal(button().props.disabled, false);
   await act(async () => { language = 'zh'; renderer.update(page()); });
-  checkModal('link.failedAfterSave', explanation() + diagnostic, [path, path, diagnostic], diagnostic);
+  checkModal('rebuild.failedAfterSave', explanation() + diagnostic, [path, path, diagnostic], diagnostic);
   await closeModal();
   assert.equal(rebuild.mock.callCount(), 4);
   rebuild.mock.mockImplementationOnce(async () => { throw new Error('offline'); });
   await act(async () => { click(); });
-  checkModal('link.failed', translate('error.unknown') + 'offline', ['offline'], 'offline');
+  checkModal('rebuild.failed', translate('error.unknown') + 'offline', ['offline'], 'offline');
   await closeModal();
   assert.equal(rebuild.mock.callCount(), 5, 'disconnect does not retry the POST');
   await act(async () => { click(); });
   const toast = renderer.root.findByType(Toast);
-  assert.equal(toast.props.text, translate('link.ok'));
+  assert.equal(toast.props.text, translate('rebuild.ok'));
   assert.equal(toast.props.tone, 'success');
-  assert.equal(renderer.root.findByType(Page).findAllByType(Toast).length, 0);
+  assert.equal(renderer.root.findByType(Page).findAllByType(Toast).length, 1);
   await act(async () => { toast.props.onDone(); });
   assert.equal(renderer.root.findAllByType(Toast).length, 0);
   assert.equal(rebuild.mock.callCount(), 6);
@@ -293,18 +256,12 @@ await test('Save and link fences the path write and rebuilds once after confirma
   await closeModal();
   assert.equal(field().props.text, 'another path');
   assert.equal(rebuild.mock.callCount(), 6);
-  // A known error can carry verbatim output from a subprocess as well as translated text.
-  const elevated = { key: 'error.elevatedSetup', params: { exit: '1', signal: 'null' } };
-  rebuild.mock.mockImplementationOnce(async () => Response.json({ error: diagnostic, messages: [elevated], diagnostic }, { status: 500 }));
   await act(async () => { edit('Host path'); });
-  await act(async () => { click(); });
-  checkModal('link.failed', translate(elevated.key, elevated.params) + diagnostic, ['1', 'null', diagnostic], diagnostic);
-  await closeModal();
   rebuild.mock.mockImplementationOnce(async () => Response.json({
     error: diagnostic, messages: [{ key: 'error.unrecognizedInThisClient' }],
   }, { status: 500 }));
   await act(async () => { click(); });
-  checkModal('link.failed', '未知错误。' + diagnostic, [diagnostic], diagnostic);
+  checkModal('rebuild.failed', '未知错误。' + diagnostic, [diagnostic], diagnostic);
   await closeModal();
   for (const blank of ['', ' \t ']) {
     await act(async () => { publish({ value: { gitBashPath: blank } }); });
@@ -314,16 +271,19 @@ await test('Save and link fences the path write and rebuilds once after confirma
     checkModal('save.review', '最近保存的路径为空');
     await closeModal();
   }
-  await act(async () => { feedback.failed(new Error('first')); feedback.failed(new Error('second')); });
-  checkModal('link.failed', translate('error.unknown') + 'first', ['first'], 'first');
-  dismiss.mock.mockImplementationOnce(() => new Response(null, { status: 503 }));
-  await closeModal();
-  checkModal('link.failed', translate('error.unknown') + 'first', ['first'], 'first');
-  await closeModal();
-  checkModal('link.failed', translate('error.unknown') + 'second', ['second'], 'second');
-  await closeModal();
-  assert.equal(renderer.root.findAllByType(Modal).length, 0);
-  assert.equal(dismiss.mock.callCount(), 3);
-  assert.equal(fetch.mock.calls.filter(call => call.arguments[0].endsWith('/feedback')).length, 1, 'one stream contract across overlay remounts');
-  assert.equal(fetch.mock.calls.filter(call => call.arguments[0].endsWith('/locales')).length, 1, 'one dictionary read per activation');
+  for (const stage of ['save', 'rebuild']) for (const success of [true, false]) {
+    const pending = Promise.withResolvers<boolean>();
+    if (stage === 'save') {
+      await act(async () => { edit('a new setting'); });
+      mutate.mock.mockImplementationOnce(() => pending.promise);
+    } else {
+      await act(async () => { edit(form.getSnapshot().value?.gitBashPath ?? ''); });
+      rebuild.mock.mockImplementationOnce(async () => { await pending.promise; return new Response(null, { status: 204 }); });
+    }
+    await act(async () => { click(); });
+    await act(async () => { renderer.unmount(); });
+    await act(async () => { renderer = create(page()); });
+    await act(async () => { if (success) pending.resolve(true); else pending.reject(Error('disconnected')); });
+    assert.equal(renderer.root.findAllByType(Modal).length + renderer.root.findAllByType(Toast).length, 0);
+  }
 });

@@ -1,28 +1,21 @@
 import assert from 'node:assert/strict';
-import fs, { readdirSync, unlinkSync } from 'node:fs';
-import fsp from 'node:fs/promises';
+import koffi from 'koffi';
+import fs, { readdirSync } from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
-import { mkdir, readFile, rename, symlink, writeFile } from 'node:fs/promises';
-import { basename, dirname, join, toNamespacedPath } from 'node:path';
+import { mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
+import { basename, dirname, join } from 'node:path';
 import { test } from 'node:test';
-import type { SandboxExecutionPolicy } from '@deepseek-ai/dsh-sandbox';
-import { nativeOnly, runtimeFixture } from './fixtures.ts';
+import { blockFile, nativeOnly, runtimeFixture } from './fixtures.ts';
 import { purgeRuntimeCache } from '../src/runtime/runtime-cache.ts';
-import { anchorPaths } from '../src/runtime/git-installation.ts';
 import {
-  admitDirectory, claimDirectory, createSetupLease, isBusy, NativeHold, openExclusiveMetadata, openOrdinaryFile,
-  pathExists, pinDirectory, removeTree, requireActiveLease, unlinkEntry,
+  admitDirectory, claimDirectory, createDirectory, isBusy, NativeHold, openOrdinaryFile,
+  pathExists, pinDirectory, unlinkEntry,
 } from '../src/runtime/ntfs-filesystem.ts';
-
-const signal = () => new AbortController().signal;
-const scope = (workspaceRoot: string, sessionId?: string): Pick<SandboxExecutionPolicy, 'mode' | 'workspaceRoot' | 'sessionId'> => ({
-  mode: 'read-only', workspaceRoot, sessionId: sessionId as SandboxExecutionPolicy['sessionId'],
-});
 
 await test('native pin and collector exclusion works in both acquisition orders', nativeOnly, async t => {
   const fixture = await runtimeFixture(t), prepared = await fixture.prepare();
   await prepared.release();
-  const generation = admitDirectory(join(fixture.cache, 'generations', (await fixture.current()).generationId));
+  const generation = admitDirectory(join(fixture.cache, 'g', (await fixture.current()).generationId));
   const pin = pinDirectory(generation);
   try {
     const peer = pinDirectory(generation); peer.close(); peer.close();
@@ -41,14 +34,14 @@ await test('purge preflight preserves a blocked root and succeeds after its bloc
   await prepared.release();
   const selected = await fixture.current(), markerPath = join(fixture.cache, '.owner.json');
   const marker = await readFile(markerPath);
-  const payload = join(fixture.cache, 'generations', selected.generationId, 'base/usr/lib/perl/module.pm');
+  const payload = join(fixture.cache, 'g', selected.generationId, 'r/usr/lib/perl/module.pm');
   const blocker = pinDirectory(admitDirectory(fixture.cache));
   try {
     await assert.rejects(purgeRuntimeCache(fixture.cache), isBusy);
     assert.deepEqual(await readFile(markerPath), marker);
     assert.deepEqual(await fixture.current(), selected);
     assert.ok(pathExists(payload));
-    assert.equal(fs.statSync(sourceFile).nlink, links + 1);
+    assert.equal(fs.statSync(sourceFile).nlink, links);
   } finally { blocker.close(); }
   await purgeRuntimeCache(fixture.cache);
   assert.equal(pathExists(fixture.cache), false);
@@ -98,356 +91,69 @@ await test('purge preflight finds a pin in any generation before deleting contro
   const second = await fixture.prepare(true);
   const selected = await fixture.current();
   await second.release();
-  const before = readdirSync(join(fixture.cache, 'generations')).sort();
+  const before = readdirSync(join(fixture.cache, 'g')).sort();
   await assert.rejects(purgeRuntimeCache(fixture.cache), isBusy);
   assert.equal((await fixture.current()).generationId, selected.generationId);
-  assert.deepEqual(readdirSync(join(fixture.cache, 'generations')).sort(), before);
-  for (const id of [old.generationId, selected.generationId]) assert.ok(pathExists(join(fixture.cache, 'generations', id, 'base/usr/lib/perl/module.pm')));
+  assert.deepEqual(readdirSync(join(fixture.cache, 'g')).sort(), before);
+  for (const id of [old.generationId, selected.generationId]) assert.ok(pathExists(join(fixture.cache, 'g', id, 'r/usr/lib/perl/module.pm')));
   await first.release();
-  const unknown = join(fixture.cache, 'generations', 'zz-unselected-held');
+  const unknown = join(fixture.cache, 'g', 'zz-unselected-held');
   await mkdir(unknown); await writeFile(join(unknown, 'payload'), 'owned');
   const lastPin = pinDirectory(admitDirectory(unknown));
   try {
     await assert.rejects(purgeRuntimeCache(fixture.cache), isBusy);
     assert.equal((await fixture.current()).generationId, selected.generationId);
-    assert.ok(pathExists(join(fixture.cache, 'generations', old.generationId, 'base/usr/lib/perl/module.pm')));
+    assert.ok(pathExists(join(fixture.cache, 'g', old.generationId, 'r/usr/lib/perl/module.pm')));
   } finally { lastPin.close(); }
   await purgeRuntimeCache(fixture.cache);
   assert.equal(pathExists(fixture.cache), false);
 });
 
-await test('retain-before-await protects an acquiring use through retirement and idempotent release', nativeOnly, async t => {
-  const fixture = await runtimeFixture(t), pin = await fixture.prepare();
-  const acquiring = pin.lease(scope(fixture.workspace), signal());
-  await pin.release(); await pin.release();
-  const use = await acquiring;
-  await assert.rejects(pin.lease(scope(fixture.workspace), signal()), /retired/);
-  await assert.rejects(purgeRuntimeCache(fixture.cache), isBusy);
-  assert.ok(pathExists(use.installationRoot));
-  await use.release(); await use.release();
-  assert.equal(pathExists(use.installationRoot), false);
-  await purgeRuntimeCache(fixture.cache);
+await test('synchronous bindings share only session capabilities and revalidate the pinned runtime', nativeOnly, async t => {
+  const f = await runtimeFixture(t), pin = await f.prepare(), peer = await f.prepare();
+  const scope = { workspace: f.workspace, prefix: 'ww-1-2', sessionId: 'session' };
+  const a = pin.acquireUse(), b = pin.acquireUse(), c = peer.acquireUse();
+  const view = a.bindView(scope);
+  assert.equal(b.bindView(scope), view);
+  assert.notEqual(c.bindView(scope), view);
+  const d = pin.acquireUse();
+  assert.notEqual(d.bindView({ ...scope, prefix: 'ww-3-4' }), view);
+  const path = dirname(view);
+  unlinkEntry(admitDirectory(path), basename(view)); await symlink(f.workspace, view, 'junction');
+  assert.throws(() => b.bindView(scope), /Unexpected runtime junction/);
+  await pin.release(); assert.throws(() => pin.acquireUse(), /retired/);
+  await Promise.all([a.release(), a.release(), b.release(), c.release(), d.release(), peer.release()]);
+  assert.deepEqual(readdirSync(path), []);
 });
 
-await test('session view promises are shared, agentless views are distinct, and cancelled waiters unwind', nativeOnly, async t => {
-  const fixture = await runtimeFixture(t), pin = await fixture.prepare(), cancelled = new AbortController();
-  const originalWorkspace = fsp.realpath, originalTarget = fs.readlinkSync;
-  const workspace = await originalWorkspace(fixture.workspace);
-  let resume!: (path: string) => void, created = '';
-  const resolved = new Promise<string>(resolve => { resume = resolve; });
-  const admission = t.mock.method(fsp, 'realpath', ((...args: Parameters<typeof fsp.realpath>) =>
-    String(args[0]) === fixture.workspace ? resolved : originalWorkspace(...args)) as typeof fsp.realpath);
-  const target = t.mock.method(fs, 'readlinkSync', ((...args: Parameters<typeof fs.readlinkSync>) => {
-    if (!created && basename(dirname(dirname(String(args[0])))) === 'views') {
-      created = String(args[0]); cancelled.abort();
-    }
-    return originalTarget(...args);
-  }) as typeof fs.readlinkSync); syncBuiltinESMExports();
-  const failed = pin.lease(scope(fixture.workspace, 'session'), cancelled.signal);
-  const active = pin.lease(scope(fixture.workspace, 'session'), signal());
-  // Both workspace awaits resume before the shared view's creation microtask.
-  resume(workspace);
-  try { await assert.rejects(failed, { name: 'AbortError' }); }
-  finally { admission.mock.restore(); target.mock.restore(); syncBuiltinESMExports(); }
-  const use = await active;
-  assert.equal(created, toNamespacedPath(use.installationRoot), 'the surviving waiter must use the junction created during cancellation');
-  const next = await pin.lease(scope(fixture.workspace, 'session'), signal());
-  assert.equal(next.installationRoot, use.installationRoot);
-  await use.release(); await next.release();
-  assert.ok(pathExists(use.installationRoot));
-  const [a, b] = await Promise.all([pin.lease(scope(fixture.workspace), signal()), pin.lease(scope(fixture.workspace), signal())]);
-  assert.notEqual(a.installationRoot, b.installationRoot);
-  const full = await pin.lease({ ...scope(fixture.workspace, 'session'), mode: 'danger-full-access' }, signal());
-  assert.notEqual(full.installationRoot, use.installationRoot);
-  await a.release(); await b.release(); await full.release();
+await test('agentless views last through retirement and release never scans the payload or selector', nativeOnly, async t => {
+  const f = await runtimeFixture(t), pin = await f.prepare(), a = pin.acquireUse(), b = pin.acquireUse();
+  const scope = { prefix: 'ww-u', workspace: f.workspace };
+  const first = a.bindView(scope), second = b.bindView(scope);
+  assert.notEqual(first, second);
   await pin.release();
-  assert.equal(pathExists(use.installationRoot), false);
-});
-
-await test('workspace aliases and both overlap directions are rejected before view creation', nativeOnly, async t => {
-  const fixture = await runtimeFixture(t), pin = await fixture.prepare();
-  await symlink(fixture.source, join(fixture.directory, 'source-alias'), 'junction');
-  for (const workspace of [fixture.source, join(fixture.source, 'usr'), fixture.cache, fixture.directory, join(fixture.directory, 'source-alias')]) {
-    await assert.rejects(pin.lease(scope(workspace), signal()), /overlap/);
-  }
-  const generation = join(fixture.cache, 'generations', (await fixture.current()).generationId);
-  assert.deepEqual(readdirSync(generation), ['base']);
-  await pin.release();
-});
-
-await test('failed shared view creation unwinds waiters, evicts the promise and permits retry', nativeOnly, async t => {
-  const fixture = await runtimeFixture(t), pin = await fixture.prepare();
-  const generation = join(fixture.cache, 'generations', (await fixture.current()).generationId);
-  await writeFile(join(generation, 'views'), 'an unexpected file must not be adopted or deleted');
-  const outcomes = await Promise.allSettled([
-    pin.lease(scope(fixture.workspace, 'session'), signal()),
-    pin.lease(scope(fixture.workspace, 'session'), signal()),
-  ]);
-  assert.ok(outcomes.every(outcome => outcome.status === 'rejected'));
-  assert.equal(await readFile(join(generation, 'views'), 'utf8'), 'an unexpected file must not be adopted or deleted');
-  unlinkSync(join(generation, 'views'));
-  const use = await pin.lease(scope(fixture.workspace, 'session'), signal());
-  await pin.release(); await use.release();
-  await purgeRuntimeCache(fixture.cache);
-});
-
-await test('a namespace created before failed directory admission is rolled back so the pin can retry', nativeOnly, async t => {
-  const f = await runtimeFixture(t), pin = await f.prepare(), original = NativeHold.prototype.information;
-  const generation = join(f.cache, 'generations', (await f.current()).generationId);
-  const views = join(generation, 'views');
-  const failure = new Error('fixture namespace admission failed');
-  let created = '';
-  const mock = t.mock.method(NativeHold.prototype, 'information', function (this: NativeHold) {
-    if (!created && dirname(this.path) === views) { created = this.path; throw failure; }
-    return original.call(this);
+  const next = await f.prepare(true), current = await f.current();
+  const oldPath = dirname(dirname(first)), root = join(f.cache, 'g');
+  assert.notEqual(basename(oldPath), current.generationId);
+  const read = t.mock.method(NativeHold.prototype, 'readJson', () => { throw Error('unexpected selector read'); });
+  const scan = t.mock.method(fs, 'readdirSync', () => { throw Error('unexpected traversal'); });
+  const info = NativeHold.prototype.information;
+  t.mock.method(NativeHold.prototype, 'information', function (this: NativeHold) {
+    assert.notEqual(this.path, f.cache + '.writer-lock'); return info.call(this);
   });
-  try { await assert.rejects(pin.lease(scope(f.workspace, 'session'), signal()), error => error === failure); }
-  finally { mock.mock.restore(); }
-  assert.ok(created, 'fault must occur at the newly created namespace');
-  assert.equal(pathExists(created), false, 'failed admission must not leave the fixed namespace occupied');
-  const retried = await pin.lease(scope(f.workspace, 'session'), signal());
-  await retried.release(); await pin.release();
-  await purgeRuntimeCache(f.cache);
-});
-
-await test('failed namespace rollback retains ownership for later retry and final cleanup', nativeOnly, async t => {
-  for (const retry of [false, true]) await t.test(retry ? 'retry' : 'retirement', async t => {
-    const f = await runtimeFixture(t), pin = await f.prepare();
-    const views = join(f.cache, 'generations', (await f.current()).generationId, 'views');
-    const originalInfo = NativeHold.prototype.information, originalCanonical = NativeHold.prototype.canonicalPath;
-    let created = '', rollbackFailed = false;
-    const admission = t.mock.method(NativeHold.prototype, 'information', function (this: NativeHold) {
-      if (!created && dirname(this.path) === views) { created = this.path; throw new Error('fixture namespace admission failed'); }
-      return originalInfo.call(this);
-    });
-    const rollback = t.mock.method(NativeHold.prototype, 'canonicalPath', function (this: NativeHold) {
-      if (created && this.path === views) { rollbackFailed = true; throw new Error('fixture namespace rollback failed'); }
-      return originalCanonical.call(this);
-    });
-    try { await assert.rejects(pin.lease(scope(f.workspace, 'session'), signal()), AggregateError); }
-    finally { admission.mock.restore(); rollback.mock.restore(); }
-    assert.ok(rollbackFailed);
-    assert.ok(pathExists(created));
-    if (retry) {
-      const use = await pin.lease(scope(f.workspace, 'session'), signal());
-      await use.release();
-    }
-    await pin.release();
-    assert.equal(pathExists(created), false, 'retirement must attempt its owned namespace residue');
-    await purgeRuntimeCache(f.cache);
-  });
-});
-
-await test('unexpected namespace EEXIST grants no ownership for retry or pin cleanup', nativeOnly, async t => {
-  const f = await runtimeFixture(t), pin = await f.prepare(), original = fs.mkdirSync;
-  const views = join(f.cache, 'generations', (await f.current()).generationId, 'views');
-  let collision = '';
-  const mock = t.mock.method(fs, 'mkdirSync', ((...args: Parameters<typeof fs.mkdirSync>) => {
-    const path = String(args[0]).replace(/^\\\\\?\\/, '');
-    if (dirname(path) === views) {
-      collision = path; original(...args);
-      fs.writeFileSync(join(path, 'sentinel'), 'unexpected namespace');
-    }
-    return original(...args);
-  }) as typeof fs.mkdirSync); syncBuiltinESMExports();
-  try { await assert.rejects(pin.lease(scope(f.workspace, 'session'), signal()), { code: 'EEXIST' }); }
-  finally { mock.mock.restore(); syncBuiltinESMExports(); }
-  assert.ok(collision);
-  await assert.rejects(pin.lease(scope(f.workspace, 'session'), signal()), { code: 'EEXIST' });
-  await pin.release();
-  assert.equal(fs.readFileSync(join(collision, 'sentinel'), 'utf8'), 'unexpected namespace');
-  await purgeRuntimeCache(f.cache);
-});
-
-await test('failed junction admission cleans only its created target and the shared view can retry', nativeOnly, async t => {
-  const f = await runtimeFixture(t), pin = await f.prepare(), original = fs.readlinkSync;
-  let attempted = '';
-  const mock = t.mock.method(fs, 'readlinkSync', ((...args: Parameters<typeof fs.readlinkSync>) => {
-    if (String(args[0]).includes('\\views\\')) { attempted = String(args[0]); throw new Error('fixture view admission failed'); }
-    return original(...args);
-  }) as typeof fs.readlinkSync);
   syncBuiltinESMExports();
-  try {
-    const outcomes = await Promise.allSettled([
-      pin.lease(scope(f.workspace, 'session'), signal()), pin.lease(scope(f.workspace, 'session'), signal()),
-    ]);
-    assert.ok(attempted);
-    assert.ok(outcomes.every(result => result.status === 'rejected' && /Unexpected runtime junction/.test(String(result.reason))));
-    assert.equal(fs.existsSync(attempted), false);
-    assert.deepEqual(readdirSync(dirname(attempted)), []);
-  } finally { mock.mock.restore(); syncBuiltinESMExports(); }
-  const retried = await pin.lease(scope(f.workspace, 'session'), signal());
-  await retried.release(); await pin.release();
+  try { await a.release(); assert.ok(pathExists(second)); await b.release(); await next.release(); }
+  finally { read.mock.restore(); scan.mock.restore(); syncBuiltinESMExports(); }
+  assert.ok(pathExists(oldPath)); assert.ok(!pathExists(first) && !pathExists(second));
+  await (await f.prepare(true)).release();
+  assert.deepEqual(readdirSync(root), [(await f.current()).generationId]);
 });
 
-await test('a shared creation promise evicts even when its partial-target cleanup fails', nativeOnly, async t => {
-  const f = await runtimeFixture(t), pin = await f.prepare(), originalReadlink = fs.readlinkSync;
-  const originalCanonical = NativeHold.prototype.canonicalPath;
-  let attempted = '', cleanupFailed = false;
-  const target = t.mock.method(fs, 'readlinkSync', ((...args: Parameters<typeof fs.readlinkSync>) => {
-    if (String(args[0]).includes('\\views\\')) { attempted = String(args[0]); throw new Error('fixture view admission failed'); }
-    return originalReadlink(...args);
-  }) as typeof fs.readlinkSync);
-  const cleanup = t.mock.method(NativeHold.prototype, 'canonicalPath', function (this: NativeHold) {
-    if (attempted && this.path.includes('\\views\\')) { cleanupFailed = true; throw new Error('fixture cleanup observation failed'); }
-    return originalCanonical.call(this);
-  }); syncBuiltinESMExports();
-  try {
-    await assert.rejects(pin.lease(scope(f.workspace, 'session'), signal()), AggregateError);
-    assert.ok(cleanupFailed);
-    assert.equal(fs.existsSync(attempted), true);
-  } finally { target.mock.restore(); cleanup.mock.restore(); syncBuiltinESMExports(); }
-  const retried = await pin.lease(scope(f.workspace, 'session'), signal());
-  assert.notEqual(basename(retried.installationRoot), basename(attempted));
-  await retried.release(); await pin.release();
-  assert.equal(fs.existsSync(attempted), false);
-});
-
-await test('canonical workspace aliases share one session view while separate pins own distinct namespaces', nativeOnly, async t => {
-  const f = await runtimeFixture(t), first = await f.prepare(), second = await f.prepare();
-  const alias = join(f.directory, 'workspace-alias');
-  await symlink(f.workspace, alias, 'junction');
-  const uses = await Promise.all([
-    first.lease(scope(f.workspace, 'session'), signal()), first.lease(scope(alias, 'session'), signal()),
-    second.lease(scope(f.workspace, 'session'), signal()),
-  ]);
-  try {
-    assert.equal(uses[0]!.baseRoot, uses[2]!.baseRoot);
-    assert.equal(uses[0]!.installationRoot, uses[1]!.installationRoot);
-    assert.notEqual(uses[0]!.installationRoot, uses[2]!.installationRoot);
-  } finally { await Promise.all(uses.map(use => use.release())); await first.release(); await second.release(); }
-});
-
-await test('unexpected EEXIST at a view name is neither adopted nor deleted by its creation attempt', nativeOnly, async t => {
-  const f = await runtimeFixture(t), pin = await f.prepare(), original = fs.symlinkSync;
-  let collision = '';
-  const mock = t.mock.method(fs, 'symlinkSync', (target: fs.PathLike, path: fs.PathLike, type?: fs.symlink.Type | null) => {
-    if (String(path).includes('\\views\\')) {
-      collision = String(path);
-      fs.mkdirSync(path); fs.writeFileSync(join(collision, 'sentinel'), 'retain until pin cleanup');
-    }
-    original(target, path, type);
-  }); syncBuiltinESMExports();
-  try {
-    await assert.rejects(pin.lease(scope(f.workspace, 'session'), signal()), { code: 'EEXIST' });
-    assert.equal(fs.readFileSync(join(collision, 'sentinel'), 'utf8'), 'retain until pin cleanup');
-  } finally { mock.mock.restore(); syncBuiltinESMExports(); }
-  const retried = await pin.lease(scope(f.workspace, 'session'), signal());
-  assert.notEqual(basename(retried.installationRoot), basename(collision));
-  await retried.release(); await pin.release();
-  assert.equal(fs.existsSync(collision), false);
-});
-
-await test('an already-aborted lease skips workspace admission and view creation', nativeOnly, async t => {
-  const f = await runtimeFixture(t), pin = await f.prepare();
-  const generation = join(f.cache, 'generations', (await f.current()).generationId);
-  const cancelled = AbortSignal.abort(new Error('fixture caller already left'));
-  const admission = t.mock.method(fsp, 'realpath');
-  syncBuiltinESMExports();
-  try {
-    await assert.rejects(pin.lease(scope(f.workspace, 'session'), cancelled), error => error === cancelled.reason);
-    assert.equal(admission.mock.callCount(), 0, 'an already-aborted lease must not start workspace admission');
-    assert.equal(pathExists(join(generation, 'views')), false);
-  } finally { admission.mock.restore(); syncBuiltinESMExports(); }
-  await pin.release();
-});
-
-await test('cancelled admission retains its one reference until the awaited operation finishes', nativeOnly, async t => {
-  const f = await runtimeFixture(t), pin = await f.prepare(), cancelled = new AbortController();
-  const original = fsp.realpath;
-  let resume!: () => void, entered!: () => void;
-  const gate = new Promise<void>(resolve => { resume = resolve; });
-  const started = new Promise<void>(resolve => { entered = resolve; });
-  const mock = t.mock.method(fsp, 'realpath', (async (...args: Parameters<typeof fsp.realpath>) => {
-    if (String(args[0]) === f.workspace) { entered(); await gate; }
-    return original(...args);
-  }) as typeof fsp.realpath); syncBuiltinESMExports();
-  const generation = join(f.cache, 'generations', (await f.current()).generationId);
-  try {
-    const acquiring = pin.lease(scope(f.workspace), cancelled.signal);
-    const rejected = assert.rejects(acquiring, { name: 'AbortError' });
-    await started; cancelled.abort(); await pin.release();
-    assert.throws(() => claimDirectory(admitDirectory(generation)), isBusy);
-    resume(); await rejected;
-    assert.equal(pathExists(join(generation, 'views')), false);
-    const claim = claimDirectory(admitDirectory(generation)); claim.close();
-  } finally { resume(); mock.mock.restore(); syncBuiltinESMExports(); }
-});
-
-await test('a reused session view performs no metadata, anchor, tree or junction-target revalidation', nativeOnly, async t => {
-  const f = await runtimeFixture(t), pin = await f.prepare();
-  const first = await pin.lease(scope(f.workspace, 'session'), signal());
-  const fail = () => { throw new Error('a lease repeated pin/child validation'); };
-  const read = t.mock.method(NativeHold.prototype, 'readJson', fail);
-  const anchors = t.mock.method(NativeHold.prototype, 'information', function (this: NativeHold) {
-    // All native observations would be redundant for this reused session view.
-    return fail();
-  });
-  const tree = t.mock.method(fsp, 'readdir', fail), target = t.mock.method(fs, 'readlinkSync', fail);
-  syncBuiltinESMExports();
-  let second;
-  try {
-    second = await pin.lease(scope(f.workspace, 'session'), signal());
-    assert.equal(second.installationRoot, first.installationRoot);
-    assert.equal(second.layout, first.layout);
-  } finally {
-    read.mock.restore(); anchors.mock.restore(); tree.mock.restore(); target.mock.restore(); syncBuiltinESMExports();
-    await second?.release(); await first.release(); await pin.release();
-  }
-});
-
-await test('a live pin leases without source probes after the source pathname disappears', nativeOnly, async t => {
-  const fixture = await runtimeFixture(t), pin = await fixture.prepare();
-  await rename(fixture.source, join(fixture.directory, 'moved-source'));
-  const use = await pin.lease(scope(fixture.workspace), signal());
-  assert.equal(use.sourceRoot, fixture.source);
-  await pin.release();
-  await use.release();
-  await purgeRuntimeCache(fixture.cache);
-});
-
-await test('plan unlink is an ordinary native sharing gate before any candidate payload', nativeOnly, async t => {
-  const fixture = await runtimeFixture(t), pin = await fixture.prepare();
-  await pin.release();
-  const selected = await fixture.current(), generations = join(fixture.cache, 'generations');
-  const generation = admitDirectory(join(generations, selected.generationId));
-  const directoryPlan = join(generations, '!plan-directory', 'plan.json');
-  await mkdir(directoryPlan, { recursive: true });
-  await writeFile(join(directoryPlan, 'payload'), 'owned');
-  assert.deepEqual(readdirSync(generations), ['!plan-directory', selected.generationId], 'the directory plan must precede the held real plan');
-  await writeFile(join(generation.path, 'plan.json'), '{malformed-but-owned');
-  const plan = openExclusiveMetadata(generation, 'plan.json');
-  try {
-    await assert.rejects(purgeRuntimeCache(fixture.cache), isBusy);
-    assert.equal(await readFile(join(directoryPlan, 'payload'), 'utf8'), 'owned');
-    assert.ok(pathExists(join(generation.path, 'base/usr/lib/perl/module.pm')));
-    assert.deepEqual(await fixture.current(), selected);
-  } finally { plan.close(); }
-  await purgeRuntimeCache(fixture.cache);
-  assert.equal(pathExists(fixture.cache), false);
-});
-
-await test('setup leases are exclusive, identity-bound and revoked by checked close', nativeOnly, async t => {
-  const fixture = await runtimeFixture(t), pin = await fixture.prepare();
-  await pin.release();
-  const generation = admitDirectory(join(fixture.cache, 'generations', (await fixture.current()).generationId));
-  const lease = createSetupLease(generation);
-  try {
-    const identity = lease.information();
-    requireActiveLease(generation, identity);
-    assert.throws(() => createSetupLease(generation));
-    assert.throws(() => requireActiveLease(generation, { ...identity, fileId: '0' }), /identity/);
-    lease.close(); lease.close();
-    assert.throws(() => requireActiveLease(generation, identity));
-  } finally { lease.close(); }
-  assert.equal(pathExists(join(generation.path, '.setup-owner')), false);
-});
-
-await test('interrupted arbitrary-order GC leaves anchors intact but a delayed reader rejects its stale selector', nativeOnly, async t => {
+await test('interrupted arbitrary-order collection cannot make a delayed reader adopt its stale selector', nativeOnly, async t => {
   const fixture = await runtimeFixture(t), first = await fixture.prepare(), old = await fixture.current();
   const second = await fixture.prepare(true), current = await fixture.current();
   await first.release(); await second.release();
-  const oldPath = join(fixture.cache, 'generations', old.generationId);
+  const oldPath = join(fixture.cache, 'g', old.generationId);
   const originalRead = NativeHold.prototype.readJson;
   let delayed = true, interrupted = false;
   // Deliver the snapshot a reader obtained before B was published, then perform
@@ -456,12 +162,8 @@ await test('interrupted arbitrary-order GC leaves anchors intact but a delayed r
     const value = originalRead.call(this, maxBytes);
     if (delayed && this.path === join(fixture.cache, 'current.json')) {
       delayed = false;
-      const lock = createSetupLease(admitDirectory(fixture.directory), 'cache.writer-lock');
-      try {
-        const claim = claimDirectory(admitDirectory(oldPath));
-        try { unlinkEntry(admitDirectory(join(oldPath, 'base/usr/lib/perl')), 'module.pm'); }
-        finally { claim.close(); }
-      } finally { lock.close(); }
+      const claim = claimDirectory(admitDirectory(oldPath));
+      try { unlinkEntry(admitDirectory(join(oldPath, 'r/usr/bin')), 'sh.exe'); } finally { claim.close(); }
       interrupted = true;
       return old;
     }
@@ -469,19 +171,18 @@ await test('interrupted arbitrary-order GC leaves anchors intact but a delayed r
   });
   const pin = await fixture.prepare();
   assert.equal(interrupted, true);
-  assert.equal(pathExists(join(oldPath, 'base/usr/lib/perl/module.pm')), false, 'the interrupted collector must actually remove non-anchor payload');
-  assert.ok(Object.values(anchorPaths('ucrt64')).every(path => pathExists(join(oldPath, 'base', path))));
-  const use = await pin.lease(scope(fixture.workspace), signal());
-  try { assert.equal(use.baseRoot, join(fixture.cache, 'generations', current.generationId, 'base')); }
+  assert.equal(pathExists(join(oldPath, 'r/usr/bin/sh.exe')), false);
+  const use = pin.acquireUse();
+  try { assert.equal(dirname(dirname(use.bindView({ workspace: fixture.workspace, prefix: 'ro' }))), join(fixture.cache, 'g', current.generationId)); }
   finally { await use.release(); await pin.release(); }
 });
 
 await test('interrupted purge unpublishes before payload removal and remains retryable', nativeOnly, async t => {
   const fixture = await runtimeFixture(t), pin = await fixture.prepare();
   await pin.release();
-  const record = await fixture.current(), generation = join(fixture.cache, 'generations', record.generationId);
+  const record = await fixture.current(), generation = join(fixture.cache, 'g', record.generationId);
   // A reader denying delete on a non-anchor payload obstructs ordinary unlink.
-  const blocker = openExclusiveMetadata(admitDirectory(join(generation, 'base/usr/lib/perl')), 'module.pm');
+  const blocker = blockFile(join(generation, 'r/usr/bin/sh.exe'));
   try { await assert.rejects(purgeRuntimeCache(fixture.cache)); }
   finally { blocker.close(); }
   assert.equal(pathExists(join(fixture.cache, 'current.json')), false);
@@ -490,35 +191,74 @@ await test('interrupted purge unpublishes before payload removal and remains ret
   assert.equal(pathExists(fixture.cache), false);
 });
 
-await test('normal view cleanup obstruction still closes the pin; strict purge later removes residue', nativeOnly, async t => {
-  const fixture = await runtimeFixture(t), pin = await fixture.prepare();
-  const use = await pin.lease(scope(fixture.workspace, 'session'), signal());
-  const generation = join(fixture.cache, 'generations', (await fixture.current()).generationId);
-  const instance = readdirSync(join(generation, 'views'))[0]!;
-  const namespace = admitDirectory(join(generation, 'views', instance));
-  await writeFile(join(namespace.path, 'blocked'), 'owned residue');
-  const blocker = openExclusiveMetadata(namespace, 'blocked');
+await test('collision and failed view admission roll back only a newly created junction', nativeOnly, async t => {
+  const f = await runtimeFixture(t), pin = await f.prepare(), use = pin.acquireUse();
+  const scope = { prefix: 'ro', workspace: f.workspace, sessionId: 'shared' };
+  const link = fs.symlinkSync, read = fs.readlinkSync;
+  let created = '';
+  const collision = t.mock.method(fs, 'symlinkSync', ((target, path, type) => {
+    created = String(path); link(f.workspace, path, 'junction'); link(target, path, type);
+  }) as typeof link);
+  syncBuiltinESMExports();
+  try { assert.throws(() => use.bindView(scope), { code: 'EEXIST' }); assert.ok(pathExists(created)); }
+  finally { collision.mock.restore(); syncBuiltinESMExports(); }
+  let blocked = false;
+  const badRead = t.mock.method(fs, 'readlinkSync', ((path: string) => {
+    if (!String(path).includes('\\v\\')) return read(path);
+    created = String(path);
+    // A successful create followed by a failed rollback must retain both errors.
+    blocked = true; throw Error('view admission failed');
+  }) as typeof read);
+  const remove = NativeHold.prototype.deleteEntry;
+  t.mock.method(NativeHold.prototype, 'deleteEntry', function (this: NativeHold) {
+    if (blocked) throw Error('view rollback failed');
+    remove.call(this);
+  });
+  syncBuiltinESMExports();
   try {
-    await pin.release(); await use.release();
-    const claim = claimDirectory(admitDirectory(generation)); claim.close();
-    assert.ok(pathExists(join(namespace.path, 'blocked')));
-    await assert.rejects(purgeRuntimeCache(fixture.cache));
-  } finally { blocker.close(); }
-  await purgeRuntimeCache(fixture.cache);
+    assert.throws(() => use.bindView(scope), error => error instanceof AggregateError && /view admission failed/.test(error.message) && /view rollback failed/.test(error.message));
+  } finally { blocked = false; badRead.mock.restore(); syncBuiltinESMExports(); }
+  assert.ok(pathExists(use.bindView(scope)));
+  await use.release(); await pin.release();
 });
 
-await test('replaced view ancestors never send disposal or purge outside the cache', nativeOnly, async t => {
-  const fixture = await runtimeFixture(t), pin = await fixture.prepare();
-  const use = await pin.lease(scope(fixture.workspace, 'session'), signal());
-  const generation = join(fixture.cache, 'generations', (await fixture.current()).generationId);
-  const views = join(generation, 'views');
-  // Model an outside program replacing a child namespace while the pin is live.
-  removeTree(admitDirectory(generation), 'views');
-  await mkdir(join(fixture.workspace, 'outside'));
-  await writeFile(join(fixture.workspace, 'outside', 'sentinel'), 'keep');
-  await symlink(join(fixture.workspace, 'outside'), views, 'junction');
-  await pin.release(); await use.release();
-  assert.equal(await readFile(join(fixture.workspace, 'outside', 'sentinel'), 'utf8'), 'keep');
-  await purgeRuntimeCache(fixture.cache);
-  assert.equal(await readFile(join(fixture.workspace, 'outside', 'sentinel'), 'utf8'), 'keep');
+await test('unknown reparse tags retain the owner marker and stop offline purge', nativeOnly, async t => {
+  const f = await runtimeFixture(t); await (await f.prepare()).release();
+  const path = join(f.cache, 'unknown-tag'); await writeFile(path, 'keep');
+  const info = NativeHold.prototype.information;
+  const hook = t.mock.method(NativeHold.prototype, 'information', function (this: NativeHold) {
+    const observation = info.call(this);
+    return this.path === path ? { ...observation, attributes: observation.attributes | 0x400, reparseTag: 0x80000009 } : observation;
+  });
+  try {
+    await assert.rejects(purgeRuntimeCache(f.cache), /Unsupported reparse tag/);
+    assert.ok(pathExists(join(f.cache, '.owner.json'))); assert.ok(pathExists(path));
+  } finally { hook.mock.restore(); }
+  await purgeRuntimeCache(f.cache);
+});
+
+await test('an image mapped from the cache blocks purge until its mapping closes', nativeOnly, async t => {
+  const f = await runtimeFixture(t); await (await f.prepare()).release();
+  const image = join(f.cache, 'mapped.dll');
+  fs.copyFileSync(join(process.env.SystemRoot!, 'System32/version.dll'), image);
+  const k = koffi.load('kernel32.dll'), load = k.func('void * LoadLibraryExW(str16,void*,uint32)'), free = k.func('int FreeLibrary(void*)');
+  const mapping = load(image, null, 1); assert.ok(mapping);
+  try {
+    await assert.rejects(purgeRuntimeCache(f.cache), error => [5, 32, 1224].includes((error as { win32Code: number }).win32Code));
+    assert.ok(pathExists(join(f.cache, '.owner.json'))); assert.ok(pathExists(image));
+  } finally { assert.ok(free(mapping)); }
+  await purgeRuntimeCache(f.cache);
+});
+
+await test('failed directory admission and rollback preserve both causes', nativeOnly, async t => {
+  const f = await runtimeFixture(t), root = admitDirectory(f.directory), path = join(root.path, 'rollback');
+  const info = NativeHold.prototype.information;
+  const failure = Error('new directory admission failed');
+  t.mock.method(NativeHold.prototype, 'information', function (this: NativeHold) {
+    if (this.path === path) { fs.writeFileSync(join(path, 'obstruction'), 'owned'); throw failure; }
+    return info.call(this);
+  });
+  assert.throws(() => createDirectory(root, 'rollback'), e => e instanceof AggregateError && e.errors.length === 2
+    && e.errors[0] === failure && e.errors[1].win32Code === 145);
+  t.mock.restoreAll();
 });

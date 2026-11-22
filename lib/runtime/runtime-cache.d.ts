@@ -1,37 +1,24 @@
-import type { SandboxExecutionPolicy } from '@deepseek-ai/dsh-sandbox';
-import type Subprocess from '@deepseek-ai/dsh-subprocess';
 import { type GitLayout } from './git-installation.ts';
-export type LinkProgress = 'preparing' | 'elevation' | 'checking' | {
-    path: string;
-    completed?: never;
-} | {
-    path: string;
-    completed: number;
-    total: number;
-};
 export interface RuntimePreparation {
     readonly cacheDirectory: string;
-    readonly installAnchor?: string;
-    readonly spawn: Subprocess['spawn'];
     readonly gitBashPath?: string;
     readonly rebuild?: boolean;
-    readonly onProgress?: (progress: LinkProgress) => void;
-    readonly elevation: 'manual' | ((sourceRoot: string, sourceChanged: boolean) => Promise<void>);
 }
 export interface GenerationPin {
-    readonly freshlyBuilt: boolean;
-    lease(scope: Pick<SandboxExecutionPolicy, 'mode' | 'workspaceRoot' | 'sessionId'>, signal: AbortSignal): Promise<RuntimeUse>;
+    acquireUse(): RuntimeUse;
     release(): Promise<void>;
 }
 export interface RuntimeUse {
-    readonly baseRoot: string;
-    readonly installationRoot: string;
+    readonly cacheRoot: string;
     readonly sourceRoot: string;
     readonly layout: GitLayout;
+    bindView(scope: {
+        prefix: string;
+        workspace: string;
+        sessionId?: string;
+    }): string;
     release(): Promise<void>;
 }
-/** Preserve local resource failures without treating source/setup errors as leaks. */
-export declare function hasRuntimeCleanupFailure(error: unknown): boolean;
 export declare const sharedCacheDirectory: (home: string) => string;
 export declare const bundledShimUrl: URL;
 export declare function prepareRuntime(request: RuntimePreparation, signal: AbortSignal): Promise<GenerationPin>;

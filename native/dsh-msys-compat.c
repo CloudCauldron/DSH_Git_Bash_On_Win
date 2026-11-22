@@ -1056,15 +1056,6 @@ static BOOL resolve_and_verify_sibling_msys(HMODULE hSelf) {
     memcpy(expectedMsys, g_viewRoot, g_viewRootLen * sizeof(WCHAR));
     memcpy(expectedMsys + g_viewRootLen, L"\\usr\\bin\\msys-2.0.dll", 22 * sizeof(WCHAR));
 
-    /* Build \\?\ and \??\ forms and compute MSYS2's exact installation_key. */
-    memcpy(g_msysDosPath, L"\\\\?\\", 4 * sizeof(WCHAR));
-    memcpy(g_msysDosPath + 4, expectedMsys, (g_viewRootLen + 22) * sizeof(WCHAR));
-    g_msysDosPathLen = 4 + g_viewRootLen + 21;
-
-    memcpy(msysNtPath, L"\\??\\", 4 * sizeof(WCHAR));
-    memcpy(msysNtPath + 4, expectedMsys, (g_viewRootLen + 22) * sizeof(WCHAR));
-    format_hex64_lower(cygwin_hash_path_name(msysNtPath), g_expectedKeyHexA, g_expectedKeyHexW);
-
     /* Walk PEB->Ldr: locate exact sibling msys-2.0.dll and reject any foreign msys-2.0.dll. */
     HMODULE foundMsys = NULL;
     for (LIST_ENTRY *cur = head->Flink; cur && cur != head; cur = cur->Flink) {
@@ -1079,6 +1070,27 @@ static BOOL resolve_and_verify_sibling_msys(HMODULE hSelf) {
     }
 
     if (!foundMsys) return FALSE;
+
+    /* Compare loader spellings above. Expand NTFS aliases only for the admitted view and its MSYS key. */
+    for (size_t i = 0; i < g_viewRootLen; i++) {
+        if (g_viewRoot[i] != L'~') continue;
+        DWORD length = GetLongPathNameW(g_viewRoot, raw, MAX_PATH_CHARS);
+        if (!length || length >= MAX_PATH_CHARS - 32u) return FALSE;
+        memcpy(g_viewRoot, raw, (length + 1u) * sizeof(WCHAR));
+        g_viewRootLen = length;
+        memcpy(expectedMsys, raw, length * sizeof(WCHAR));
+        memcpy(expectedMsys + length, L"\\usr\\bin\\msys-2.0.dll", 22 * sizeof(WCHAR));
+        break;
+    }
+
+    /* Build \\?\ and \??\ forms and compute MSYS2's exact installation_key. */
+    memcpy(g_msysDosPath, L"\\\\?\\", 4 * sizeof(WCHAR));
+    memcpy(g_msysDosPath + 4, expectedMsys, (g_viewRootLen + 22) * sizeof(WCHAR));
+    g_msysDosPathLen = 4 + g_viewRootLen + 21;
+
+    memcpy(msysNtPath, L"\\??\\", 4 * sizeof(WCHAR));
+    memcpy(msysNtPath + 4, expectedMsys, (g_viewRootLen + 22) * sizeof(WCHAR));
+    format_hex64_lower(cygwin_hash_path_name(msysNtPath), g_expectedKeyHexA, g_expectedKeyHexW);
 
     /* Capture on-disk identity of expected sibling msys-2.0.dll. */
     HANDLE hDisk = CreateFileW(g_msysDosPath, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,

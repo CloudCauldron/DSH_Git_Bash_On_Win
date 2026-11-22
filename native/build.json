@@ -3,7 +3,7 @@
   "compiler": "19.52.37029",
   "linker": "14.52.37029.0",
   "sdk": "10.0.26100.0",
-  "sha256": "8772d736117ea2de013eac37b2d51e115ed87ca06e7b07c06d00e9876ba3b27f",
+  "sha256": "0350d5533d5e887f47045ba1787db9dfaacbb9cffdbe5887feeb0e64a7ff75b7",
   "imports": {
     "kernel32.dll": [
       "CloseHandle", "CreateFileW", "DisableThreadLibraryCalls", "GetCurrentProcessId",

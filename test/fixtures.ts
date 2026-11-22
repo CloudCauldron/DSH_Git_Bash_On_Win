@@ -1,9 +1,9 @@
-import { copyFile, mkdtemp, rm, mkdir, writeFile, link, readFile, stat, symlink } from 'node:fs/promises';
+import { cp, readdir, mkdtemp, rm, mkdir, writeFile, link, readFile, stat, symlink } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import assert from 'node:assert/strict';
 import koffi from 'koffi';
-import { closeHandleChecked, extendWin32ProcessBindings, Win32Error, type NativePtr } from '@deepseek-ai/dsh-win32-process';
+import { closeHandleChecked, extendWin32ProcessBindings, type NativePtr } from '@deepseek-ai/dsh-win32-process';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import type { TestContext } from 'node:test';
@@ -11,9 +11,9 @@ import type { Context } from '@deepseek-ai/cordis';
 import type { SandboxProvider, SandboxExecutionPolicy } from '@deepseek-ai/dsh-sandbox';
 import type Subprocess from '@deepseek-ai/dsh-subprocess';
 import { findInstalledDshManifest, installedDsh } from '../scripts/installed-dsh.ts';
-import { admitDirectory, createDirectory, NativeHold, removeTree } from '../src/runtime/ntfs-filesystem.ts';
+import { admitDirectory, createDirectory, removeTree } from '../src/runtime/ntfs-filesystem.ts';
 import { bundledShimUrl, prepareRuntime, purgeRuntimeCache, type GenerationPin, type RuntimePreparation } from '../src/runtime/runtime-cache.ts';
-import { anchorPaths, buildCopyLayout, buildRuntimeEnvironment, discoverGitInstallation, inventoryGitFiles, type AnchorStamps, type GitInstallation, type GitLayout } from '../src/runtime/git-installation.ts';
+import { buildCopyLayout, buildRuntimeEnvironment, discoverGitInstallation, type SourceFreshness, type GitInstallation, type GitLayout } from '../src/runtime/git-installation.ts';
 
 /** Keep every ACL record. icacls localizes its final success count to the console language. */
 export function readAclRecords(path: string, recursive = false): string {
@@ -178,6 +178,13 @@ export function observeMsysImages(pid: number, iatRvas: number[]) {
   } finally { assert.ok(close(processHandle)); }
 }
 
+export function shortPath(path: string) {
+  const get = koffi.load('kernel32.dll').func('uint32 GetShortPathNameW(str16,void*,uint32)');
+  const buffer = Buffer.alloc(65536), length = get(path, buffer, buffer.length / 2) as number;
+  assert.ok(length > 0 && length < buffer.length / 2, path);
+  return buffer.toString('utf16le', 0, length * 2);
+}
+
 export function expectedMsysKey(view: string) {
   const path = `\\??\\${view}\\usr\\bin\\msys-2.0.dll`.toUpperCase();
   let key = 0n;
@@ -198,17 +205,14 @@ export async function runtimeFixture(t: TestContext, layout: GitLayout = 'ucrt64
   });
   await mkdir(source);
   await mkdir(workspace);
-  for (const file of ['bin/bash.exe', ...Object.values(anchorPaths(layout)), 'usr/lib/perl/module.pm', 'usr/share/doc/ignored.txt', 'usr/lib/winpty.lib', `${layout}/libexec/git-core/git-helper.exe`]) {
+  for (const file of ['bin/bash.exe', 'usr/bin/bash.exe', 'usr/bin/sh.exe', 'usr/bin/msys-2.0.dll', `${layout}/bin/git.exe`, 'etc/profile', 'etc/install-options.txt', 'usr/lib/perl/module.pm', 'usr/share/doc/ignored.txt', 'usr/lib/winpty.lib', `${layout}/libexec/git-core/git-helper.exe`]) {
     await mkdir(dirname(join(source, file)), { recursive: true });
     if (file === 'usr/bin/sh.exe') await link(join(source, 'usr/bin/bash.exe'), join(source, file));
     else if (file === 'usr/bin/msys-2.0.dll') await writeFile(join(source, file), msysPeFixture());
     else await writeFile(join(source, file), `fixture ${file}\n`);
   }
   const request: RuntimePreparation = {
-    elevation: 'manual',
-    installAnchor: process.versions.electron ? findInstalledDshManifest() : undefined,
     cacheDirectory: cache, gitBashPath: join(source, 'usr/bin/bash.exe'),
-    spawn: () => { throw new Error('This fixture must never start a subprocess or open UAC.'); },
   };
   return {
     directory, source, cache, workspace, request,
@@ -220,7 +224,7 @@ export async function runtimeFixture(t: TestContext, layout: GitLayout = 'ucrt64
     },
     async current() {
       return JSON.parse(await readFile(join(cache, 'current.json'), 'utf8')) as {
-        schemaVersion: 1; generationId: string; sourceRoot: string; layout: GitLayout; anchors: AnchorStamps;
+        schemaVersion: 2; patchAbi: 1; generationId: string; sourceRoot: string; layout: GitLayout; sourceFreshness: SourceFreshness; patchedMsysSha256: string;
       };
     },
   };
@@ -250,13 +254,12 @@ export function success(result: { exitCode: number | null; stdout: string; stder
   assert.equal(result.exitCode, 0, result.stdout + result.stderr);
 }
 
-export function denyProbe(t: TestContext, hold = NativeHold) {
-  const link = hold.prototype.linkTo;
-  const mock = t.mock.method(hold.prototype, 'linkTo', function (this: NativeHold, parent: NativeHold, name: string) {
-    if (name === '.probe') throw new Win32Error('FileLinkInformation', 5, 'fixture probe denial');
-    link.call(this, parent, name);
-  });
-  return () => mock.mock.restore();
+/** Deny sharing on a fixture file until its caller closes the handle. */
+export function blockFile(path: string) {
+  const k = koffi.load('kernel32.dll'), open = k.func('void * CreateFileW(str16, uint32, uint32, void *, uint32, uint32, void *)');
+  const handle = open(path, 0x80000000, 0, null, 3, 0x00200000, null);
+  assert.ok(handle && BigInt.asIntN(64, handle) !== -1n, path);
+  return { close() { assert.ok(k.func('int CloseHandle(void *)')(handle)); } };
 }
 
 /** An isolated installed provider, with no Loader, settings or personal profile. */
@@ -275,19 +278,8 @@ export async function localSpawn(t: TestContext): Promise<Subprocess['spawn'] | 
 }
 
 /** Real providers, owned Git bytes, and no personal Loader/profile state. */
-export async function executionFixture(t: TestContext) {
-  const manifest = findInstalledDshManifest();
-  if (!manifest) { t.skip('No installed pinned DSH; set DSH_PACKAGE_JSON.'); return; }
-  const runtime = installedDsh(manifest);
-  let installed;
-  try { installed = discoverGitInstallation(process.env.DSH_TEST_GIT_BASH); }
-  catch (error) {
-    if (!process.env.DSH_TEST_GIT_BASH && error instanceof Error && error.message.startsWith('Supported Git for Windows was not found')) {
-      t.skip('No supported Git for Windows; set DSH_TEST_GIT_BASH.'); return;
-    }
-    throw error;
-  }
-  return createExecutionFixture(t, runtime, installed);
+export function executionFixture(t: TestContext) {
+  return createExecutionFixture(t, installedDsh(), discoverGitInstallation(process.env.DSH_TEST_GIT_BASH));
 }
 
 async function createExecutionFixture(t: TestContext, runtime: ReturnType<typeof installedDsh>, installed: GitInstallation) {
@@ -307,13 +299,10 @@ async function createExecutionFixture(t: TestContext, runtime: ReturnType<typeof
     finally { removeTree(admitDirectory(dirname(directory)), basename(directory)); }
   });
   await mkdir(source); await mkdir(workspace);
-  const files = [...await inventoryGitFiles(installed.root, () => {}), 'bin/bash.exe'];
-  const parents = [...new Set(files.map(file => dirname(join(source, file))))].sort((a, b) => a.length - b.length);
-  for (const parent of parents) await mkdir(parent, { recursive: true });
-  for (let offset = 0; offset < files.length; offset += 32) {
-    const batch = await Promise.allSettled(files.slice(offset, offset + 32).map(file => copyFile(join(installed.root, file), join(source, file))));
-    for (const result of batch) if (result.status === 'rejected') throw result.reason;
+  for (const name of ['bin', 'etc', 'usr', installed.layout]) {
+    await cp(join(installed.root, name), join(source, name), { recursive: true });
   }
+  const files = (await readdir(join(source, 'usr/bin'), { withFileTypes: true })).filter(file => file.isFile()).map(file => 'usr/bin/' + file.name);
   const snapshot = async () => {
     const contents: Array<{ hash: string; links: number }> = [];
     for (let offset = 0; offset < files.length; offset += 16) {
@@ -326,18 +315,13 @@ async function createExecutionFixture(t: TestContext, runtime: ReturnType<typeof
   };
   const before = await snapshot();
   verifySource = async () => {
-    assert.deepEqual(await snapshot(), before, 'strict purge must restore every copied source link count and preserve contents/ACLs');
+    assert.deepEqual(await snapshot(), before, 'preparation and purge must preserve source link counts, contents and ACLs');
   };
   await ctx.plugin(LocalSubprocessRuntime);
   await ctx.plugin(LocalSandboxProvider, {});
-  const spawn = ctx.subprocess.spawn.bind(ctx.subprocess);
-  ctx.subprocess.spawn = spec => {
-    if (spec.argv.some(arg => basename(arg) === 'elevation-broker.js')) throw new Error('Automated execution fixtures must never request UAC.');
-    return spawn(spec);
-  };
   ctx.provide('profileContext', { dir: directory, home: directory });
   ctx.provide('sandboxPolicy', { defaultMode: 'read-only', resolve: () => ({ mode: 'read-only', workspaceRoot: workspace }) });
-  const request: RuntimePreparation = { cacheDirectory: cache, gitBashPath: join(source, 'usr/bin/bash.exe'), elevation: 'manual', spawn: ctx.subprocess.spawn.bind(ctx.subprocess) };
+  const request: RuntimePreparation = { cacheDirectory: cache, gitBashPath: join(source, 'usr/bin/bash.exe') };
   return { ctx, directory, source, workspace, cache, installed, request,
     async prepare() { const pin = await prepareRuntime(request, new AbortController().signal); pins.add(pin); return pin; },
   };
@@ -345,7 +329,7 @@ async function createExecutionFixture(t: TestContext, runtime: ReturnType<typeof
 
 /** Exercise the shallow copy layout through the installed DSH providers. */
 export async function compatFixture(t: TestContext) {
-  const f = await createExecutionFixture(t, installedDsh(), discoverGitInstallation(process.env.DSH_TEST_GIT_BASH));
+  const f = await executionFixture(t);
   const generation = createDirectory(admitDirectory(f.directory), 'generation');
   const installation = discoverGitInstallation(f.request.gitBashPath);
   const built = await buildCopyLayout(generation, installation, await readFile(bundledShimUrl), t.signal);

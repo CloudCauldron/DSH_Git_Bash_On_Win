@@ -26,7 +26,7 @@ const { runPluginCommand } = await runtime.load(runtime.cliRequire, '@deepseek-a
 };
 const dir = resolveProfileDir(profile);
 if (purge) {
-  // Full-home cleanup is explicit: removing one profile must preserve other profiles' links.
+  // Full-home cleanup is explicit: removing one profile must preserve other profiles' runtime.
   const { resolveDshHome } = await runtime.load(runtime.cliRequire, '@deepseek-ai/dsh-home-paths') as { resolveDshHome(): string };
   try { await purgeRuntimeCache(sharedCacheDirectory(resolveDshHome())); }
   catch (cause) {

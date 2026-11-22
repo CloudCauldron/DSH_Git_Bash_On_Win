@@ -1,6 +1,6 @@
 import koffi from 'koffi';
-import { closeSync, lstatSync, mkdirSync, openSync, readdirSync, readlinkSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
-import { realpath } from 'node:fs/promises';
+import { closeSync, lstatSync, mkdirSync, openSync, readdirSync, readlinkSync, realpath, symlinkSync, writeFileSync } from 'node:fs';
+import { promisify } from 'node:util';
 import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep, toNamespacedPath } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { closeHandleChecked, extendWin32ProcessBindings, isNullPtr, throwLastError, Win32Error, type NativePtr } from '@deepseek-ai/dsh-win32-process';
@@ -18,8 +18,7 @@ interface FileInformation extends FileIdentity {
 const READ = 0x80000000, DELETE = 0x10000;
 const SHARE_READ = 1, SHARE_READ_WRITE = 3, SHARE_ALL = 7, OPEN_EXISTING = 3, CREATE_NEW = 1;
 const NO_FOLLOW = 0x00200000, DIRECTORY = 0x02000000, DELETE_ON_CLOSE = 0x04000000;
-const ATTR_DIRECTORY = 0x10, ATTR_REPARSE = 0x400, ATTR_READONLY = 1;
-const FILE_ADD_FILE = 2;
+const ATTR_DIRECTORY = 0x10, ATTR_REPARSE = 0x400;
 const MOUNT_POINT = 0xa0000003, SYMLINK = 0xa000000c;
 
 interface FileBindings {
@@ -53,7 +52,7 @@ function api() {
   });
 }
 
-export function requireWindows(): void {
+function requireWindows(): void {
   if (process.platform !== 'win32' || process.arch !== 'x64') throw new LocalizedError('error.runtimePlatform');
 }
 
@@ -69,9 +68,6 @@ export function isBusy(error: unknown): boolean {
 
 export class InvalidFileSizeError extends LocalizedError {}
 export class WrongEntryKindError extends LocalizedError {}
-
-/** The new name was created, but neither admission nor its rollback completed. */
-export class DirectoryRollbackError extends LocalizedAggregateError {}
 
 export function hasCloseFailure(error: unknown): boolean {
   return (error instanceof Win32Error && error.api === 'CloseHandle')
@@ -152,26 +148,12 @@ export class NativeHold {
     return JSON.parse(this.readBytes(maxBytes).toString('utf8')) as unknown;
   }
 
-  /** FileLinkInformation uses the admitted source and destination directory handles. */
-  linkTo(parent: NativeHold, name: string): void {
-    const path = childPath(parent, name);
-    const bytes = Buffer.from(name, 'utf16le');
-    const info = Buffer.alloc(Math.max(24, 20 + bytes.length)); // x64 FILE_LINK_INFORMATION
-    info.writeBigUInt64LE(BigInt(parent.handle), 8);
-    info.writeUInt32LE(bytes.length, 16);
-    bytes.copy(info, 20);
-    this.setInformation(11, info, 'FileLinkInformation', path);
-  }
-
   deleteEntry(): void {
     // POSIX disposition removes this name when our handle closes, even with other readers.
     // Omit IGNORE_READONLY_ATTRIBUTE so an obstruction never alters a shared file.
-    this.setInformation(64, Buffer.from([3, 0, 0, 0]), 'FileDispositionInformationEx', this.path);
-  }
-
-  private setInformation(kind: number, info: Buffer, label: string, path: string): void {
-    const status = api().setFileInformation(this.handle, Buffer.alloc(16), info, info.length, kind);
-    if (status < 0) throw new Win32Error(label, api().statusToError(status), path);
+    const flags = Buffer.from([3, 0, 0, 0]);
+    const status = api().setFileInformation(this.handle, Buffer.alloc(16), flags, flags.length, 64);
+    if (status < 0) throw new Win32Error('FileDispositionInformationEx', api().statusToError(status), this.path);
   }
 
   [Symbol.dispose](): void { this.close(); }
@@ -211,16 +193,7 @@ export function absolutePath(path: string): string {
 
 export function samePath(a: string, b: string): boolean { return resolve(a).toLowerCase() === resolve(b).toLowerCase(); }
 export function sameIdentity(a: FileIdentity, b: FileIdentity): boolean { return a.volumeSerial === b.volumeSerial && a.fileId === b.fileId; }
-/** Borrowed debug-event file handles stay owned by the event dispatcher. */
-export function fileIdentity(handle: NativePtr): FileIdentity {
-  const data = Buffer.alloc(52);
-  if (!api().information(handle, data)) throwLastError(api(), 'GetFileInformationByHandle', 'loaded module');
-  return { volumeSerial: String(data.readUInt32LE(28)), fileId: String((BigInt(data.readUInt32LE(44)) << 32n) | BigInt(data.readUInt32LE(48))) };
-}
-
-export function canonicalExistingPath(path: string): string { return ordinaryPath(realpathSync(path)); }
-
-export function containsPath(parent: string, child: string): boolean {
+function containsPath(parent: string, child: string): boolean {
   const path = relative(parent, child);
   return path === '' || (path !== '..' && !path.startsWith(`..${sep}`) && !isAbsolute(path));
 }
@@ -260,14 +233,14 @@ export function revalidateDirectory(directory: Directory): void {
   directoryHold(directory, 0, SHARE_ALL).close();
 }
 
-export function childPath(parent: Pick<Directory, 'path'>, name: string): string {
+function childPath(parent: Pick<Directory, 'path'>, name: string): string {
   // Enumerated interior names need not be valid generation IDs or conventional
   // Win32 spellings. Preserve one exact component, including trailing dots/spaces.
   if (!name || name === '.' || name === '..' || /[\\/:\0]/.test(name)) throw new LocalizedError('error.invalidChildName', { name });
   return join(parent.path, name);
 }
 
-/** An already admitted parent is reused during a bounded inventory/link pass. */
+/** Resolve one ordinary child on the admitted parent volume. */
 export function admitChildDirectory(parent: Directory, name: string, expected?: FileIdentity): Directory {
   const path = childPath(parent, name);
   const info = inspect(path);
@@ -294,7 +267,7 @@ function createChildDirectory(parent: Directory, name: string): Directory {
     // Roll back only our successfully created, still-empty name. Never recurse
     // or repair attributes when admission itself could not establish a Directory.
     try { revalidateDirectory(parent); removeDirectoryName(path); }
-    catch (cleanup) { throw new DirectoryRollbackError([error, cleanup], 'error.directoryRollbackFailed', { path }, { cause: cleanup }); }
+    catch (cleanup) { throw new LocalizedAggregateError([error, cleanup], 'error.directoryRollbackFailed', { path }, { cause: cleanup }); }
     throw error;
   }
 }
@@ -310,15 +283,12 @@ export function ensureDirectory(parent: Directory, name: string): Directory {
   }
 }
 
-export function openOrdinaryFile(parent: Directory, name: string, writable = false): NativeHold {
+export function openOrdinaryFile(parent: Directory, name: string): NativeHold {
   const path = childPath(parent, name), hold = open(path);
   try {
     const info = hold.information();
     requireKind(info, 'file', path);
     if (info.volumeSerial !== parent.volumeSerial) throw new LocalizedError('error.volumeBoundaryChanged', { path });
-    if (writable && (info.attributes & ATTR_READONLY)) {
-      throw new LocalizedError('error.readOnlySource', { path }, { fallback: `Refusing read-only source hardlink: ${path}` });
-    }
     return hold;
   } catch (error) { hold.close(); throw error; }
 }
@@ -370,43 +340,25 @@ function directoryHold(directory: Directory, access: number, sharing: number): N
 export function pinDirectory(directory: Directory): NativeHold { return directoryHold(directory, READ, SHARE_READ_WRITE); }
 export function claimDirectory(directory: Directory): NativeHold { return directoryHold(directory, DELETE, SHARE_READ_WRITE); }
 
-/** Exclusive creation, no inheritance, automatically removed on close or death. */
-export function createSetupLease(parent: Directory, name = '.setup-owner'): NativeHold {
-  let lease: NativeHold | undefined;
-  try {
-    using _parent = pinDirectory(parent);
-    lease = open(childPath(parent, name), 0xc0010000, 0, CREATE_NEW, DELETE_ON_CLOSE);
-    return lease;
-  } catch (error) { lease?.close(); throw error; }
-}
-
-export function requireActiveLease(parent: Directory, expected: FileIdentity): void {
-  revalidateDirectory(parent);
-  const lease = openOrdinaryFile(parent, '.setup-owner');
-  try { if (!sameIdentity(lease.information(), expected)) throw new LocalizedError('error.leaseIdentityChanged'); }
-  finally { lease.close(); }
-}
-
-export function openExclusiveMetadata(parent: Directory, name: string): NativeHold {
-  revalidateDirectory(parent);
-  const hold = open(childPath(parent, name), READ, 0);
-  try { requireKind(hold.information(), 'file', hold.path); return hold; }
-  catch (error) { hold.close(); throw error; }
-}
-
 export async function acquireWriterLock(cachePath: string, signal?: AbortSignal): Promise<NativeHold> {
   // A sibling lock covers first creation and final removal of the cache root.
   const directory = admitDirectory(dirname(cachePath)), name = basename(cachePath) + '.writer-lock';
-  const started = performance.now(), path = toNamespacedPath(childPath(directory, name));
+  const started = performance.now(), path = childPath(directory, name);
   let retriedAccessDenied = false;
   for (;;) {
     signal?.throwIfAborted();
-    try { return createSetupLease(directory, name); }
+    let lock: NativeHold | undefined;
+    try {
+      using _parent = pinDirectory(directory);
+      lock = open(path, 0xc0010000, 0, CREATE_NEW, DELETE_ON_CLOSE);
+      return lock;
+    }
     catch (error) {
+      lock?.close();
       if (hasCloseFailure(error)) throw error;
       const code = (error as { win32Code?: number }).win32Code;
       if (performance.now() - started > 120_000 || ![5, 32, 80, 183].includes(code ?? 0)) throw error;
-      const entry = lstatSync(path, { throwIfNoEntry: false });
+      const entry = lstatSync(toNamespacedPath(path), { throwIfNoEntry: false });
       if (entry?.isSymbolicLink()) throw new LocalizedError('error.reparsePoint', { path });
       if (!signal || (entry && !entry.isFile())) throw error;
       if (entry) {
@@ -425,19 +377,6 @@ export async function acquireWriterLock(cachePath: string, signal?: AbortSignal)
       // Timers wrap the abort reason. Preserve it so retirement is distinguishable from a setup failure.
       await delay(25, undefined, { signal }).catch(error => { signal.throwIfAborted(); throw error; });
     }
-  }
-}
-
-/** Only the actual link syscall can authorize the later UAC choice. */
-export function createHardlink(sourceParent: Directory, sourceName: string, targetParent: Directory, targetName: string): void {
-  using _sourceParent = pinDirectory(sourceParent);
-  using target = directoryHold(targetParent, READ + FILE_ADD_FILE, SHARE_READ_WRITE);
-  if (sourceParent.volumeSerial !== targetParent.volumeSerial) throw new LocalizedError('error.hardlinkVolume');
-  using source = openOrdinaryFile(sourceParent, sourceName, true);
-  try { source.linkTo(target, targetName); }
-  catch (error) {
-    if ((error as { win32Code?: number }).win32Code === 5) Object.assign(error as object, { linkPermissionDenied: true });
-    throw error;
   }
 }
 
@@ -473,7 +412,7 @@ export function admitJunction(parent: Directory, name: string, target: Directory
   throw new LocalizedError('error.unexpectedJunction', { path });
 }
 
-export async function canonicalWorkspace(path: string): Promise<string> { return resolve(await realpath(absolutePath(path))); }
+export function canonicalWorkspace(path: string): Promise<string> { return promisify(realpath.native)(absolutePath(path)); }
 
 /** Includes malformed names; enumeration does not grant permission to follow links. */
 export function children(directory: Directory): string[] {
@@ -525,7 +464,7 @@ export function removeEmptyDirectory(directory: Directory): void {
   hold.deleteEntry();
 }
 
-/** Node enumeration hints are not authoritative for reparse/read-only admission. */
+/** Confirm an ordinary file through its native handle. */
 export function ordinaryFileExists(parent: Directory, name: string): boolean {
   try {
     const hold = openOrdinaryFile(parent, name);

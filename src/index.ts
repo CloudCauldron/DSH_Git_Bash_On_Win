@@ -5,36 +5,60 @@ import z from '@deepseek-ai/schemastery';
 import { SandboxBashExecutor } from '@deepseek-ai/dsh-bash-sandbox';
 import type { Config as BashConfig } from '@deepseek-ai/dsh-bash-local';
 import type { ShellExecSpec, ShellExecution } from '@deepseek-ai/dsh-shell';
-import type Subprocess from '@deepseek-ai/dsh-subprocess';
-import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { hasRuntimeCleanupFailure, prepareRuntime, sharedCacheDirectory, type GenerationPin, type RuntimeUse } from './runtime/runtime-cache.ts';
-import { commandReceiver } from './adapter.ts';
+import type { SandboxExecutionPolicy } from '@deepseek-ai/dsh-sandbox';
+import { tempWriteSid } from '@deepseek-ai/dsh-sandbox-windows-acl';
+import type { SubprocessHandle, SubprocessSpawnSpec } from '@deepseek-ai/dsh-subprocess';
+import { basename, dirname, join } from 'node:path';
+import { prepareRuntime, sharedCacheDirectory, type GenerationPin, type RuntimeUse } from './runtime/runtime-cache.ts';
+import { admitDirectory, canonicalWorkspace, hasCloseFailure, overlaps } from './runtime/ntfs-filesystem.ts';
+import { buildRuntimeEnvironment, discoverGitInstallation } from './runtime/git-installation.ts';
 import { describeFailure, LocalizedAggregateError, LocalizedError } from './locale/errors.ts';
-import { RebuildFeedback } from './rebuild-feedback.ts';
 
 export interface Config extends BashConfig { gitBashPath: Volatile<string | undefined> }
-
-interface Profile { dir: string; home: string; installAnchor?: string }
-
-interface PreparationSlot {
-  readonly selection: string | undefined;
-  readonly controller: AbortController;
-  readonly ready: Promise<GenerationPin>;
-  pin?: GenerationPin;
+interface Attempt {
+  selection?: string;
+  rebuild: boolean;
+  pending: boolean;
+  controller: AbortController;
+  ready: Promise<void>;
 }
+interface Command { child?: SubprocessHandle; release(): Promise<void> }
 
 /** Cancel a caller's wait without cancelling the shared preparation. */
-async function waitForReady(slot: PreparationSlot, signal: AbortSignal): Promise<GenerationPin> {
+async function waitForReady(attempt: Attempt, signal: AbortSignal): Promise<void> {
   signal.throwIfAborted();
   let abort!: () => void;
   const cancelled = new Promise<never>((_resolve, reject) => { abort = () => reject(signal.reason); });
   signal.addEventListener('abort', abort, { once: true });
-  try { return await Promise.race([slot.ready, cancelled]); }
+  try { return await Promise.race([attempt.ready, cancelled]); }
   finally { signal.removeEventListener('abort', abort); }
 }
 
-/** Native settings, command mechanics and one lazily owned runtime selection. */
+function viewPrefix(prefix: readonly string[], mode: SandboxExecutionPolicy['mode'], workspace: string, session?: string): string {
+  const invalid = () => new LocalizedError('error.unexpectedShellArguments');
+  if (mode === 'danger-full-access') {
+    if (prefix.length) throw invalid();
+    return 'fa';
+  }
+  const start = prefix.indexOf('--workspace'), args = prefix.slice(start);
+  if (start < 1 || args[1] !== workspace || args[2] !== '--temp' || !args[3] || args[4] !== '--mode'
+    || args[5] !== mode || (mode !== 'workspace-write' && mode !== 'read-only') || args.at(-1) !== '--') throw invalid();
+  if (mode === 'read-only' || session === undefined) {
+    if (args.length !== 7) throw invalid();
+    return mode === 'read-only' ? 'ro' : 'ww-u';
+  }
+  const sid = tempWriteSid(args[3]);
+  if (args.length !== 11 || args[6] !== '--write-sid' || !args[7]
+    || args[8] !== '--temp-write-sid' || args[9] !== sid) throw invalid();
+  return 'ww-' + sid.split('-').slice(3, 5).join('-');
+}
+
+/** Only this command's spawn sees the finalized environment and the range-settled done promise. */
+function commandReceiver<T extends object>(receiver: T, ctx: Context, spawn: (spec: SubprocessSpawnSpec) => SubprocessHandle): T {
+  Object.defineProperty(receiver, 'ctx', { value: ctx.extend({ subprocess: { spawn } }) });
+  return receiver;
+}
+
 export default class GitBashExecutor extends SandboxBashExecutor {
   static override Config: typeof SandboxBashExecutor.Config = z.object({
     ...SandboxBashExecutor.Config.dict,
@@ -42,38 +66,24 @@ export default class GitBashExecutor extends SandboxBashExecutor {
   }) as unknown as typeof SandboxBashExecutor.Config;
 
   declare readonly config: Config;
-  private readonly profile: Profile;
-  private readonly feedback: RebuildFeedback;
-  private readonly setupSpawn: Subprocess['spawn'];
-  private slot?: PreparationSlot;
-  private rebuildOp?: PreparationSlot;
+  private readonly cache: string;
+  private ready?: { selection?: string; pin: GenerationPin };
+  private attempt?: Attempt;
   private readonly stopping = new AbortController();
-  private readonly executions = new Map<ShellExecution, () => Promise<void>>();
+  private readonly commands = new Set<Command>();
   private readonly work = new Set<Promise<unknown>>();
   private readonly cleanup = new Set<Promise<unknown>>();
   private readonly cleanupErrors: unknown[] = [];
 
   constructor(ctx: Context, config: Config) {
     if (process.platform !== 'win32' || process.arch !== 'x64') throw new LocalizedError('error.pluginPlatform');
-    const profile = ctx.get('profileContext') as Profile | undefined;
+    const profile = ctx.get('profileContext') as { home: string } | undefined;
     if (!profile) throw new LocalizedError('error.profileRequired');
     super(ctx, config);
-    this.profile = profile;
-    this.feedback = new RebuildFeedback(ctx);
-    this.setupSpawn = ctx.subprocess.spawn.bind(ctx.subprocess);
-    ctx.on('loader/volatile-update', () => {
-      if (this.rebuildOp || (this.slot && !this.slot.pin)) this.observeSelection();
-    });
+    this.cache = sharedCacheDirectory(profile.home);
+    ctx.on('loader/volatile-update', () => { if (this.attempt?.pending) this.observeSelection(); });
     ctx.effect(() => () => this.disposeRuntime());
     ctx.inject(['connection'], scope => {
-      scope.effect(() => () => this.feedback.disconnect());
-      scope.connection.fetch.register({
-        path: '/api/git-bash-on-win/feedback', methods: ['GET', 'POST'], requestBody: 'buffered',
-        fetch: async request => {
-          if (request.method === 'POST') this.observeSelection();
-          return this.feedback.handle(request);
-        },
-      });
       scope.connection.fetch.register({
         path: '/api/git-bash-on-win/rebuild', methods: ['POST'], requestBody: 'buffered',
         fetch: async () => {
@@ -101,210 +111,150 @@ export default class GitBashExecutor extends SandboxBashExecutor {
     }), this.cleanup);
   }
 
-  private retire(slot: PreparationSlot): Promise<void> {
-    slot.controller.abort(new LocalizedError('error.preparationSuperseded', undefined, { fallback: 'Git Bash runtime preparation was superseded.' }));
-    if (slot.pin) return this.ownCleanup(slot.pin.release());
-    return this.track(slot.ready.then(() => {}, error => {
-      // Preparation records resource failures at their boundary, independently
-      // of retirement timing. Ordinary setup errors have already drained safely.
-      if (hasRuntimeCleanupFailure(error)) throw error;
-    }), this.cleanup);
+  private retireAttempt() {
+    const attempt = this.attempt;
+    this.attempt = undefined;
+    if (attempt?.pending) {
+      attempt.controller.abort(new LocalizedError('error.preparationSuperseded'));
+      void this.track(attempt.ready.then(() => {}, () => {}), this.cleanup);
+    }
   }
 
-  /** Detach obsolete work before it can request consent, launch a broker, or serve a command. */
-  private observeSelection(): string | undefined {
+  private observeSelection() {
     const selection = this.config.gitBashPath.get();
-    const obsolete = new Set<PreparationSlot>();
-    if (this.slot && this.slot.selection !== selection) { obsolete.add(this.slot); this.slot = undefined; }
-    if (this.rebuildOp && this.rebuildOp.selection !== selection) {
-      obsolete.add(this.rebuildOp);
-      this.rebuildOp = undefined;
-      this.feedback.setProgress(undefined);
+    if (this.attempt && this.attempt.selection !== selection) this.retireAttempt();
+    if (this.ready && this.ready.selection !== selection) {
+      void this.ownCleanup(this.ready.pin.release());
+      this.ready = undefined;
     }
-    for (const slot of obsolete) void this.retire(slot);
     return selection;
   }
 
-  private createSlot(selection: string | undefined, rebuild: boolean): PreparationSlot {
-    const controller = new AbortController();
-    const retired = [...this.cleanup];
-    // Install the object in slot/rebuildOp before preparation can yield or finish.
-    const slot: PreparationSlot = {
-      selection, controller,
-      ready: this.track(Promise.resolve().then(async () => {
-        await Promise.all(retired);
-        if (this.cleanupErrors.length) throw new LocalizedAggregateError(this.cleanupErrors, 'error.priorCleanupFailed');
-        this.observeSelection();
-        controller.signal.throwIfAborted();
-        this.stopping.signal.throwIfAborted();
-        const pin = await prepareRuntime({ cacheDirectory: sharedCacheDirectory(this.profile.home), installAnchor: this.profile.installAnchor,
-          gitBashPath: selection, rebuild, spawn: this.setupSpawn,
-          onProgress: rebuild ? progress => {
-            if (this.rebuildOp === slot && !controller.signal.aborted) this.feedback.setProgress(progress);
-          } : undefined,
-          elevation: rebuild ? 'manual' : (source, changed) => this.confirmElevation(source, changed, controller.signal),
-        }, controller.signal).catch(error => {
-          if (hasRuntimeCleanupFailure(error)) this.cleanupErrors.push(error);
-          throw error;
-        });
-        try {
-          this.observeSelection();
-          controller.signal.throwIfAborted();
-          this.stopping.signal.throwIfAborted();
-          if (slot !== (rebuild ? this.rebuildOp : this.slot)) throw new LocalizedError('error.stalePreparation');
-          slot.pin = pin;
-          if (!rebuild && pin.freshlyBuilt) this.feedback.succeeded();
-          return pin;
-        } catch (error) { await this.ownCleanup(pin.release()); throw error; }
-      }).catch(error => {
-        if (!rebuild && error !== controller.signal.reason) this.feedback.failed(error);
+  private prepare(selection: string | undefined, rebuild: boolean): Attempt {
+    const controller = new AbortController(), cleanup = [...this.cleanup];
+    const attempt: Attempt = { selection, rebuild, controller, pending: true, ready: this.track((async () => {
+      await Promise.allSettled(cleanup);
+      if (this.cleanupErrors.length) throw new LocalizedAggregateError(this.cleanupErrors, 'error.priorCleanupFailed');
+      this.observeSelection();
+      controller.signal.throwIfAborted();
+      const pin = await prepareRuntime({ cacheDirectory: this.cache, gitBashPath: selection, rebuild }, controller.signal).catch(error => {
+        if (hasCloseFailure(error)) this.cleanupErrors.push(error);
         throw error;
-      })),
-    };
-    return slot;
+      });
+      this.observeSelection();
+      if (controller.signal.aborted) { await this.ownCleanup(pin.release()); controller.signal.throwIfAborted(); }
+      const previous = this.ready;
+      this.ready = { selection, pin };
+      if (previous) await this.ownCleanup(previous.pin.release());
+    })().finally(() => { attempt.pending = false; })) };
+    this.attempt = attempt;
+    return attempt;
   }
 
-  private confirmElevation(source: string, changed: boolean, signal: AbortSignal): Promise<void> {
-    this.observeSelection();
-    const args = [process.execPath, fileURLToPath(new URL('./link-runtime-cache.js', import.meta.url)), this.profile.home, this.profile.dir, join(source, 'usr/bin/bash.exe')];
-    if (this.profile.installAnchor) args.push(this.profile.installAnchor);
-    // Print literal arguments for Windows Git Bash, including paths with quotes or shell metacharacters.
-    const command = args.map(arg => "'" + arg.replaceAll('\\', '/').replaceAll("'", "'\\''") + "'").join(' ');
-    // Desktop's recovery entry resolves its DSH installation anchor inside app.asar.
-    const invocation = process.versions.electron ? 'ELECTRON_RUN_AS_NODE=1 ' + command : command;
-    return this.feedback.confirm(changed, new LocalizedError('error.confirmationUnavailable', { command: invocation }), signal);
-  }
-
-  private current(slot: PreparationSlot, signal: AbortSignal): boolean {
-    this.observeSelection();
-    signal.throwIfAborted();
+  async rebuildRuntime(): Promise<void> {
     this.stopping.signal.throwIfAborted();
-    return this.slot === slot && !slot.controller.signal.aborted;
-  }
-
-  private async acquireUse(spec: ShellExecSpec, signal: AbortSignal): Promise<{ slot: PreparationSlot; use: RuntimeUse }> {
-    if (!spec.sandboxPolicy) throw new LocalizedError('error.executionPolicyRequired');
-    for (;;) {
-      signal.throwIfAborted();
-      this.stopping.signal.throwIfAborted();
-      const selection = this.observeSelection();
-      const slot = this.slot ??= this.createSlot(selection, false);
-      let use: RuntimeUse | undefined;
-      let transferred = false;
-      try {
-        const pin = await waitForReady(slot, signal);
-        if (!this.current(slot, signal)) continue;
-        use = await pin.lease(spec.sandboxPolicy, signal).catch(error => {
-          // Lease may unwind its last reference before returning a RuntimeUse.
-          if (hasRuntimeCleanupFailure(error)) this.cleanupErrors.push(error);
-          throw error;
-        });
-        if (this.current(slot, signal)) { transferred = true; return { slot, use }; }
-      } catch (error) {
-        // Recorded at acquisition, never discarded by stale/cancelled waiters.
-        if (hasRuntimeCleanupFailure(error)) throw error;
-        if (this.current(slot, signal)) throw error;
-      } finally {
-        // Transfer only a current, uncancelled use to the command.
-        if (use && !transferred) await this.ownCleanup(use.release());
-      }
-    }
+    const selection = this.observeSelection();
+    if (this.attempt?.pending && this.attempt.rebuild) throw new LocalizedError('error.rebuildBusy');
+    this.retireAttempt();
+    const attempt = this.prepare(selection, true);
+    await attempt.ready;
+    this.observeSelection();
+    this.stopping.signal.throwIfAborted();
+    attempt.controller.signal.throwIfAborted();
+    if (this.attempt !== attempt) throw new LocalizedError('error.preparationSuperseded');
   }
 
   protected override executeArgv(spec: ShellExecSpec,
     argvOrPrepare: readonly string[] | ((signal: AbortSignal) => Promise<readonly string[]>),
     onStarted?: (execution: ShellExecution) => void): Promise<ShellExecution> {
     this.stopping.signal.throwIfAborted();
-    this.observeSelection();
+    if (!spec.sandboxPolicy) throw new LocalizedError('error.executionPolicyRequired');
+    const { mode, workspaceRoot, sessionId } = spec.sandboxPolicy;
     spec = { ...spec, signal: spec.signal ? AbortSignal.any([spec.signal, this.stopping.signal]) : this.stopping.signal };
-    let use: RuntimeUse | undefined;
-    let preparation: Promise<readonly string[]> | undefined;
-    let started = false;
-    let rangeFailed = false;
-    const release = () => {
-      const held = use; use = undefined;
-      return held ? this.ownCleanup(held.release()) : Promise.resolve();
-    };
-    const receiver = commandReceiver(this[Service.extend]() as this, this.ctx, error => {
-      rangeFailed = true;
-      this.cleanupErrors.push(error);
-    });
-    const operation = super.executeArgv.call(receiver, spec, signal => {
-      preparation = this.track((async () => {
-        const acquired = await this.acquireUse(spec, signal);
-        use = acquired.use;
-        try {
-          // Lease admission precedes the native deferred confinement callback.
-          if (!this.current(acquired.slot, signal)) throw new LocalizedError('error.changedBeforeConfinement');
-          const argv = typeof argvOrPrepare === 'function' ? await argvOrPrepare(signal) : argvOrPrepare;
-          if (!this.current(acquired.slot, signal)) throw new LocalizedError('error.changedDuringConfinement');
-          const offset = argv.length - 3;
-          if (offset < 0 || argv[offset] !== 'bash' || argv[offset + 1] !== '-c' || argv[offset + 2] !== spec.command) throw new LocalizedError('error.unexpectedShellArguments');
-          return [...argv.slice(0, offset), process.execPath, fileURLToPath(new URL('./bash-launcher.js', import.meta.url)),
-            use.baseRoot, use.installationRoot, use.sourceRoot, use.layout, spec.sandboxPolicy!.mode,
-            Buffer.from(spec.command, 'utf8').toString('base64'), String(this.config.graceMs.get())];
-        } catch (error) { await release(); throw error; }
-      })());
-      return preparation;
-    }, execution => {
-      started = true;
-      this.executions.set(execution, release);
-      void this.track(execution.done.then(async () => {
-        // An unconfirmed range may still use the runtime. Keep its existing
-        // owned reference, and report failed disposal; process exit closes it.
-        if (rangeFailed) return;
-        try { await release(); } finally { this.executions.delete(execution); }
-      }));
-      onStarted?.(execution);
-    });
-    return this.track(operation.finally(async () => {
-      if (!started) {
-        // DSH can stop waiting on its callback at the command deadline. Join our
-        // short lease/confinement operation before releasing its local reference.
-        await preparation?.catch(() => {});
-        await release();
-      }
-    }));
-  }
-
-  async rebuildRuntime(): Promise<void> {
-    this.stopping.signal.throwIfAborted();
-    const selection = this.observeSelection();
-    if (this.rebuildOp) throw new LocalizedError('error.rebuildBusy', undefined, { fallback: 'Git Bash runtime rebuilding is busy.' });
-    if (this.slot && !this.slot.pin) {
-      const previous = this.slot; this.slot = undefined;
-      void this.retire(previous);
-    }
-    const op = this.rebuildOp = this.createSlot(selection, true);
-    this.slot ??= op;
-    this.feedback.setProgress('preparing');
-    try {
-      await op.ready;
+    let use: RuntimeUse | undefined, pin: GenerationPin, view: string;
+    let preparation: Promise<readonly string[]> | undefined, release: Promise<void> | undefined;
+    const command: Command = { release: () => release ??= this.ownCleanup((async () => {
+      await use?.release();
+      use = undefined;
+      this.commands.delete(command);
+    })()) };
+    this.commands.add(command);
+    const receiver = commandReceiver(this[Service.extend]() as this, this.ctx, spawn => {
       this.observeSelection();
-      this.stopping.signal.throwIfAborted();
-      op.controller.signal.throwIfAborted();
-      if (this.rebuildOp !== op) throw new LocalizedError('error.staleRebuild');
-      const previous = this.slot;
-      this.slot = op;
-      if (previous && previous !== op) await this.retire(previous);
-    } finally {
-      if (this.rebuildOp === op) {
-        this.rebuildOp = undefined;
-        this.feedback.setProgress(undefined);
+      if (this.ready?.pin !== pin) throw new LocalizedError('error.changedDuringConfinement');
+      const env = buildRuntimeEnvironment(view, use!.sourceRoot, use!.layout, spawn.env ?? {});
+      const child = command.child = this.ctx.subprocess.spawn({ ...spawn, env });
+      const done = this.track(child.done.finally(async () => {
+        try { if (!await child.waitForExit()) throw new LocalizedError('error.commandRangeUnconfirmed'); }
+        catch (error) { this.cleanupErrors.push(error); throw error; }
+        await command.release();
+      }));
+      return { ...child, done };
+    });
+    const prepare = async (signal: AbortSignal) => {
+      let workspace: string | undefined;
+      for (;;) {
+        signal.throwIfAborted();
+        const selection = this.observeSelection();
+        if (this.ready) break;
+        if (!this.attempt) {
+          // A cold command must admit its workspace before starting a shared cache write.
+          if (!workspace) { workspace = await canonicalWorkspace(workspaceRoot); continue; }
+          const home = admitDirectory(dirname(this.cache));
+          if (overlaps(workspace, join(home.path, basename(this.cache))) || overlaps(workspace, discoverGitInstallation(selection).root)) {
+            throw new LocalizedError('error.workspaceOverlap');
+          }
+        }
+        const attempt = this.attempt ?? this.prepare(selection, false);
+        try { await waitForReady(attempt, signal); }
+        catch (error) {
+          this.observeSelection();
+          if (this.attempt === attempt || hasCloseFailure(error)) throw error;
+        }
       }
-    }
+      pin = this.ready.pin;
+      use = pin.acquireUse();
+      workspace ??= await canonicalWorkspace(workspaceRoot);
+      signal.throwIfAborted();
+      this.observeSelection();
+      if (this.ready?.pin !== pin) throw new LocalizedError('error.changedBeforeConfinement');
+      if (overlaps(workspace, use.sourceRoot) || overlaps(workspace, use.cacheRoot)) throw new LocalizedError('error.workspaceOverlap');
+      const argv = typeof argvOrPrepare === 'function' ? await argvOrPrepare(signal) : argvOrPrepare;
+      signal.throwIfAborted();
+      this.observeSelection();
+      if (this.ready?.pin !== pin) throw new LocalizedError('error.changedDuringConfinement');
+      if (argv.at(-3) !== 'bash' || argv.at(-2) !== '-c' || argv.at(-1) !== spec.command) throw new LocalizedError('error.unexpectedShellArguments');
+      const prefix = argv.slice(0, -3);
+      view = use.bindView({ workspace, sessionId, prefix: viewPrefix(prefix, mode, workspace, sessionId) });
+      return [...prefix, join(view, 'usr/bin/bash.exe'), '--noprofile', '--norc', '-c', spec.command];
+    };
+    return this.track(super.executeArgv.call(receiver, spec, signal => preparation = this.track(prepare(signal).catch(error => {
+      if (hasCloseFailure(error) && !this.cleanupErrors.includes(error)) this.cleanupErrors.push(error);
+      throw error;
+    })), onStarted)
+      .finally(async () => {
+        if (!command.child) {
+          await preparation?.catch(() => {});
+          await command.release();
+        }
+      }));
   }
 
   private async disposeRuntime(): Promise<void> {
-    this.stopping.abort(new LocalizedError('error.providerStopping', undefined, { fallback: 'The Git Bash provider is stopping.' }));
-    // Signal executions before waiting for any setup, regardless of selection.
-    for (const execution of this.executions.keys()) {
-      try { execution.kill(); } catch (error) { this.cleanupErrors.push(error); }
+    this.stopping.abort(new LocalizedError('error.providerStopping'));
+    this.retireAttempt();
+    if (this.ready) { void this.ownCleanup(this.ready.pin.release()); this.ready = undefined; }
+    for (const command of this.commands) {
+      const child = command.child;
+      if (!child) continue;
+      try { child.terminate(); } catch (error) { this.cleanupErrors.push(error); }
+      void this.track((async () => {
+        try {
+          if (!await child.waitForExit()) throw new LocalizedError('error.commandRangeUnconfirmed');
+        } catch (error) { if (!this.cleanupErrors.includes(error)) this.cleanupErrors.push(error); return; }
+        await command.release();
+      })());
     }
-    const slots = new Set([this.slot, this.rebuildOp]);
-    if (this.rebuildOp) this.feedback.setProgress(undefined);
-    this.slot = this.rebuildOp = undefined;
-    for (const slot of slots) if (slot) void this.retire(slot);
     while (this.work.size || this.cleanup.size) await Promise.allSettled([...this.work, ...this.cleanup]);
     if (this.cleanupErrors.length) throw new LocalizedAggregateError(this.cleanupErrors, 'error.providerCleanupFailed');
   }

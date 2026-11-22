@@ -1,5 +1,5 @@
 import koffi from 'koffi';
-import { closeSync, lstatSync, mkdirSync, openSync, readdirSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, lstatSync, mkdirSync, openSync, readdirSync, readlinkSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
 import { realpath } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep, toNamespacedPath } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -454,12 +454,13 @@ export function createJunction(parent: Directory, name: string, target: Director
 export function admitJunction(parent: Directory, name: string, target: Directory): void {
   const path = childPath(parent, name), info = inspect(path);
   if (!(info.attributes & ATTR_REPARSE) || info.reparseTag !== MOUNT_POINT) throw new LocalizedError('error.unexpectedJunction', { path });
-  let actual: string;
-  try { actual = ordinaryPath(realpathSync(toNamespacedPath(path))); }
-  catch (cause) { throw new LocalizedError('error.unexpectedJunction', { path }, { cause, failures: [cause] }); }
-  if (!samePath(actual, target.path)) {
-    throw new LocalizedError('error.unexpectedJunction', { path });
-  }
+  const link = toNamespacedPath(path);
+  try {
+    // The stored target must be direct and must still resolve to the admitted directory.
+    if (samePath(ordinaryPath(readlinkSync(link)), target.path)
+      && samePath(ordinaryPath(realpathSync(link)), target.path)) return;
+  } catch (cause) { throw new LocalizedError('error.unexpectedJunction', { path }, { cause, failures: [cause] }); }
+  throw new LocalizedError('error.unexpectedJunction', { path });
 }
 
 export async function canonicalWorkspace(path: string): Promise<string> { return resolve(await realpath(absolutePath(path))); }

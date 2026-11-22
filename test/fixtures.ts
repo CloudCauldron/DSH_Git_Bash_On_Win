@@ -13,7 +13,7 @@ import type Subprocess from '@deepseek-ai/dsh-subprocess';
 import { findInstalledDshManifest, installedDsh } from '../scripts/installed-dsh.ts';
 import { admitDirectory, createDirectory, NativeHold, removeTree } from '../src/runtime/ntfs-filesystem.ts';
 import { bundledShimUrl, prepareRuntime, purgeRuntimeCache, type GenerationPin, type RuntimePreparation } from '../src/runtime/runtime-cache.ts';
-import { anchorPaths, buildCopyLayout, buildRuntimeEnvironment, discoverGitInstallation, inventoryGitFiles, type AnchorStamps, type GitLayout } from '../src/runtime/git-installation.ts';
+import { anchorPaths, buildCopyLayout, buildRuntimeEnvironment, discoverGitInstallation, inventoryGitFiles, type AnchorStamps, type GitInstallation, type GitLayout } from '../src/runtime/git-installation.ts';
 
 /** Keep every ACL record. icacls localizes its final success count to the console language. */
 export function readAclRecords(path: string, recursive = false): string {
@@ -287,6 +287,10 @@ export async function executionFixture(t: TestContext) {
     }
     throw error;
   }
+  return createExecutionFixture(t, runtime, installed);
+}
+
+async function createExecutionFixture(t: TestContext, runtime: ReturnType<typeof installedDsh>, installed: GitInstallation) {
   const directory = await mkdtemp(join(tmpdir(), 'dsh-git-bash-execution-'));
   const source = join(directory, 'source'), workspace = join(directory, 'workspace 含空格'), cache = join(directory, '.dsh-git-bash-on-win');
   const { Context: InstalledContext } = await runtime.load(runtime.baseRequire, '@deepseek-ai/cordis') as typeof import('@deepseek-ai/cordis');
@@ -341,9 +345,7 @@ export async function executionFixture(t: TestContext) {
 
 /** Exercise the shallow copy layout through the installed DSH providers. */
 export async function compatFixture(t: TestContext) {
-  installedDsh();
-  const f = await executionFixture(t);
-  assert.ok(f);
+  const f = await createExecutionFixture(t, installedDsh(), discoverGitInstallation(process.env.DSH_TEST_GIT_BASH));
   const generation = createDirectory(admitDirectory(f.directory), 'generation');
   const installation = discoverGitInstallation(f.request.gitBashPath);
   const built = await buildCopyLayout(generation, installation, await readFile(bundledShimUrl), t.signal);

@@ -185,3 +185,11 @@ Defender reported both antivirus and real-time protection disabled before and af
 | Cold benchmark | 5 fresh generations, all successful |
 
 All three test suites recorded zero failures, cancellations and skips.
+
+### Independent Phase 2 audit
+
+At `f365bdf`, equivalent Bash selections containing a dot component or repeated separator failed discovery for both supported entry points. Normalizing the lexical parent restores those spellings and keeps the interior reparse checks. A cache junction through a second junction to the correct Git directory also passed admission. Admission now requires the stored target to point directly to the admitted path and checks that it still resolves. Direct, indirect, redirected and dangling fixtures exercised the shared check.
+
+With the default Git discovery locations removed from a test process, the required native fixture exited successfully and counted one skip. The strict fixture now resolves its own prerequisites before sharing the real provider setup with the optional execution test. Repeating the missing-Git probe produced exit code 1, one failure and zero skips.
+
+A CJK temporary path exposed a false mismatch in the protected-copy ACL test. The old comparison used a UTF-16 path length to slice console-encoded output. The test now compares complete ACL records for a copied file and a fresh file at the same path, and uses the current user's numeric SID for the read/execute grant.

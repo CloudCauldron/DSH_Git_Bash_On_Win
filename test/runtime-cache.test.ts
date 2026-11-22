@@ -14,7 +14,7 @@ import { patchMsysDll } from '../src/runtime/pe.ts';
 import { bundledShimUrl, hasRuntimeCleanupFailure, prepareRuntime, purgeRuntimeCache } from '../src/runtime/runtime-cache.ts';
 import { admitCopyJunctions, anchorPaths, buildCopyLayout, discoverGitInstallation, inventoryGitFiles, linkFreshTree, requireViewPathBudget } from '../src/runtime/git-installation.ts';
 import {
-  absolutePath, acquireWriterLock, admitDirectory, createDirectory, createJunction, NativeHold,
+  absolutePath, acquireWriterLock, admitDirectory, admitJunction, createDirectory, createJunction, NativeHold,
   isBusy, openExclusiveMetadata, openOrdinaryFile, pathExists, pinDirectory, readFileBytes, removeTree, unlinkEntry, writeNewFile,
 } from '../src/runtime/ntfs-filesystem.ts';
 
@@ -662,8 +662,18 @@ await test('shallow copies preserve flat names and private bytes, junctions reta
     unlinkEntry(runtime, name);
     createJunction(runtime, name, admitDirectory(join(f.source, name)));
   }
-  await unlink(join(f.source, 'bin/bash.exe'));
+  const nativeBin = admitDirectory(join(f.source, 'bin'));
+  const alternate = createJunction(f.parent, 'also-bin', nativeBin);
+  unlinkEntry(runtime, 'bin');
+  await symlink(alternate, join(runtime.path, 'bin'), 'junction');
+  assert.equal(fs.realpathSync.native(join(runtime.path, 'bin')), join(f.source, 'bin'));
+  assert.throws(() => admitCopyJunctions(runtime, source, 'ucrt64'), /Unexpected runtime junction/);
+  unlinkEntry(runtime, 'bin');
+  createJunction(runtime, 'bin', nativeBin);
+  await unlink(join(nativeBin.path, 'bash.exe'));
   assert.throws(() => admitCopyJunctions(runtime, source, 'ucrt64'));
+  await rename(nativeBin.path, nativeBin.path + '-moved');
+  assert.throws(() => admitJunction(runtime, 'bin', nativeBin), /Unexpected runtime junction/);
   removeTree(f.parent, 'one');
   assert.equal(await readFile(join(origin, 'helper'), 'utf8'), 'replacement');
 });
@@ -690,7 +700,9 @@ await test('both Bash entry points require ordinary etc, bin and the native wrap
     await rename(moved, original);
   }
   assert.equal(pathExists(f.cache), false);
-  for (const entry of ['bin/bash.exe', 'usr/bin/bash.exe']) assert.equal(discoverGitInstallation(join(f.source, entry)).root, f.source);
+  for (const dir of ['bin', 'usr/bin']) for (const tail of ['/bash.exe', '/./bash.exe', '//bash.exe']) {
+    assert.deepEqual(discoverGitInstallation(join(f.source, dir) + tail), selection);
+  }
 });
 
 await test('copy refuses admitted reparses and a reserved shim name at any flat entry type', nativeOnly, async t => {
@@ -714,10 +726,11 @@ await test('a protected real Git payload keeps its bytes, ACL, attributes and li
   const source = join(origin, name);
   const installed = discoverGitInstallation(process.env.DSH_TEST_GIT_BASH);
   await fsp.copyFile(join(installed.root, 'usr/bin', name), source);
-  const user = execFileSync(join(process.env.SystemRoot!, 'System32/whoami.exe'), [], { encoding: 'utf8' }).trim();
+  const userSid = execFileSync('powershell.exe', ['-NoProfile', '-Command',
+    '[Security.Principal.WindowsIdentity]::GetCurrent().User.Value'], { encoding: 'utf8' }).trim();
   execFileSync('attrib.exe', ['+R', source]);
   try {
-    execFileSync('icacls.exe', [source, '/inheritance:r', '/grant:r', user + ':(RX)']);
+    execFileSync('icacls.exe', [source, '/inheritance:r', '/grant:r', '*' + userSid + ':(RX)']);
     try {
       const snapshot = () => {
         using hold = openOrdinaryFile(admitDirectory(origin), name);
@@ -725,16 +738,19 @@ await test('a protected real Git payload keeps its bytes, ACL, attributes and li
       };
       const before = snapshot();
       assert.ok(before.info.attributes & 1);
-      const { runtime } = await f.build('protected');
-      const target = join(runtime.path, 'usr/bin', name), peer = join(dirname(target), 'acl-control');
+      const { runtime } = await f.build('protected-漢');
+      const target = join(runtime.path, 'usr/bin', name);
       assert.deepEqual(readFileSync(target), before.bytes);
-      fs.writeFileSync(peer, '');
-      const acl = (path: string) => readAclRecords(path).slice(path.length).split('\n').map(line => line.trimStart());
-      assert.deepEqual(acl(target), acl(peer));
-      using copy = openOrdinaryFile(admitDirectory(dirname(target)), name);
-      assert.equal(copy.information().attributes & 1, 0);
+      {
+        using copy = openOrdinaryFile(admitDirectory(dirname(target)), name);
+        assert.equal(copy.information().attributes & 1, 0);
+      }
       fs.writeFileSync(target, 'independent');
       assert.deepEqual(snapshot(), before);
+      const copiedAcl = readAclRecords(target);
+      await unlink(target);
+      await writeFile(target, '', { flag: 'wx' });
+      assert.equal(readAclRecords(target), copiedAcl, 'a fresh file at the same path inherits the cache ACL');
     } finally { execFileSync('icacls.exe', [source, '/reset']); }
   } finally { execFileSync('attrib.exe', ['-R', source]); }
 });

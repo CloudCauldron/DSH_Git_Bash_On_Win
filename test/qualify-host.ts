@@ -62,7 +62,7 @@ function observeAlias(name: string) {
 }
 
 await test('packaged CLI and debugger qualification through installed DSH providers', async t => {
-  const f = await executionFixture(t); assert.ok(f, 'UNVERIFIED: native Windows x64, installed DSH and Git are required.');
+  const f = await executionFixture(t);
   const dsh = installedDsh();
   const { default: Stock } = await dsh.load(dsh.baseRequire, '@deepseek-ai/dsh-pwsh-sandbox') as { default: new (ctx: Context, config: { pwshPath: string }) => object };
   const { default: Bash } = await import(new URL('../lib/index.js', import.meta.url).href) as { default: typeof GitBashExecutor };
@@ -100,6 +100,7 @@ await test('packaged CLI and debugger qualification through installed DSH provid
           assert.equal(hit.debugged, false);
           assert.equal(hit.status, name === 'pwsh' ? 19 : mode === 'danger-full-access' ? 0 : 0x8a150001);
           assert.equal(result.exitCode, backend === 'stock' ? hit.status : hit.status & 255);
+          if (name === 'winget' && mode === 'danger-full-access') assert.match(result.stdout.text, /^v\d+\.\d+\.\d+\s*$/m);
           const facts = { packageName: hit.packageName, status: hit.status };
           if (backend === 'stock') expected.set(key, facts);
           else assert.deepEqual(facts, expected.get(key));

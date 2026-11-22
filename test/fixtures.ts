@@ -13,7 +13,7 @@ import type Subprocess from '@deepseek-ai/dsh-subprocess';
 import { findInstalledDshManifest, installedDsh } from '../scripts/installed-dsh.ts';
 import { admitDirectory, createDirectory, removeTree } from '../src/runtime/ntfs-filesystem.ts';
 import { bundledShimUrl, prepareRuntime, purgeRuntimeCache, type GenerationPin, type RuntimePreparation } from '../src/runtime/runtime-cache.ts';
-import { buildCopyLayout, buildRuntimeEnvironment, discoverGitInstallation, type SourceFreshness, type GitInstallation, type GitLayout } from '../src/runtime/git-installation.ts';
+import { buildCopyLayout, buildRuntimeEnvironment, discoverGitInstallation, type SourceFreshness, type GitLayout } from '../src/runtime/git-installation.ts';
 
 /** Keep every ACL record. icacls localizes its final success count to the console language. */
 export function readAclRecords(path: string, recursive = false): string {
@@ -280,11 +280,8 @@ export async function localSpawn(t: TestContext): Promise<Subprocess['spawn'] | 
 }
 
 /** Real providers, owned Git bytes, and no personal Loader/profile state. */
-export function executionFixture(t: TestContext) {
-  return createExecutionFixture(t, installedDsh(), discoverGitInstallation(process.env.DSH_TEST_GIT_BASH));
-}
-
-async function createExecutionFixture(t: TestContext, runtime: ReturnType<typeof installedDsh>, installed: GitInstallation) {
+export async function executionFixture(t: TestContext) {
+  const runtime = installedDsh(), installed = discoverGitInstallation(process.env.DSH_TEST_GIT_BASH);
   const directory = await mkdtemp(join(tmpdir(), 'dsh-git-bash-execution-'));
   const source = join(directory, 'source'), workspace = join(directory, 'workspace 含空格'), cache = join(directory, '.dsh-git-bash-on-win');
   const { Context: InstalledContext } = await runtime.load(runtime.baseRequire, '@deepseek-ai/cordis') as typeof import('@deepseek-ai/cordis');

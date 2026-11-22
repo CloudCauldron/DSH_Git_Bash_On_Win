@@ -35,6 +35,7 @@ export function buildRuntimeEnvironment(installationRoot: string, sourceRoot: st
 }
 
 export function discoverGitInstallation(setting?: string): GitInstallation {
+  if (setting?.trim() === '') setting = undefined;
   const candidates = setting !== undefined ? [setting] : [
     ...['ProgramW6432', 'ProgramFiles', 'ProgramFiles(x86)'].flatMap(key => process.env[key] ? [join(process.env[key]!, 'Git/bin/bash.exe')] : []),
     ...process.env.LOCALAPPDATA ? [join(process.env.LOCALAPPDATA, 'Programs/Git/bin/bash.exe')] : [],

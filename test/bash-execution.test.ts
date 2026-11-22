@@ -36,7 +36,7 @@ async function executorFixture(t: TestContext) {
     providerError: undefined as Error | undefined,
     terminations: 0,
     range: async (outcome: Promise<SubprocessOutcome>) => { await outcome; return true; },
-    confine: async (argv: string[]) => ({ argv: ['fixture-runner', '--workspace', policy.workspaceRoot, '--temp', fixture.directory, '--mode', policy.mode, '--', ...argv], enforcement: 'partial' as const, denialSignatures: [], runnerFailureRules: [] }),
+    confine: async (argv: string[], admitted = policy) => ({ argv: ['fixture-runner', '--workspace', admitted.workspaceRoot, '--temp', fixture.directory, '--mode', admitted.mode, '--', ...argv], enforcement: 'partial' as const, denialSignatures: [], runnerFailureRules: [] }),
   };
   const provider = {
     spawn(spec: SubprocessSpawnSpec): SubprocessHandle {
@@ -59,7 +59,7 @@ async function executorFixture(t: TestContext) {
   ctx.provide('profileContext', { dir: fixture.directory, home: fixture.directory });
   ctx.provide('subprocess', provider);
   ctx.provide('sandboxPolicy', { defaultMode: policy.mode, resolve: () => policy });
-  ctx.provide('sandbox', { confine: (argv: string[]) => controls.confine(argv) });
+  ctx.provide('sandbox', { confine: (argv: string[], admitted: SandboxExecutionPolicy) => controls.confine(argv, admitted) });
   class FixtureLoader extends Loader {
     override import() { return GitBashExecutor; }
     override commit() {} // No settings file or personal profile.
@@ -464,7 +464,9 @@ await test('native canonical workspace admission rejects overlap and changed run
   const realpath = t.mock.method(fs.realpath, 'native');
   try {
     for (const workspaceRoot of [alias, f.workspace.toUpperCase(), f.workspace.replaceAll('\\', '/'), shortPath(f.workspace)]) {
-      const before = realpath.mock.callCount(), ex = await f.run({ sandboxPolicy: { ...f.policy, workspaceRoot } });
+      const before = realpath.mock.callCount(), policy = Object.freeze({ ...f.policy, workspaceRoot });
+      const ex = await f.run({ sandboxPolicy: policy });
+      assert.equal(f.spawned.at(-1)!.spec.argv[2], f.workspace);
       assert.equal(realpath.mock.callCount(), before + 1);
       f.spawned.at(-1)!.finish(); await ex.done;
     }
@@ -616,7 +618,6 @@ await test('a rejected child remains owned after Shell reports killed and an unc
 
 await test('native DSH Bash execution across all modes', nativeOnly, async t => {
   const f = await executionFixture(t);
-  if (!f) return;
   const { default: BuiltExecutor } = await import(new URL('../lib/index.js', import.meta.url).href) as { default: typeof GitBashExecutor };
   const pin = await f.prepare(); // Cold preparation is outside command deadlines.
   const warmTimes: number[] = [];

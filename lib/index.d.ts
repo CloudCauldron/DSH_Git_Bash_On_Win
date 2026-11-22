@@ -25,6 +25,7 @@ export default class GitBashExecutor extends SandboxBashExecutor {
     private observeSelection;
     private prepare;
     rebuildRuntime(): Promise<void>;
+    execute(spec: ShellExecSpec): Promise<ShellExecution>;
     protected executeArgv(spec: ShellExecSpec, argvOrPrepare: readonly string[] | ((signal: AbortSignal) => Promise<readonly string[]>), onStarted?: (execution: ShellExecution) => void): Promise<ShellExecution>;
     private disposeRuntime;
 }

@@ -107,7 +107,7 @@ await test('discovery skips missing or incomplete defaults without hiding select
   try {
     for (const key of keys) delete process.env[key];
     process.env.ProgramW6432 = stale; process.env.ProgramFiles = valid;
-    assert.equal(discoverGitInstallation().root, fixture.source);
+    for (const blank of [undefined, '', '  \t ']) assert.equal(discoverGitInstallation(blank).root, fixture.source);
 
     const candidate = join(stale, 'Git/bin/bash.exe');
     const malformedEtc = join(stale, 'Git/etc');
@@ -292,8 +292,7 @@ await test('concurrent preparations recheck under the writer lock and own indepe
   try { assert.equal((await fixture.current()).generationId, id); } finally { await alias.release(); }
 });
 
-await test('independent processes converge on cold start and after a Git-only update with separate views', nativeOnly, async t => {
-  const fixture = await runtimeFixture(t);
+async function preparePeerView(cache: string, bash: string, workspace: string) {
   const program = `
     const [module, cacheDirectory, gitBashPath, workspaceRoot] = process.argv.slice(1);
     const { prepareRuntime } = await import(module);
@@ -305,14 +304,19 @@ await test('independent processes converge on cold start and after a Git-only up
       finally { await use.release(); }
     } finally { await pin.release(); }
   `;
-  const worker = () => promisify(execFile)(process.execPath, ['--input-type=module', '-e', program,
-    new URL('../src/runtime/runtime-cache.ts', import.meta.url).href, fixture.cache, fixture.request.gitBashPath!, fixture.workspace],
-  { timeout: 20_000 });
+  const { stdout } = await promisify(execFile)(process.execPath, ['--input-type=module', '-e', program,
+    new URL('../src/runtime/runtime-cache.ts', import.meta.url).href, cache, bash, workspace], { timeout: 20_000 });
+  return stdout.trim();
+}
+
+await test('independent processes converge on cold start and after a Git-only update with separate views', nativeOnly, async t => {
+  const fixture = await runtimeFixture(t);
+  const worker = () => preparePeerView(fixture.cache, fixture.request.gitBashPath!, fixture.workspace);
   async function prepareBoth() {
     const results = await Promise.allSettled([worker(), worker()]);
     const [first, second] = results.map(result => {
       if (result.status === 'rejected') throw result.reason;
-      return result.value.stdout.trim();
+      return result.value;
     });
     const { generationId } = await fixture.current();
     assert.equal(dirname(first!), join(fixture.cache, 'g', generationId, 'v'));
@@ -1047,16 +1051,17 @@ await test('custom flat-file changes preserving the entire key wait for a forced
 await test('different Git roots can share one home while idle peers retain the old generation', nativeOnly, async t => {
   const f = await runtimeFixture(t), rootB = join(f.directory, 'second-git');
   await fsp.cp(f.source, rootB, { recursive: true });
-  const a = await f.prepare(), peer = await f.prepare(), before = await f.current();
-  const b = await prepareRuntime({ cacheDirectory: f.cache, gitBashPath: join(rootB, 'bin/bash.exe') }, t.signal);
-  try {
-    const after = await f.current(); assert.equal(after.sourceRoot, rootB); assert.notEqual(before.generationId, after.generationId);
-    await a.release();
-    const use = peer.acquireUse();
-    try { assert.equal(use.sourceRoot, f.source); assert.ok(pathExists(use.bindView({ workspace: f.workspace, prefix: 'ro' }))); }
-    finally { await use.release(); }
-    await peer.release(); assert.ok(pathExists(join(f.cache, 'g', before.generationId)));
-  } finally { await b.release(); }
+  const peer = await f.prepare(), before = await f.current();
+  const view = await preparePeerView(f.cache, join(rootB, 'bin/bash.exe'), f.workspace);
+  const after = await f.current();
+  assert.equal(after.sourceRoot, rootB); assert.notEqual(before.generationId, after.generationId);
+  assert.equal(dirname(view), join(f.cache, 'g', after.generationId, 'v'));
+  const use = peer.acquireUse();
+  try { assert.equal(use.sourceRoot, f.source); assert.ok(pathExists(use.bindView({ workspace: f.workspace, prefix: 'ro' }))); }
+  finally { await use.release(); }
+  await peer.release(); assert.ok(pathExists(join(f.cache, 'g', before.generationId)));
+  await (await f.prepare(true)).release();
+  assert.ok(!pathExists(join(f.cache, 'g', before.generationId)));
 });
 
 await test('build scans orphans once and visits only the superseded generation after publication', nativeOnly, async t => {

@@ -313,8 +313,7 @@ await test('maintained compiler graphs, lint and emitted public exports exclude 
   assert.equal(Object.getPrototypeOf(built.default), SandboxBashExecutor);
 });
 
-await test('execution uses native DSH policy and purge refuses an unowned directory', async t => {
-  assert.equal(GitBashExecutor.prototype.execute, SandboxBashExecutor.prototype.execute);
+await test('offline tooling rejects unowned directories and unsupported package operations', async t => {
   const directory = await temporaryDirectory(t);
   const cache = join(directory, '.dsh-git-bash-on-win');
   await mkdir(cache);

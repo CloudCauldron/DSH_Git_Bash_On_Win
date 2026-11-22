@@ -167,12 +167,18 @@ export default class GitBashExecutor extends SandboxBashExecutor {
     if (this.attempt !== attempt) throw new LocalizedError('error.preparationSuperseded');
   }
 
+  override async execute(spec: ShellExecSpec): Promise<ShellExecution> {
+    if (!spec.sandboxPolicy) throw new LocalizedError('error.executionPolicyRequired');
+    // Stock confinement captures this object. Give each invocation its own policy.
+    return super.execute({ ...spec, sandboxPolicy: { ...spec.sandboxPolicy } });
+  }
+
   protected override executeArgv(spec: ShellExecSpec,
     argvOrPrepare: readonly string[] | ((signal: AbortSignal) => Promise<readonly string[]>),
     onStarted?: (execution: ShellExecution) => void): Promise<ShellExecution> {
     this.stopping.signal.throwIfAborted();
-    if (!spec.sandboxPolicy) throw new LocalizedError('error.executionPolicyRequired');
-    const { mode, workspaceRoot, sessionId } = spec.sandboxPolicy;
+    const policy = spec.sandboxPolicy!;
+    const { mode, workspaceRoot, sessionId } = policy;
     spec = { ...spec, signal: spec.signal ? AbortSignal.any([spec.signal, this.stopping.signal]) : this.stopping.signal };
     let use: RuntimeUse | undefined, pin: GenerationPin, view: string;
     let preparation: Promise<readonly string[]> | undefined, release: Promise<void> | undefined;
@@ -224,6 +230,7 @@ export default class GitBashExecutor extends SandboxBashExecutor {
       this.observeSelection();
       if (this.ready?.pin !== pin) throw new LocalizedError('error.changedBeforeConfinement');
       if (overlaps(workspace, use.sourceRoot) || overlaps(workspace, use.cacheRoot)) throw new LocalizedError('error.workspaceOverlap');
+      policy.workspaceRoot = workspace;
       const argv = typeof argvOrPrepare === 'function' ? await argvOrPrepare(signal) : argvOrPrepare;
       signal.throwIfAborted();
       this.observeSelection();

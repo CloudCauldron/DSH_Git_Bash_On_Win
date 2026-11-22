@@ -93,7 +93,8 @@ export function readPe(bytes: Buffer) {
       for (let i = 0; ; i++) {
         const item = bytes.readBigUInt64LE(offset(table + i * 8, 8));
         const target = offset(iat + i * 8, 8);
-        if (!item) { requirePe(bytes.readBigUInt64LE(target) === 0n, 'unterminated IAT'); break; }
+        requirePe((item === 0n) === (bytes.readBigUInt64LE(target) === 0n), 'import tables terminate at different entries');
+        if (!item) break;
         if (item & 0x8000000000000000n) {
           requirePe((item & 0x7fffffffffff0000n) === 0n, 'invalid ordinal thunk');
           symbols.push(`#${item & 0xffffn}`);
@@ -163,7 +164,7 @@ export function patchMsysDll(input: Buffer): Buffer {
   } else requirePe(!symbolCount && insert === input.length, 'unsupported overlay');
   const debug = pe.directory(6);
   if (debug.rva || debug.size) {
-    requirePe(debug.rva && debug.size % 28 === 0, 'debug directory');
+    requirePe(debug.rva && debug.size && debug.size % 28 === 0, 'debug directory');
     const start = pe.offset(debug.rva, debug.size);
     for (let d = start; d < start + debug.size; d += 28) {
       const size = input.readUInt32LE(d + 16), rva = input.readUInt32LE(d + 20), raw = input.readUInt32LE(d + 24);

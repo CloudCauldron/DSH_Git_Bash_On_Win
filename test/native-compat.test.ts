@@ -121,7 +121,15 @@ __declspec(dllexport) int native_checks(void) {
     __declspec(align(8)) static BYTE token[96];
     TOKEN_GROUPS *groups = (TOKEN_GROUPS *)token;
     groups->GroupCount = 1; groups->Groups[0].Sid = token + 24; groups->Groups[0].Attributes = SE_GROUP_LOGON_ID;
-    DSH_SID4 sid; build_temp_sid(&sid, 1, 2); memcpy(token + 24, &sid, 20);
+    DSH_SID4 sid; build_temp_sid(&sid, 1, 0x3fffffff);
+    CHECK(sid_is_temp_capability((const SID *)&sid));
+    for (unsigned int i = 0; i < 2; i++) {
+        DWORD saved = sid.SubAuthority[i];
+        sid.SubAuthority[i] = 0; CHECK(!sid_is_temp_capability((const SID *)&sid));
+        sid.SubAuthority[i] = 0x40000000; CHECK(!sid_is_temp_capability((const SID *)&sid));
+        sid.SubAuthority[i] = saved;
+    }
+    build_temp_sid(&sid, 1, 2); memcpy(token + 24, &sid, 20);
     CHECK(checked_logon_sid(token, sizeof(token), 44));
     groups->Groups[0].Attributes |= 2; CHECK(checked_logon_sid(token, sizeof(token), 44));
     groups->Groups[0].Attributes = 7; CHECK(!checked_logon_sid(token, sizeof(token), 44));
@@ -306,11 +314,13 @@ __declspec(dllexport) int loader_check(LPCWSTR runtime, LPCWSTR source, LPCWSTR 
         goodEntry->BaseDllName.Length = 0;
         entry->FullDllName.Buffer = (PWSTR)runtime; entry->FullDllName.Length = (USHORT)(wlen(runtime) * 2); entry->FullDllName.MaximumLength = entry->FullDllName.Length + 2;
     }
-    HMODULE loaded = LoadLibraryW(shim);
+    HMODULE self = LoadLibraryExW(shim, NULL, DONT_RESOLVE_DLL_REFERENCES); CHECK(self);
+    BOOL admitted = resolve_and_verify_sibling_msys(self);
     entry->FullDllName = saved; goodEntry->BaseDllName = goodBase;
-    if (loaded) CHECK(FreeLibrary(loaded));
+    CHECK(FreeLibrary(self));
+    CHECK(admitted == (scenario == 0));
+    if (scenario == 0) CHECK(LoadLibraryW(shim) == NULL);
     if (foreign) CHECK(FreeLibrary(foreign)); CHECK(FreeLibrary(good));
-    CHECK(scenario == 0 ? loaded != NULL : loaded == NULL);
     return 0;
 }
 `;
@@ -583,9 +593,10 @@ await test('optimized shim admission, forks, images and IPC under real DSH polic
       assert.notEqual(r.exitCode, 0); assert.doesNotMatch(r.stdout, /MUST_NOT_RUN/);
     } finally { await unlink(target); await copyFile(join(f.source, 'usr/bin/true.exe'), target); }
   });
-  await t.test('standalone shim loading fails', () => {
+  await t.test('standalone shim loading fails', async () => {
+    const spec = await f.command('danger-full-access', '', 'standalone');
     const k = koffi.load('kernel32.dll'), load = k.func('void* LoadLibraryW(str16)'), free = k.func('int FreeLibrary(void*)');
-    const handle = load(join(f.runtime, 'usr/bin/dsh-msys-compat.dll'));
+    const handle = load(join(spec.view, 'usr/bin/dsh-msys-compat.dll'));
     if (handle) assert.ok(free(handle));
     assert.equal(handle, null);
   });

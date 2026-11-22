@@ -247,13 +247,11 @@ static BOOL sid_is_authority(PSID sid, BYTE authLow) {
     return b[0] == 1 && b[2] == 0 && b[3] == 0 && b[4] == 0 && b[5] == 0 && b[6] == 0 && b[7] == authLow;
 }
 
-static BOOL sid_is_temp_capability(PSID sid) {
-    if (!sid_is_authority(sid, 4)) return FALSE;
-    const BYTE *b = (const BYTE *)sid;
-    if (b[1] != 3) return FALSE;
-    DWORD sub2 = 0;
-    memcpy(&sub2, b + 8 + 2 * sizeof(DWORD), sizeof(DWORD));
-    return sub2 == 1u;
+/* Called for a validated S-1-4 SID from the restricting list. */
+static BOOL sid_is_temp_capability(const SID *sid) {
+    return sid->SubAuthorityCount == 3 && sid->SubAuthority[2] == 1
+        && sid->SubAuthority[0] > 0 && sid->SubAuthority[0] <= 0x3fffffffu
+        && sid->SubAuthority[1] > 0 && sid->SubAuthority[1] <= 0x3fffffffu;
 }
 
 static BOOL sid_list_contains(const TOKEN_GROUPS *groups, PSID target) {
@@ -1216,7 +1214,8 @@ __declspec(dllexport) void dsh_msys_compat_anchor(void) {}
 
 BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
     if (fdwReason == DLL_PROCESS_ATTACH) {
-        if (!DisableThreadLibraryCalls(hinstDLL)) return FALSE;
+        /* DSH's private MSYS imports the shim at process startup. */
+        if (!lpvReserved || !DisableThreadLibraryCalls(hinstDLL)) return FALSE;
         if (!resolve_and_verify_sibling_msys(hinstDLL)) return FALSE;
 
         BOOL hasBoundSid = FALSE;

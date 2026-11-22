@@ -97,3 +97,16 @@ Values are rounded to 0.01 ms.
 | Ready read-only session use | 2.43, 1.12, 1.23, 1.23, 1.07, 1.16, 1.19, 1.02, 0.98, 1.07, 0.95, 1.18, 1.12, 0.97, 0.86, 0.91, 0.90, 0.94, 0.99, 0.96, 0.99, 1.00, 0.98, 0.93 |
 
 </details>
+
+### Tencent file-only timing check
+
+The owner added a temporary Tencent exception for the private `r/usr/bin/msys-2.0.dll` in one disposable generation after the baseline finished. Both runs used the final tarball, generation `c0e1d3622a394e50`, NTFS file ID `28991922603153532` and DLL SHA-256 `89fb6b5965c3044bb56a3de61345b77bff6e4618440e0f3c82c3338a70becf77`. The three DSH modes ran in the same sequence. Each workload had two warmups and 12 measured commands per mode. Timing included positive managed-range settlement. Defender reported real-time protection off in both runs.
+
+| Workload | Tencent entry | Commands | Median (ms) | p95 (ms) | Maximum (ms) | Over 1 s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Bash builtin | Before | 36 | 334.3 | 400.2 | 403.6 | 0 |
+| Bash builtin | Active | 36 | 314.1 | 355.3 | 382.1 | 0 |
+| Pipeline | Before | 36 | 449.9 | 587.0 | 610.4 | 0 |
+| Pipeline | Active | 36 | 420.1 | 481.1 | 501.0 | 0 |
+
+The second run had lower latency. The original one-second stalls were already absent in the baseline. With a single before/after pair, cache warming and ordinary run-to-run variation can also contribute to the difference. This check gives no basis for a permanent cache exclusion.

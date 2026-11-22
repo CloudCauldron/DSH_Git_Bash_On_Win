@@ -30,6 +30,9 @@ async function exerciseProfile(dir: string, workspace: string) {
     const stock = await dsh.load(dsh.baseRequire, '@deepseek-ai/dsh-bash-sandbox') as typeof import('@deepseek-ai/dsh-bash-sandbox');
     const cordis = await dsh.load(dsh.baseRequire, '@deepseek-ai/cordis') as typeof import('@deepseek-ai/cordis');
     const tools = await dsh.load(dsh.baseRequire, '@deepseek-ai/dsh-tool-bash') as typeof import('@deepseek-ai/dsh-tool-bash');
+    const { default: AgentPreset } = await dsh.load(dsh.baseRequire, '@deepseek-ai/dsh-agent-preset') as typeof import('@deepseek-ai/dsh-agent-preset');
+    const { default: Preset } = await dsh.load(p.require, metadata.name + '/preset') as typeof import('../src/preset.ts');
+    assert.equal(Object.getPrototypeOf(Preset), AgentPreset);
     assert.equal(Object.getPrototypeOf(p.Executor), stock.SandboxBashExecutor);
     assert.equal((await dsh.load(p.require, '@deepseek-ai/cordis') as typeof cordis).Context, cordis.Context);
     assert.equal((await dsh.load(p.require, metadata.name + '/tool') as typeof tools).apply, tools.apply);

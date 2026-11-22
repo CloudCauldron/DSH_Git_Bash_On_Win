@@ -66,8 +66,6 @@ Use Bash or sh from the runtime PATH. The native `bin/bash.exe` wrapper launches
 
 ### **6.1 - Installing from Source**
 
-Before installing over the legacy hardlink backend, complete removal using the old version’s uninstaller. This cache format refuses legacy and unowned roots.
-
 1. In **native Windows Git Bash**, change to the repository root to install dependencies and register the plugin (the repository already includes `lib/`; if you have modified `src/`, run `pnpm build` first):
 
     ```bash

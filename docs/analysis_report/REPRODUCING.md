@@ -20,7 +20,7 @@ node --test test/benchmark-runtime.ts
 DSH_TEST_WINGET=1 node --test test/qualify-host.ts
 ```
 
-The benchmark measures fresh preparation, warm admission in a new Windows Node process, ready-use overhead, retained generations and end-to-end commands through DSH settlement. For the separate five-sample cold-copy check, run `DSH_BENCH_COLD_ONLY=1 node --test test/benchmark-runtime.ts` after a full build. The optional host suite exercises packaged PowerShell, WinGet and GDB. The WinGet opt-in permits its usual diagnostic logs. [Timing results](evidence/supervisor-benchmark.md#phase-4-packed-runtime) · [Release verification](evidence/windows-verification.md#phase-4-release-qualification)
+The benchmark measures fresh preparation, warm admission in a new Windows Node process, ready-use overhead, retained generations and end-to-end commands through DSH settlement. For the separate five-sample cold-copy check, run `DSH_BENCH_COLD_ONLY=1 node --test test/benchmark-runtime.ts` after a full build. The optional host suite exercises packaged PowerShell, WinGet and GDB. The WinGet opt-in permits its usual diagnostic logs. [Timing results](evidence/supervisor-benchmark.md#phase-4-packed-runtime) · [Release verification](evidence/windows-verification.md#independent-phase-4-audit)
 
 ## Interpreting earlier runs
 

@@ -36,35 +36,35 @@ For the 50-child loop the median paired difference favored the change by 53 ms. 
 
 ## Phase 4 packed runtime
 
-Windows 11 x64 build 26200, native Node 26.12.1, DSH 0.2.2-rc.5 and ucrt64 Git 2.56.0.windows.4. Both Defender antivirus and real-time protection reported off before and after. The benchmark exercised the installed ordinary-copy package. The comparison used the emitted backend from revision `33fa0a9039d193452ccab7eefc222144437f8aaa` and an owned copy of Git. Direct Bash ran on the owned Git tree in full access. Each command started a fresh Bash through the DSH shell.
+The independent audit measured the installed release at `67d8a04` on Windows 11 x64 build 26200, Windows Node 26.12.1, DSH 0.2.2-rc.5 and ucrt64 Git 2.56.0.windows.4. The tarball SHA-256 was `849b7ea2a2b83001af04afe955ccac80edbb5c344465359a03ccf3eeccedf02f`. Defender reported antivirus and real-time protection off before and after. The shipping comparison used revision `33fa0a9039d193452ccab7eefc222144437f8aaa` and owned Git files. Direct Bash ran on the owned tree in full access. The original Phase 4 measurements are retained at `6c84a30`.
 
-The three workloads were `echo ok`, a command substitution with a three-stage `printf | grep | wc` pipeline, and `git --version`. Each cell had two excluded warmups and 24 timed rounds. Lane order was balanced within each cell. Timing began at Shell resolution and included result, completion and positive managed-range settlement. Every timed command returned its expected output and exit code.
+The three workloads were `echo ok`, a command substitution with a three-stage `printf | grep | wc` pipeline, and `git --version`. Each cell had two excluded warmups and 24 timed rounds. Lane order was balanced within each cell. Timing began at Shell resolution and included the result, completion and positive managed-range settlement. Every timed command returned its expected output and exit code.
 
-Each table cell gives median, nearest-rank p95 and maximum in milliseconds, followed by the count over one second.
+Each cell gives median, nearest-rank p95 and maximum in milliseconds, followed by the count over one second.
 
 | Mode | Workload | Copy | Shipping | Direct |
 | --- | --- | --- | --- | --- |
-| danger-full-access | builtin | 156.7 / 208.1 / 242.7 / 0 | 422.1 / 575.5 / 641.5 / 0 | 153.0 / 206.7 / 213.4 / 0 |
-| danger-full-access | pipeline | 264.5 / 335.8 / 482.9 / 0 | 583.5 / 657.0 / 678.7 / 0 | 250.8 / 337.1 / 371.0 / 0 |
-| danger-full-access | git | 191.5 / 242.7 / 352.4 / 0 | 466.3 / 608.1 / 645.2 / 0 | 189.3 / 229.4 / 258.2 / 0 |
-| read-only | builtin | 329.5 / 383.8 / 427.9 / 0 | 595.6 / 713.5 / 731.3 / 0 | — |
-| read-only | pipeline | 446.3 / 543.9 / 801.6 / 0 | 763.2 / 906.1 / 910.3 / 0 | — |
-| read-only | git | 358.9 / 417.2 / 483.8 / 0 | 638.1 / 807.9 / 966.0 / 0 | — |
-| workspace-write | builtin | 332.5 / 444.9 / 545.5 / 0 | 604.9 / 717.3 / 723.7 / 0 | — |
-| workspace-write | pipeline | 455.4 / 543.1 / 562.0 / 0 | 775.1 / 930.4 / 1827.6 / 1 | — |
-| workspace-write | git | 367.1 / 427.5 / 503.9 / 0 | 644.3 / 750.5 / 1154.4 / 1 | — |
+| danger-full-access | builtin | 151.5 / 183.4 / 219.0 / 0 | 422.0 / 477.0 / 494.3 / 0 | 149.2 / 168.9 / 176.1 / 0 |
+| danger-full-access | pipeline | 267.2 / 340.3 / 342.1 / 0 | 570.7 / 687.1 / 705.5 / 0 | 248.5 / 325.1 / 334.8 / 0 |
+| danger-full-access | git | 185.1 / 281.1 / 304.2 / 0 | 460.1 / 567.5 / 598.0 / 0 | 182.6 / 209.1 / 216.6 / 0 |
+| read-only | builtin | 322.7 / 351.1 / 352.5 / 0 | 586.0 / 631.9 / 639.4 / 0 | — |
+| read-only | pipeline | 439.8 / 476.7 / 482.7 / 0 | 750.0 / 841.1 / 923.3 / 0 | — |
+| read-only | git | 344.4 / 393.6 / 432.5 / 0 | 627.6 / 675.8 / 702.0 / 0 | — |
+| workspace-write | builtin | 320.1 / 361.4 / 365.5 / 0 | 600.4 / 671.2 / 696.1 / 0 | — |
+| workspace-write | pipeline | 430.7 / 495.7 / 533.1 / 0 | 772.1 / 873.1 / 874.6 / 0 | — |
+| workspace-write | git | 346.6 / 419.0 / 496.2 / 0 | 636.7 / 747.2 / 834.0 / 0 | — |
 
-The installed copy completed all 216 timed commands within one second. Two of the 216 shipping commands took longer than one second. Direct Bash contributed 72 full-access samples.
+Commands over one second totaled 0/216 on the copy backend, 0/216 on the shipping backend and 0/72 on direct Bash.
 
 | Separate measurement | Samples or result |
 | --- | --- |
-| Fresh generation preparation, ms | 389.68, 330.82, 336.92, 349.04, 324.59 |
-| Warm admission after closing the prior pin, ms | 13.33, 11.93, 11.34, 11.51, 11.64 |
-| Ready read-only session use, ms | Median 1.00, p95 1.23, maximum 2.43 |
+| Fresh generation preparation, ms | 399.01, 338.86, 334.80, 344.29, 322.71 |
+| First warm admission in five fresh Node processes, ms | 23.93, 26.14, 26.29, 24.40, 25.47 |
+| Ready read-only session use, ms | Median 1.02, p95 1.19, maximum 1.48 |
 | Logical flat payload | 356 files and 92,929,414 bytes per generation |
-| Retained after rebuilding with an active pin, then releasing it | Two generations, 185,858,828 payload bytes. The following rebuild left one generation. |
+| After a rebuild with an active pin, then releasing it | Two generations and 185,858,828 payload bytes. The following rebuild left one generation. |
 
-Warm admission ran in the same Node process. Ready-use timing included acquiring a use, canonicalizing and checking workspace overlap, admitting the reused view and releasing the use. These measurements exclude shell startup. Payload sizes exclude filesystem allocation, junctions and cache metadata.
+Each warm sample timed the new process’s first call to the packed preparation code through acquisition of the generation pin. Node startup and module import preceded the timer. The selector stayed byte-identical across every restart. Ready-use timing included acquiring a use, canonicalizing and checking workspace overlap, admitting the reused view and releasing the use. These measurements exclude shell startup. Payload sizes exclude filesystem allocation, junctions and cache metadata.
 
 <details>
 <summary>All timed samples in round order, milliseconds</summary>
@@ -73,28 +73,28 @@ Values are rounded to 0.01 ms.
 
 | Cell | 24 samples |
 | --- | --- |
-| danger-full-access/builtin/copy | 196.81, 208.09, 151.20, 153.57, 184.00, 151.72, 148.77, 176.00, 197.85, 172.59, 166.39, 242.69, 158.18, 145.28, 158.59, 155.19, 177.60, 150.24, 164.36, 148.50, 147.77, 143.94, 150.58, 151.74 |
-| danger-full-access/builtin/direct | 155.50, 206.69, 180.61, 157.95, 142.98, 160.25, 140.98, 141.11, 179.18, 157.49, 144.51, 213.42, 136.81, 150.54, 157.13, 164.27, 189.53, 137.73, 168.13, 141.93, 148.28, 145.92, 142.77, 142.47 |
-| danger-full-access/builtin/shipping | 433.44, 553.73, 424.54, 391.57, 415.81, 411.38, 380.23, 391.96, 575.53, 406.84, 437.00, 641.51, 380.97, 442.83, 423.36, 452.99, 420.90, 428.34, 423.41, 411.66, 407.22, 432.92, 388.02, 410.44 |
-| danger-full-access/git/copy | 190.60, 191.30, 220.85, 166.62, 191.36, 191.61, 187.12, 172.93, 203.67, 217.61, 165.41, 240.12, 188.87, 202.81, 352.37, 181.84, 187.27, 200.03, 173.16, 242.66, 200.32, 200.19, 165.75, 199.96 |
-| danger-full-access/git/direct | 192.43, 172.54, 209.11, 175.63, 166.88, 190.21, 184.30, 171.99, 200.38, 193.12, 158.52, 189.63, 163.50, 203.73, 258.16, 162.20, 164.44, 195.89, 162.70, 215.62, 179.25, 229.40, 195.33, 189.05 |
-| danger-full-access/git/shipping | 481.20, 465.00, 433.35, 447.32, 485.56, 446.35, 433.67, 441.65, 645.17, 486.56, 553.12, 483.42, 470.56, 460.09, 608.09, 467.52, 457.41, 503.89, 443.56, 457.54, 455.98, 477.94, 451.39, 497.17 |
-| danger-full-access/pipeline/copy | 259.21, 335.83, 262.31, 256.73, 311.67, 262.45, 238.99, 285.65, 328.13, 284.11, 268.83, 301.42, 267.09, 263.46, 482.87, 245.89, 265.58, 258.10, 225.26, 259.54, 252.96, 316.48, 267.29, 253.90 |
-| danger-full-access/pipeline/direct | 293.11, 276.84, 265.22, 270.47, 272.01, 229.14, 219.11, 235.42, 250.16, 288.14, 231.29, 370.97, 249.45, 251.47, 302.20, 337.09, 213.14, 218.15, 214.17, 301.53, 260.83, 214.06, 212.92, 242.05 |
-| danger-full-access/pipeline/shipping | 633.06, 656.97, 552.50, 556.63, 623.86, 626.56, 537.45, 592.48, 678.72, 630.09, 582.14, 582.54, 549.88, 582.75, 649.95, 549.73, 586.26, 584.28, 551.03, 565.55, 585.85, 546.97, 569.00, 616.25 |
-| read-only/builtin/copy | 331.04, 340.20, 327.27, 328.00, 333.04, 316.13, 316.00, 333.54, 340.10, 332.35, 314.23, 427.94, 316.21, 342.59, 361.60, 296.77, 383.83, 342.09, 326.92, 323.30, 312.10, 332.11, 314.13, 325.42 |
-| read-only/builtin/shipping | 637.36, 571.40, 596.22, 580.29, 635.20, 606.24, 581.38, 595.04, 731.34, 584.92, 582.89, 703.79, 582.44, 622.02, 713.52, 558.49, 671.06, 641.00, 573.91, 559.42, 565.86, 584.52, 613.45, 611.60 |
-| read-only/git/copy | 348.97, 368.90, 388.56, 344.11, 387.06, 343.72, 349.44, 362.15, 331.63, 343.91, 355.93, 417.23, 415.31, 483.82, 332.99, 328.93, 396.82, 400.63, 369.12, 326.95, 350.36, 379.85, 330.47, 361.89 |
-| read-only/git/shipping | 637.87, 624.26, 764.29, 636.50, 660.51, 621.04, 604.36, 621.99, 665.95, 679.27, 623.01, 807.85, 650.34, 966.00, 607.12, 698.96, 662.71, 638.34, 655.31, 603.27, 627.59, 631.84, 634.54, 640.06 |
-| read-only/pipeline/copy | 425.12, 410.77, 801.57, 508.96, 485.73, 440.02, 477.14, 443.31, 450.52, 437.59, 448.25, 543.88, 433.18, 501.13, 422.26, 442.71, 470.18, 483.40, 438.13, 445.16, 451.02, 413.57, 405.53, 447.38 |
-| read-only/pipeline/shipping | 792.45, 794.47, 778.55, 773.05, 850.05, 759.86, 758.24, 757.38, 906.08, 866.47, 714.97, 816.06, 718.58, 873.62, 745.89, 744.61, 910.26, 795.59, 761.94, 744.57, 758.62, 732.16, 763.71, 762.59 |
-| workspace-write/builtin/copy | 325.95, 330.38, 369.89, 360.24, 545.47, 321.88, 331.95, 388.54, 313.57, 333.36, 334.31, 444.94, 386.28, 329.32, 323.12, 319.01, 336.24, 341.50, 332.95, 304.00, 354.24, 321.89, 325.47, 331.03 |
-| workspace-write/builtin/shipping | 577.71, 606.01, 597.99, 598.18, 723.72, 591.59, 553.73, 637.62, 606.35, 580.01, 575.56, 717.31, 617.78, 599.82, 587.74, 577.82, 678.06, 667.67, 608.88, 603.72, 614.60, 599.95, 626.35, 625.17 |
-| workspace-write/git/copy | 374.70, 406.93, 392.23, 352.34, 349.67, 393.60, 367.36, 378.22, 342.72, 327.57, 366.87, 503.86, 342.61, 336.19, 386.24, 427.46, 368.66, 388.11, 364.95, 342.74, 367.26, 331.73, 359.40, 362.83 |
-| workspace-write/git/shipping | 652.86, 750.51, 630.85, 621.80, 714.99, 648.24, 632.10, 673.90, 617.40, 654.52, 637.24, 1154.42, 634.48, 617.49, 614.13, 748.63, 624.36, 605.52, 643.47, 660.56, 677.17, 614.41, 645.13, 698.79 |
-| workspace-write/pipeline/copy | 415.01, 503.63, 428.55, 449.11, 562.03, 471.65, 445.82, 456.51, 438.01, 394.50, 406.99, 463.18, 460.94, 435.63, 543.07, 490.03, 457.48, 458.98, 404.83, 432.63, 477.97, 456.88, 419.67, 454.32 |
-| workspace-write/pipeline/shipping | 748.94, 778.07, 744.38, 762.11, 930.42, 763.79, 799.63, 906.98, 822.10, 776.20, 740.91, 856.60, 841.23, 749.35, 1827.63, 776.66, 764.35, 764.85, 764.99, 768.85, 802.11, 773.97, 759.02, 797.89 |
-| Ready read-only session use | 2.43, 1.12, 1.23, 1.23, 1.07, 1.16, 1.19, 1.02, 0.98, 1.07, 0.95, 1.18, 1.12, 0.97, 0.86, 0.91, 0.90, 0.94, 0.99, 0.96, 0.99, 1.00, 0.98, 0.93 |
+| danger-full-access/builtin/copy | 150.66, 141.12, 140.38, 143.31, 160.50, 151.08, 158.53, 150.31, 144.08, 138.67, 183.44, 172.62, 219.00, 147.43, 161.33, 140.76, 154.49, 150.31, 153.46, 144.15, 176.88, 160.53, 151.84, 166.46 |
+| danger-full-access/builtin/direct | 159.01, 137.29, 152.48, 149.34, 166.48, 155.90, 168.92, 149.02, 150.79, 145.87, 167.85, 156.18, 176.11, 142.52, 157.28, 139.71, 148.98, 130.80, 140.13, 136.80, 146.00, 153.39, 140.10, 135.91 |
+| danger-full-access/builtin/shipping | 434.29, 397.45, 409.05, 422.69, 419.70, 409.65, 423.88, 443.18, 420.83, 425.95, 440.67, 436.26, 477.00, 411.99, 436.99, 414.14, 426.92, 412.99, 429.14, 410.24, 421.35, 494.28, 421.19, 420.04 |
+| danger-full-access/git/copy | 206.49, 186.88, 172.30, 189.03, 159.96, 179.48, 205.45, 200.97, 191.45, 165.14, 170.73, 281.05, 216.77, 184.86, 304.21, 177.01, 180.08, 176.69, 175.83, 170.65, 215.06, 185.24, 168.23, 196.05 |
+| danger-full-access/git/direct | 216.58, 178.88, 180.48, 188.14, 179.21, 194.39, 172.39, 195.90, 158.71, 157.11, 174.30, 191.58, 198.82, 184.74, 209.13, 170.24, 164.29, 187.99, 192.56, 171.96, 193.64, 175.64, 168.02, 189.07 |
+| danger-full-access/git/shipping | 470.64, 455.75, 473.92, 471.29, 462.77, 415.44, 439.57, 454.89, 441.94, 462.13, 443.29, 460.48, 549.11, 485.39, 598.03, 430.91, 463.75, 455.08, 446.15, 454.94, 474.78, 567.50, 459.67, 455.79 |
+| danger-full-access/pipeline/copy | 261.76, 234.86, 248.27, 299.79, 277.00, 266.84, 268.48, 242.70, 241.56, 255.12, 295.79, 267.53, 342.10, 263.34, 340.33, 278.22, 260.48, 273.80, 245.28, 239.59, 281.52, 269.37, 247.11, 286.50 |
+| danger-full-access/pipeline/direct | 314.54, 256.44, 295.32, 279.08, 198.75, 247.87, 252.69, 217.14, 217.57, 203.44, 234.28, 293.84, 325.09, 250.23, 334.84, 214.15, 217.06, 230.49, 227.76, 237.12, 303.15, 249.11, 246.75, 251.20 |
+| danger-full-access/pipeline/shipping | 615.41, 541.88, 566.82, 635.77, 641.25, 554.04, 574.54, 551.73, 588.86, 552.78, 588.05, 671.88, 705.46, 581.50, 613.04, 514.56, 565.70, 545.28, 538.96, 504.91, 609.80, 687.15, 563.10, 548.41 |
+| read-only/builtin/copy | 338.62, 335.79, 314.67, 336.97, 319.28, 320.43, 303.16, 325.92, 304.47, 303.17, 329.35, 352.54, 351.11, 310.99, 326.28, 316.08, 320.72, 323.80, 323.39, 312.04, 321.98, 313.69, 338.28, 324.92 |
+| read-only/builtin/shipping | 601.05, 629.71, 585.97, 631.90, 575.18, 567.73, 586.09, 580.08, 565.42, 580.53, 614.78, 618.90, 639.41, 590.63, 557.34, 579.94, 593.67, 583.57, 605.07, 563.75, 623.60, 565.78, 627.76, 583.89 |
+| read-only/git/copy | 393.61, 341.63, 328.82, 333.58, 340.99, 377.98, 340.59, 366.96, 348.77, 337.20, 351.74, 432.49, 372.12, 370.26, 344.00, 330.62, 348.30, 370.05, 337.74, 334.56, 362.65, 337.49, 332.25, 344.70 |
+| read-only/git/shipping | 628.06, 651.15, 632.16, 609.37, 624.26, 661.04, 593.96, 660.42, 627.19, 616.22, 596.46, 667.81, 702.03, 636.46, 645.57, 615.77, 616.99, 604.51, 587.89, 612.04, 675.80, 637.41, 644.37, 618.20 |
+| read-only/pipeline/copy | 458.82, 455.49, 418.06, 447.77, 440.94, 452.67, 434.31, 463.95, 476.67, 420.33, 411.76, 452.98, 482.67, 388.50, 373.46, 417.20, 450.15, 442.08, 447.70, 428.51, 438.62, 427.24, 434.88, 438.34 |
+| read-only/pipeline/shipping | 765.81, 739.45, 759.35, 751.66, 725.64, 735.86, 769.64, 841.08, 744.18, 773.71, 761.88, 792.08, 923.31, 748.25, 694.40, 713.01, 751.81, 744.27, 723.49, 747.60, 757.03, 735.31, 763.33, 745.04 |
+| workspace-write/builtin/copy | 344.39, 298.36, 309.56, 306.49, 327.92, 334.06, 311.33, 361.37, 317.66, 314.93, 350.09, 342.35, 365.51, 336.88, 305.81, 305.40, 301.62, 327.45, 316.46, 310.89, 324.07, 316.14, 329.90, 322.58 |
+| workspace-write/builtin/shipping | 608.22, 598.51, 580.94, 571.00, 588.24, 619.65, 602.23, 606.04, 590.64, 605.66, 621.72, 671.17, 610.11, 603.14, 597.63, 584.61, 598.38, 575.65, 618.59, 595.09, 637.39, 696.14, 588.38, 566.47 |
+| workspace-write/git/copy | 354.68, 326.10, 337.48, 356.78, 418.95, 327.44, 368.36, 333.05, 344.59, 326.95, 372.53, 373.42, 496.22, 342.91, 367.03, 332.61, 348.56, 326.68, 328.57, 339.81, 412.04, 350.47, 332.12, 370.30 |
+| workspace-write/git/shipping | 674.82, 626.60, 747.21, 615.17, 668.20, 625.27, 660.64, 602.64, 648.63, 644.87, 714.36, 674.23, 833.95, 635.52, 631.94, 643.07, 622.27, 582.99, 618.43, 589.03, 634.65, 668.28, 633.93, 637.84 |
+| workspace-write/pipeline/copy | 420.42, 448.04, 382.04, 392.87, 444.25, 414.14, 453.21, 397.36, 435.60, 427.97, 462.11, 495.66, 533.11, 419.02, 452.58, 395.84, 429.60, 426.04, 425.00, 404.76, 442.44, 443.61, 431.72, 449.70 |
+| workspace-write/pipeline/shipping | 790.86, 744.59, 774.13, 703.94, 836.72, 743.48, 729.59, 756.84, 718.92, 759.74, 785.17, 873.07, 874.62, 792.46, 793.98, 703.01, 703.25, 789.26, 747.00, 770.09, 751.32, 815.49, 805.09, 783.02 |
+| Ready read-only session use | 1.00, 0.96, 0.92, 0.89, 1.09, 1.03, 1.11, 1.16, 1.00, 1.09, 1.48, 1.05, 1.06, 1.19, 0.91, 0.90, 1.04, 0.98, 0.95, 0.98, 1.01, 1.14, 1.04, 1.00 |
 
 </details>
 

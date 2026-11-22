@@ -16,18 +16,16 @@ pnpm test:browser
 2. The execution tests exercise all three DSH policies, repeated and concurrent sessions, mapping access, cancellation and disposal. Fixture teardown purges the cache and compares every copied source file's hash and hardlink count, along with the ACL records. The installation test checks the package through DSH's own plugin manager in a temporary profile.
 3. The browser test installs the checkout in a temporary Web profile. It exercises the settings form, saved paths, rebuilds, localized feedback and conflicting edits in separate tabs. The default run uses fixture responses for elevation. The real consent checks below require an operator.
 
-## Measure the supervisor
+## Measure cold copy provisioning
 
-Run on an otherwise idle machine. The benchmark builds a disposable runtime and prints a JSON observation for each sample. [Benchmark source](../../test/benchmark-supervisor.ts)
+Run on an otherwise idle machine. The benchmark provisions five fresh generations from the selected Git installation into a disposable DSH home and reports elapsed milliseconds, file counts, logical bytes and Defender status at both ends.
 
 ```bash
 pnpm build
-node --test test/benchmark-supervisor.ts
+DSH_BENCH_COLD_ONLY=1 node --test test/benchmark-runtime.ts
 ```
 
-Group elapsed milliseconds by workload and launch path, then take the median of each group. The three workloads execute a Bash builtin, one external child, and 50 sequential children. Each path gets one warmup and nine timed runs in rotating order. Compute median CPU and peak working set from the three separate resource samples per Node path.
-
-This command measures the supervisor in the checkout. The historical comparison used the supervisor before and after commit `34d36c1`. Its 12-round comparison and instrumented write counts came from separate runs. The maintained benchmark emits elapsed time and resource samples. [Historical measurements](evidence/supervisor-benchmark.md)
+The original supervisor comparison is recorded with its workloads and measurements. [Historical measurements](evidence/supervisor-benchmark.md)
 
 ## Check Windows consent
 

@@ -1,6 +1,6 @@
 # Backend design decisions — 22 November 2026
 
-This record governs replacement of the debugger-supervised hardlink backend with ordinary copies and an in-process compatibility DLL. The target is DSH 0.2.2-rc.5 on native Windows 11 x64, using ucrt64 or mingw64 Git layouts. Implementation starts from `33fa0a9039d193452ccab7eefc222144437f8aaa` on `be_refactor`. Phase 1 adds the independently qualified native artifact, PE contract and build checks; shipping execution still uses the existing backend until the coordinated cutover.
+This record governs replacement of the debugger-supervised hardlink backend with ordinary copies and an in-process compatibility DLL. The target is DSH 0.2.2-rc.5 on native Windows 11 x64, using ucrt64 or mingw64 Git layouts. Implementation starts from `33fa0a9039d193452ccab7eefc222144437f8aaa` on `be_refactor`. Phase 1 adds the qualified native artifact, PE contract and build checks. Phase 2 exercises the shallow copy layout directly. The existing publisher serves commands until the coordinated cutover in Phase 3.
 
 Keep the [2026-11-17 design](backend-20261117-design-decisions.md) as history and consolidate the implemented architecture here. This document records durable choices and rejected alternatives; the roadmap owns the phase-by-phase checks.
 
@@ -24,7 +24,7 @@ Hook 5 redirects only direct source/runtime usr/bin children into the view, usin
 
 Flat ordinary copies remove UAC, source hardlinks and source/cache volume coupling. Preserve every executable alias: the measured 355 source files total 92,906,374 bytes, and the private MSYS patch plus shim bring a generation to about 88.62 MiB. Other Git resources remain junction-backed. All DSH instances must close throughout same-root Git upgrades; there is no live-upgrade coordinator or whole-Git snapshot.
 
-Require ordinary source etc and bin directories plus native bin/bash.exe for either selected Bash entry, including usr/bin/bash.exe. Discovery, provisioning, warm admission and fixtures use this one contract. The etc junction supplies Hook 5's source witness; bin preserves native wrappers. Supporting stripped trees through optional-bin branches would add a layout variant without a target use case. Preserve required Perl/lib/libexec resources and exclude source tmp/dev.
+Require ordinary source etc and bin directories plus native bin/bash.exe for either selected Bash entry, including usr/bin/bash.exe. Discovery, provisioning, warm admission and fixtures use this one contract. The builder rechecks the mandatory targets before creating the private layout and uses those admitted directories for the junctions. The etc junction supplies Hook 5's source witness; bin preserves native wrappers. Supporting stripped trees through optional-bin branches would add a layout variant without a target use case. Preserve required Perl/lib/libexec resources and exclude source tmp/dev.
 
 Storage remains under the owned DSH-home cache, with its delete-on-close sibling writer lock. Ownership binds the root path and file identity. Refuse unknown, markerless and legacy roots; the fresh-install contract uses the old uninstaller, so migration and legacy link-count restoration do not ship. Short generation/view paths and the 260-byte UTF-8 guard reject over-budget homes before copying. Source/cache/workspace overlap is rejected before grants or mutation.
 

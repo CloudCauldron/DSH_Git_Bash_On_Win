@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+import { Win32Error } from '@deepseek-ai/dsh-win32-process';
 import assert from 'node:assert/strict';
 import { execFile, execFileSync, spawnSync } from 'node:child_process';
 import fs, { readFileSync, readdirSync } from 'node:fs';
@@ -6,13 +8,14 @@ import { link, mkdir, readFile, rename, stat, symlink, unlink, writeFile } from 
 import { dirname, join, toNamespacedPath } from 'node:path';
 import { syncBuiltinESMExports } from 'node:module';
 import { promisify } from 'node:util';
-import { test } from 'node:test';
+import { test, type TestContext } from 'node:test';
 import { nativeOnly, runtimeFixture, readAclRecords } from './fixtures.ts';
-import { prepareRuntime, purgeRuntimeCache } from '../src/runtime/runtime-cache.ts';
-import { anchorPaths, discoverGitInstallation, inventoryGitFiles, linkFreshTree } from '../src/runtime/git-installation.ts';
+import { patchMsysDll } from '../src/runtime/pe.ts';
+import { bundledShimUrl, hasRuntimeCleanupFailure, prepareRuntime, purgeRuntimeCache } from '../src/runtime/runtime-cache.ts';
+import { admitCopyJunctions, anchorPaths, buildCopyLayout, discoverGitInstallation, inventoryGitFiles, linkFreshTree, requireViewPathBudget } from '../src/runtime/git-installation.ts';
 import {
   absolutePath, acquireWriterLock, admitDirectory, createDirectory, createJunction, NativeHold,
-  isBusy, openExclusiveMetadata, pathExists, removeTree, unlinkEntry,
+  isBusy, openExclusiveMetadata, openOrdinaryFile, pathExists, pinDirectory, readFileBytes, removeTree, unlinkEntry, writeNewFile,
 } from '../src/runtime/ntfs-filesystem.ts';
 
 await test('F1 refuses markerless and unrecognized roots before mutation or purge', nativeOnly, async t => {
@@ -117,8 +120,6 @@ await test('discovery skips missing or incomplete defaults without hiding select
   await mkdir(join(stale, 'Git/bin'), { recursive: true });
   await writeFile(join(stale, 'Git/bin/bash.exe'), 'incomplete installation');
   await mkdir(valid);
-  await mkdir(join(fixture.source, 'bin'));
-  await link(join(fixture.source, 'usr/bin/bash.exe'), join(fixture.source, 'bin/bash.exe'));
   await symlink(fixture.source, join(valid, 'Git'), 'junction');
   const keys = ['ProgramW6432', 'ProgramFiles', 'ProgramFiles(x86)', 'LOCALAPPDATA'];
   const saved = keys.map(key => process.env[key]);
@@ -603,4 +604,284 @@ await test('cancellation during a bounded linking batch drains before cleanup an
   assert.ok(Object.values(anchorPaths('ucrt64')).every(path => pathExists(join(fixture.source, path))));
   // Cancellation does not retain a failed-readiness slot at the factory boundary.
   const pin = await fixture.prepare(); await pin.release();
+});
+
+async function copyFixture(t: TestContext) {
+  const f = await runtimeFixture(t), parent = admitDirectory(f.directory);
+  const shim = await readFile(bundledShimUrl);
+  return { ...f, parent, shim, build(name: string, signal = t.signal) {
+    const installation = discoverGitInstallation(f.request.gitBashPath);
+    return buildCopyLayout(createDirectory(parent, name), installation, shim, signal);
+  } };
+}
+
+await test('shallow copies preserve flat names and private bytes, junctions retain their admitted targets', nativeOnly, async t => {
+  const f = await copyFixture(t);
+  const emitted = await import(new URL('../lib/runtime/runtime-cache.js', import.meta.url).href) as { bundledShimUrl: URL };
+  assert.equal(emitted.bundledShimUrl.href, bundledShimUrl.href);
+  for (const path of ['usr/bin/core_perl', 'usr/bin/vendor_perl', 'usr/libexec', 'usr/ssl', 'extra']) {
+    await mkdir(join(f.source, path), { recursive: true });
+  }
+  for (const path of ['dev', 'usr/tmp']) await symlink(f.workspace, join(f.source, path), 'junction');
+  for (const path of ['root.txt', 'usr/ignored.txt', 'usr/bin/helper']) await writeFile(join(f.source, path), 'before');
+  const { runtime, patchedMsysSha256 } = await f.build('one');
+  const flat = join(runtime.path, 'usr/bin'), origin = join(f.source, 'usr/bin');
+  assert.deepEqual(readdirSync(flat).sort(), [...readdirSync(origin), 'dsh-msys-compat.dll'].sort());
+  const identities = new Set<bigint>();
+  for (const entry of readdirSync(origin, { withFileTypes: true }).filter(e => e.isFile())) {
+    const target = join(flat, entry.name), source = join(origin, entry.name);
+    const stats = fs.lstatSync(target, { bigint: true });
+    assert.ok(stats.isFile() && stats.nlink === 1n);
+    assert.notEqual(stats.ino, fs.statSync(source, { bigint: true }).ino);
+    assert.ok(!identities.has(stats.ino));
+    identities.add(stats.ino);
+    const bytes = readFileSync(target);
+    if (entry.name === 'msys-2.0.dll') {
+      assert.deepEqual(bytes, patchMsysDll(readFileSync(source)));
+      assert.equal(createHash('sha256').update(bytes).digest('hex'), patchedMsysSha256);
+    } else assert.deepEqual(bytes, readFileSync(source));
+  }
+  assert.deepEqual(await readFile(join(flat, 'dsh-msys-compat.dll')), f.shim);
+  assert.equal((await stat(join(flat, 'dsh-msys-compat.dll'))).nlink, 1);
+  for (const path of ['bin', 'etc', 'ucrt64', 'extra', 'usr/share', 'usr/lib', 'usr/libexec', 'usr/ssl', 'usr/bin/core_perl', 'usr/bin/vendor_perl']) {
+    assert.ok(fs.lstatSync(join(runtime.path, path)).isSymbolicLink());
+    assert.equal(fs.realpathSync.native(join(runtime.path, path)), join(f.source, path));
+  }
+  for (const path of ['dev', 'usr/tmp', 'root.txt', 'usr/ignored.txt']) assert.equal(pathExists(join(runtime.path, path)), false);
+  assert.deepEqual(readdirSync(join(f.directory, 'one/v')), []);
+  await writeFile(join(origin, 'helper'), 'edited');
+  await rename(join(origin, 'helper'), join(origin, 'retired'));
+  await writeFile(join(origin, 'helper'), 'replacement');
+  assert.equal(await readFile(join(flat, 'helper'), 'utf8'), 'before');
+  const source = admitDirectory(f.source);
+  admitCopyJunctions(runtime, source, 'ucrt64');
+  for (const name of ['bin', 'etc', 'ucrt64']) {
+    unlinkEntry(runtime, name);
+    createJunction(runtime, name, admitDirectory(f.workspace));
+    assert.throws(() => admitCopyJunctions(runtime, source, 'ucrt64'), /Unexpected runtime junction/);
+    unlinkEntry(runtime, name);
+    createJunction(runtime, name, admitDirectory(join(f.source, name)));
+  }
+  await unlink(join(f.source, 'bin/bash.exe'));
+  assert.throws(() => admitCopyJunctions(runtime, source, 'ucrt64'));
+  removeTree(f.parent, 'one');
+  assert.equal(await readFile(join(origin, 'helper'), 'utf8'), 'replacement');
+});
+
+await test('both Bash entry points require ordinary etc, bin and the native wrapper before construction', nativeOnly, async t => {
+  const f = await copyFixture(t);
+  const selection = discoverGitInstallation(f.request.gitBashPath);
+  for (const path of ['etc', 'bin', 'bin/bash.exe', selection.layout]) {
+    const original = join(f.source, path), moved = original + '.saved';
+    await rename(original, moved);
+    for (const kind of ['missing', 'junction', 'wrong type']) {
+      if (kind === 'junction') await symlink(path === 'bin/bash.exe' ? f.workspace : moved, original, 'junction');
+      if (kind === 'wrong type') {
+        if (path === 'bin/bash.exe') await mkdir(original);
+        else await writeFile(original, 'ordinary file');
+      }
+      for (const entry of ['bin/bash.exe', 'usr/bin/bash.exe']) assert.throws(() => discoverGitInstallation(join(f.source, entry)));
+      const generation = createDirectory(f.parent, 'pending');
+      await assert.rejects(buildCopyLayout(generation, selection, f.shim, t.signal));
+      assert.deepEqual(readdirSync(generation.path), []);
+      removeTree(f.parent, 'pending');
+      if (kind !== 'missing') removeTree(admitDirectory(dirname(original)), path.split('/').at(-1)!);
+    }
+    await rename(moved, original);
+  }
+  assert.equal(pathExists(f.cache), false);
+  for (const entry of ['bin/bash.exe', 'usr/bin/bash.exe']) assert.equal(discoverGitInstallation(join(f.source, entry)).root, f.source);
+});
+
+await test('copy refuses admitted reparses and a reserved shim name at any flat entry type', nativeOnly, async t => {
+  const f = await copyFixture(t);
+  for (const [i, path] of ['unexpected', 'usr/unexpected', 'usr/bin/unexpected', 'usr/bin/DSH-MSYS-COMPAT.DLL'].entries()) {
+    const name = join(f.source, path);
+    await symlink(f.workspace, name, 'junction');
+    await assert.rejects(f.build('bad' + i), /Unsupported|reparse/);
+    unlinkEntry(admitDirectory(dirname(name)), path.split('/').at(-1)!);
+  }
+  const shim = join(f.source, 'usr/bin/DSH-MSYS-COMPAT.DLL');
+  await writeFile(shim, 'collision');
+  await assert.rejects(f.build('collision'), /Unsupported/);
+  assert.equal(await readFile(shim, 'utf8'), 'collision');
+  await unlink(shim); await mkdir(shim);
+  await assert.rejects(f.build('reserved-dir'), /Unsupported/);
+});
+
+await test('a protected real Git payload keeps its bytes, ACL, attributes and link count', nativeOnly, async t => {
+  const f = await copyFixture(t), origin = join(f.source, 'usr/bin'), name = 'true.exe';
+  const source = join(origin, name);
+  const installed = discoverGitInstallation(process.env.DSH_TEST_GIT_BASH);
+  await fsp.copyFile(join(installed.root, 'usr/bin', name), source);
+  const user = execFileSync(join(process.env.SystemRoot!, 'System32/whoami.exe'), [], { encoding: 'utf8' }).trim();
+  execFileSync('attrib.exe', ['+R', source]);
+  try {
+    execFileSync('icacls.exe', [source, '/inheritance:r', '/grant:r', user + ':(RX)']);
+    try {
+      const snapshot = () => {
+        using hold = openOrdinaryFile(admitDirectory(origin), name);
+        return { bytes: readFileSync(source), acl: readAclRecords(source), info: hold.information(), links: fs.statSync(source).nlink };
+      };
+      const before = snapshot();
+      assert.ok(before.info.attributes & 1);
+      const { runtime } = await f.build('protected');
+      const target = join(runtime.path, 'usr/bin', name), peer = join(dirname(target), 'acl-control');
+      assert.deepEqual(readFileSync(target), before.bytes);
+      fs.writeFileSync(peer, '');
+      const acl = (path: string) => readAclRecords(path).slice(path.length).split('\n').map(line => line.trimStart());
+      assert.deepEqual(acl(target), acl(peer));
+      using copy = openOrdinaryFile(admitDirectory(dirname(target)), name);
+      assert.equal(copy.information().attributes & 1, 0);
+      fs.writeFileSync(target, 'independent');
+      assert.deepEqual(snapshot(), before);
+    } finally { execFileSync('icacls.exe', [source, '/reset']); }
+  } finally { execFileSync('attrib.exe', ['-R', source]); }
+});
+
+await test('bounded native reads check declared size before allocation and require exact EOF', nativeOnly, async t => {
+  const f = await copyFixture(t), file = join(f.directory, 'bytes');
+  await writeFile(file, '');
+  assert.equal(readFileBytes(f.parent, 'bytes', 0).length, 0);
+  for (const limit of [256 * 1024, 512 * 1024, 64 * 1024 * 1024]) {
+    fs.truncateSync(file, limit);
+    assert.equal(readFileBytes(f.parent, 'bytes', limit).length, limit);
+    fs.truncateSync(file, limit + 1);
+    assert.throws(() => readFileBytes(f.parent, 'bytes', limit), error => error instanceof Error &&
+      [file, String(limit), String(limit + 1)].every(s => error.message.includes(s)));
+  }
+  fs.writeFileSync(file, 'abc');
+  const original = NativeHold.prototype.information;
+  for (const size of ['1', '4', '0', '18446744073709551615']) {
+    const mock = t.mock.method(NativeHold.prototype, 'information', function (this: NativeHold) {
+      return { ...original.call(this), size };
+    });
+    try {
+      assert.throws(() => readFileBytes(f.parent, 'bytes', 256 * 1024), size.length > 10 ? /limit is 262144/ : /Size changed/);
+    } finally { mock.mock.restore(); }
+  }
+  using first = openOrdinaryFile(f.parent, 'bytes');
+  const stamp = first.information();
+  fs.writeFileSync(file, 'abcd');
+  assert.equal(first.information(), stamp);
+  using reopened = openOrdinaryFile(f.parent, 'bytes');
+  assert.equal(stamp.size, '3'); assert.equal(reopened.information().size, '4');
+  await symlink(f.workspace, join(f.directory, 'redirected'), 'junction');
+  assert.throws(() => readFileBytes(f.parent, 'redirected', 10), /reparse/);
+});
+
+await test('exclusive byte writes preserve collisions and every write, close and rollback error', nativeOnly, async t => {
+  const f = await copyFixture(t);
+  using _pin = pinDirectory(f.parent);
+  const bytes = Buffer.from('initial');
+  writeNewFile(f.parent, 'entry', bytes);
+  assert.throws(() => writeNewFile(f.parent, 'entry', Buffer.from('second')), { code: 'EEXIST' });
+  assert.deepEqual(readFileSync(join(f.directory, 'entry')), bytes);
+  for (const bad of ['', '.', '..', 'nested/escape', 'file:stream']) {
+    assert.throws(() => writeNewFile(f.parent, bad, bytes), /Invalid/);
+  }
+  const write = Object.assign(new Error('disk full'), { code: 'ENOSPC' });
+  const close = new Error('payload close'), rollback = new Error('rollback');
+  const original = fs.closeSync;
+  t.mock.method(fs, 'writeFileSync', () => { throw write; });
+  t.mock.method(fs, 'closeSync', (fd: number) => { original(fd); throw close; });
+  t.mock.method(NativeHold.prototype, 'deleteEntry', () => { throw rollback; });
+  syncBuiltinESMExports();
+  try {
+    assert.throws(() => writeNewFile(f.parent, 'partial', bytes), error => {
+      assert.ok(error instanceof AggregateError);
+      assert.deepEqual(error.errors, [write, close, rollback]);
+      assert.equal(hasRuntimeCleanupFailure(error), false);
+      return true;
+    });
+  } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+});
+
+await test('copy path budget counts the NT prefix, supplementary characters and NUL before any payload', nativeOnly, async t => {
+  const f = await copyFixture(t);
+  const leaf = 'v/ww-4294967295-4294967295-ffffffffffffffff';
+  for (const prefix of ['a', '漢😀']) {
+    const head = join(f.directory, prefix);
+    const left = 260 - Buffer.byteLength(toNamespacedPath(join(head, leaf, 'usr/bin/msys-2.0.dll'))) - 1;
+    assert.ok(left > 0);
+    const generation = head + 'x'.repeat(left);
+    requireViewPathBudget(join(generation, leaf));
+    assert.throws(() => requireViewPathBudget(join(generation + 'x', leaf)), /shorter DSH home/);
+    await f.build(generation.slice(f.directory.length + 1));
+    await assert.rejects(f.build(generation.slice(f.directory.length + 1) + 'x'), /shorter DSH home/);
+    assert.deepEqual(readdirSync(generation + 'x'), []);
+  }
+});
+
+await test('flat pass holds each parent once, closes each reader before yielding and stops on the first failure', nativeOnly, async t => {
+  for (const outcome of ['success', 'abort', 'disk full', 'close', 'hold close'] as const) await t.test(outcome, async t => {
+    const f = await copyFixture(t), controller = new AbortController();
+    const sourceBin = join(f.source, 'usr/bin'), destBin = join(f.directory, 'generation/r/usr/bin');
+    const selection = discoverGitInstallation(f.request.gitBashPath);
+    const generation = createDirectory(f.parent, 'generation');
+    const held = new Set<NativeHold>(), readers = new Set<NativeHold>(), parentPaths: string[] = [];
+    const observed: string[] = [];
+    const canonical = NativeHold.prototype.canonicalPath, read = NativeHold.prototype.readBytes;
+    const close = NativeHold.prototype.close, write = fs.writeFileSync, closeFd = fs.closeSync;
+    const fault = new Error(outcome), nativeFault = new Win32Error('CloseHandle', 6, sourceBin);
+    t.mock.method(NativeHold.prototype, 'canonicalPath', function (this: NativeHold) {
+      if (this.path === sourceBin || this.path === destBin) {
+        held.add(this);
+        parentPaths.push(this.path);
+      }
+      return canonical.call(this);
+    });
+    t.mock.method(NativeHold.prototype, 'readBytes', function (this: NativeHold, limit: number) {
+      assert.equal(limit, 64 * 1024 * 1024);
+      assert.deepEqual(parentPaths, [sourceBin, destBin]);
+      assert.equal(held.size, 2);
+      assert.equal(readers.size, 0);
+      readers.add(this);
+      // An open payload denies writes and deletes even when the source ACL permits them.
+      assert.throws(() => fs.closeSync(fs.openSync(this.path, 'r+')), /EBUSY|EPERM|EACCES/);
+      return read.call(this, limit);
+    });
+    t.mock.method(NativeHold.prototype, 'close', function (this: NativeHold) {
+      close.call(this);
+      readers.delete(this);
+      if (held.delete(this) && this.path === sourceBin && outcome === 'hold close') throw nativeFault;
+    });
+    t.mock.method(fs, 'writeFileSync', (...args: Parameters<typeof fs.writeFileSync>) => {
+      assert.equal(readers.size, 0);
+      observed.push('write');
+      if (observed.length === 2 && (outcome === 'disk full' || outcome === 'hold close')) throw fault;
+      write(...args);
+      if (observed.length === 1 && outcome === 'abort') setImmediate(() => controller.abort(fault));
+    });
+    t.mock.method(fs, 'closeSync', (fd: number) => {
+      closeFd(fd);
+      if (observed.length === 2 && outcome === 'close') throw fault;
+    });
+    syncBuiltinESMExports();
+    try {
+      const building = buildCopyLayout(generation, selection, f.shim, controller.signal);
+      if (outcome === 'success') await building;
+      else await assert.rejects(building, error => {
+        if (outcome === 'hold close') {
+          assert.ok(error instanceof SuppressedError);
+          assert.equal(error.error, nativeFault);
+          assert.equal(error.suppressed, fault);
+          assert.equal(hasRuntimeCleanupFailure(error), true);
+        } else {
+          assert.equal(error, fault);
+          assert.equal(hasRuntimeCleanupFailure(error), false);
+        }
+        return true;
+      });
+    } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+    assert.equal(readers.size, 0); assert.equal(held.size, 0);
+    const copied = readdirSync(destBin);
+    assert.equal(observed.length, outcome === 'abort' ? 1 : outcome === 'success' ? 4 : 2);
+    assert.equal(copied.length, outcome === 'success' ? 4 : 1);
+    removeTree(f.parent, 'generation');
+    await rename(sourceBin, sourceBin + '-moved');
+    await new Promise<void>(done => setImmediate(done));
+    assert.equal(pathExists(generation.path), false);
+    assert.equal(pathExists(f.cache + '.writer-lock'), false);
+  });
 });

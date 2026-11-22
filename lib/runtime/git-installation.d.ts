@@ -20,6 +20,14 @@ export declare function anchorPaths(layout: GitLayout): Readonly<Record<AnchorNa
 /** Pure construction from a pin's recorded selection; the source may be gone. */
 export declare function buildRuntimeEnvironment(installationRoot: string, sourceRoot: string, layout: GitLayout, ambient: NodeJS.ProcessEnv): Record<string, string>;
 export declare function discoverGitInstallation(setting?: string): GitInstallation;
+/** MSYS budgets the normalized NT image path, including the terminating byte. */
+export declare function requireViewPathBudget(view: string): void;
+/** Called on an unpublished, exclusively created generation after discovery. Its owner handles whole-generation rollback. */
+export declare function buildCopyLayout(generation: Directory, installation: GitInstallation, shim: Buffer, signal: AbortSignal): Promise<{
+    runtime: Directory;
+    patchedMsysSha256: string;
+}>;
+export declare function admitCopyJunctions(runtime: Directory, source: Directory, layout: GitLayout): void;
 export declare function inventoryGitFiles(sourceRoot: string, checkActive: () => void): Promise<readonly string[]>;
 export declare function linkFreshTree(tree: FreshLinkTree, checkActive: () => void, onLinked?: (file: {
     path: string;

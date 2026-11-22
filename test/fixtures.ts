@@ -1,4 +1,4 @@
-import { copyFile, mkdtemp, rm, mkdir, writeFile, link, readFile, stat, readdir, symlink } from 'node:fs/promises';
+import { copyFile, mkdtemp, rm, mkdir, writeFile, link, readFile, stat, symlink } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import assert from 'node:assert/strict';
@@ -11,10 +11,9 @@ import type { Context } from '@deepseek-ai/cordis';
 import type { SandboxProvider, SandboxExecutionPolicy } from '@deepseek-ai/dsh-sandbox';
 import type Subprocess from '@deepseek-ai/dsh-subprocess';
 import { findInstalledDshManifest, installedDsh } from '../scripts/installed-dsh.ts';
-import { admitDirectory, NativeHold, removeTree } from '../src/runtime/ntfs-filesystem.ts';
-import { prepareRuntime, purgeRuntimeCache, type GenerationPin, type RuntimePreparation } from '../src/runtime/runtime-cache.ts';
-import { anchorPaths, buildRuntimeEnvironment, discoverGitInstallation, inventoryGitFiles, type AnchorStamps, type GitLayout } from '../src/runtime/git-installation.ts';
-import { patchMsysDll } from '../src/runtime/pe.ts';
+import { admitDirectory, createDirectory, NativeHold, removeTree } from '../src/runtime/ntfs-filesystem.ts';
+import { bundledShimUrl, prepareRuntime, purgeRuntimeCache, type GenerationPin, type RuntimePreparation } from '../src/runtime/runtime-cache.ts';
+import { anchorPaths, buildCopyLayout, buildRuntimeEnvironment, discoverGitInstallation, inventoryGitFiles, type AnchorStamps, type GitLayout } from '../src/runtime/git-installation.ts';
 
 /** Keep every ACL record. icacls localizes its final success count to the console language. */
 export function readAclRecords(path: string, recursive = false): string {
@@ -199,9 +198,10 @@ export async function runtimeFixture(t: TestContext, layout: GitLayout = 'ucrt64
   });
   await mkdir(source);
   await mkdir(workspace);
-  for (const file of [...Object.values(anchorPaths(layout)), 'usr/lib/perl/module.pm', 'usr/share/doc/ignored.txt', 'usr/lib/winpty.lib', `${layout}/libexec/git-core/git-helper.exe`]) {
+  for (const file of ['bin/bash.exe', ...Object.values(anchorPaths(layout)), 'usr/lib/perl/module.pm', 'usr/share/doc/ignored.txt', 'usr/lib/winpty.lib', `${layout}/libexec/git-core/git-helper.exe`]) {
     await mkdir(dirname(join(source, file)), { recursive: true });
     if (file === 'usr/bin/sh.exe') await link(join(source, 'usr/bin/bash.exe'), join(source, file));
+    else if (file === 'usr/bin/msys-2.0.dll') await writeFile(join(source, file), msysPeFixture());
     else await writeFile(join(source, file), `fixture ${file}\n`);
   }
   const request: RuntimePreparation = {
@@ -339,29 +339,15 @@ export async function executionFixture(t: TestContext) {
   };
 }
 
-/** Independently provisioned owned copies for native qualification; no production backend switch. */
+/** Exercise the shallow copy layout through the installed DSH providers. */
 export async function compatFixture(t: TestContext) {
-  installedDsh(); discoverGitInstallation(process.env.DSH_TEST_GIT_BASH);
+  installedDsh();
   const f = await executionFixture(t);
   assert.ok(f);
-  const runtime = join(f.directory, 'r'), views = join(f.directory, 'v');
-  await mkdir(join(runtime, 'usr/bin'), { recursive: true }); await mkdir(views);
-  const junctions = async (source: string, destination: string) => {
-    for (const entry of await readdir(source, { withFileTypes: true })) {
-      if (['usr', 'tmp', 'dev'].includes(entry.name) && source === f.source) continue;
-      if (['bin', 'tmp', 'dev'].includes(entry.name) && source !== f.source) continue;
-      if (entry.isDirectory()) await symlink(join(source, entry.name), join(destination, entry.name), 'junction');
-    }
-  };
-  await junctions(f.source, runtime);
-  await junctions(join(f.source, 'usr'), join(runtime, 'usr'));
-  for (const entry of await readdir(join(f.source, 'usr/bin'), { withFileTypes: true })) {
-    const source = join(f.source, 'usr/bin', entry.name), destination = join(runtime, 'usr/bin', entry.name);
-    if (entry.name === 'msys-2.0.dll') await writeFile(destination, patchMsysDll(await readFile(source)));
-    else if (entry.isDirectory()) await symlink(source, destination, 'junction');
-    else { assert.ok(entry.isFile()); await copyFile(source, destination); }
-  }
-  await copyFile(new URL('../lib/dsh-msys-compat.dll', import.meta.url), join(runtime, 'usr/bin/dsh-msys-compat.dll'));
+  const generation = createDirectory(admitDirectory(f.directory), 'generation');
+  const installation = discoverGitInstallation(f.request.gitBashPath);
+  const built = await buildCopyLayout(generation, installation, await readFile(bundledShimUrl), t.signal);
+  const runtime = built.runtime.path, views = join(generation.path, 'v');
   return { ...f, runtime,
     async command(mode: SandboxExecutionPolicy['mode'], command: string, session?: string, leafOverride?: string) {
       const confined = mode === 'danger-full-access' ? ['bash', '-c', command] : [...(await f.ctx.sandbox.confine(['bash', '-c', command],

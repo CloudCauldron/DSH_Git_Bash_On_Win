@@ -154,3 +154,34 @@ The reviewed candidate built to 22,528 bytes. Two isolated MSVC builds with inva
 | Browser suite with a nonexistent compiler override | 1/1. Removing the DLL from a separate fixture produced the expected early diagnostic. |
 
 All positive suites reported zero failures, cancellations or skips. The four locale file hashes matched Phase 0. During verification, a test-only linker error was corrected and the frozen offline install restored checkout dependency links that a temporary baseline build had redirected. The final results above were collected with the repaired checkout. The lockfile retained its original bytes.
+
+## Refactor Phase 2, shallow copy provisioning
+
+Windows 11 x64 build 26200.9974 ran native Git Bash, Windows Node 26.12.1 and DSH 0.2.2-rc.5. The provisioning process had medium integrity, a deny-only Administrators SID and no symbolic-link privilege. Windows Developer Mode was off. All copies and directory junctions were created unelevated in disposable directories. The shipping publisher continued to serve the executor tests.
+
+An independent enumeration compared each complete source tree with its generation at the root, `usr` and `usr/bin`. It checked every retained name, junction target, ordinary file identity, link count and payload. For the two private DLLs it compared the output with the fixed PE transformation and the bundled shim. Both layouts retained 11 resource junctions.
+
+| Git for Windows | Ordinary destination files | Logical bytes | Patched MSYS SHA-256 |
+| --- | ---: | ---: | --- |
+| ucrt64 2.56.0.windows.4 | 356 | 92,929,414 | `89fb6b5965c3044bb56a3de61345b77bff6e4618440e0f3c82c3338a70becf77` |
+| mingw64 2.55.0.windows.1 | 366 | 95,656,587 | `fa125878d5ab8a96cf2c4d7ab40eba995b9df7a2772d0a282b84031a0f7faafa` |
+
+Owned copies of both Git releases ran Bash, sh, Git, a layout `libexec/git-core` binary, `/usr/libexec/lessecho.exe` and a dynamically loaded Perl module through stock DSH in full access, read-only and workspace-write. The native suite observed integrity RID 4096 for both restricted policies. A real Git helper with a read-only attribute and a read/execute ACL retained its source bytes, ACL, attributes and link count. Its copy was independently writable and inherited the same ACL as a new file in the destination directory.
+
+A regression check removed or replaced required source entries after successful discovery. The builder rejected missing entries, type changes and junction substitutions before creating either private directory. The package-boundary test recognizes the bare `tmp` name comparison used to exclude Git’s scratch directory and continues to reject repository scratch paths in imports, file operations and launch arguments.
+
+The cache tests cover one source and destination parent hold for flat file copying, exclusive source reads, cancellation between files, disk-full and close errors, collision preservation and combined rollback diagnostics. Exact-limit ASCII and CJK/supplementary paths built successfully. One extra byte failed before any payload was created. Both source and compiled modules resolved the packaged shim to the same file. Its SHA-256 and the four locale file hashes matched the Phase 1 evidence.
+
+The cold benchmark used the installed ucrt64 Git as a read-only source and five fresh destinations in a disposable DSH home. Timing began with discovery and included generation creation, reading the bundled shim, patching MSYS, file writes, junction admission and final handle closure. The source had 355 ordinary files totaling 92,906,374 bytes. The first generation took **366.26 ms**. The four repeats took **338.44, 324.92, 331.77 and 325.11 ms**. The longest sample used 7.33% of a 5 s budget and 3.66% of a 10 s budget. These measurements support retaining sequential copying with a cancellation point after each file. Command deadlines and selector publication are Phase 3 work.
+
+Defender reported both antivirus and real-time protection disabled before and after the benchmark. **Active-Defender provisioning cost is UNVERIFIED.** Each destination was fresh and the source content was reused. Only C: was a suitable mounted local NTFS volume. **Cross-volume execution and cleanup are UNVERIFIED.** Host security settings and disk configuration were preserved.
+
+| Final check | Result |
+| --- | --- |
+| TypeScript, ESLint and native Windows build | Passed |
+| Focused cache, PE and native suites on ucrt64 | 97/97 |
+| Full Windows suite on ucrt64 | 249/249 |
+| PE and native suites on real mingw64 | 49/49 |
+| Cold benchmark | 5 fresh generations, all successful |
+
+All three test suites recorded zero failures, cancellations and skips.

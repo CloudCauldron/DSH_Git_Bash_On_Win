@@ -93,8 +93,9 @@
     "error.cacheOwner": "无法确认缓存目录 {path} 归此插件所有。",
     "error.cacheOwnershipChanged": "缓存目录的所有权已改变：{path}。",
     "error.generationAfterPreflight": "清除预检完成后出现了运行时代：{name}。",
-    "error.metadataGrew": "元数据在读取期间增大：{path}。",
-    "error.metadataTooLarge": "元数据超出该路径允许的大小：{path}。",
+    "error.fileSizeChanged": "读取 {path} 时大小发生变化，预期 {size} 字节，读到 {read} 字节。",
+    "error.fileTooLarge": "{path} 的大小为 {size} 字节，上限为 {limit} 字节。",
+    "error.viewPathBudget": "运行时视图路径超出 260 字节。请使用更短的 DSH 主目录：{path}。",
     "error.purgeCloseFailed": "清除运行时缓存时未能关闭原生资源。",
     "error.workspaceOverlap": "工作区不能与 Git 源目录或运行时缓存重叠。",
 

@@ -9,7 +9,7 @@ import { provisionRuntime, ProvisioningCleanupError } from '../setup/elevated-li
 import {
   absolutePath, acquireWriterLock, admitChildDirectory, admitDirectory, admitJunction,
   bestEffort, canonicalWorkspace, children, claimDirectory, createDirectory, createHardlink,
-  createJunction, DirectoryRollbackError, ensureDirectory, hasCloseFailure, InvalidMetadataError, isBusy, isMissing, ordinaryChildDirectory,
+  createJunction, DirectoryRollbackError, ensureDirectory, hasCloseFailure, InvalidFileSizeError, isBusy, isMissing, ordinaryChildDirectory,
   overlaps, pathExists, pinDirectory, readMetadata, removeDirectoryTree, removeEmptyDirectory, removeTree,
   revalidateDirectory, sameIdentity, samePath, unlinkEntry, writeNewMetadata,
   type Directory, type NativeHold,
@@ -60,6 +60,8 @@ interface CurrentRuntime {
 
 export const sharedCacheDirectory = (home: string): string => join(home, '.dsh-git-bash-on-win');
 
+export const bundledShimUrl = new URL('../../lib/dsh-msys-compat.dll', import.meta.url);
+
 const markerName = '.owner.json';
 const generationId = z.string().pattern(/^[a-f0-9]{32}$/).required();
 const pathSchema = z.string().min(3).max(32767).required();
@@ -109,7 +111,7 @@ function currentRecord(root: Directory): CurrentRuntime | undefined {
   let raw: unknown;
   try { raw = readMetadata(root, 'current.json', 512 * 1024); }
   catch (error) {
-    if (isMissing(error) || error instanceof SyntaxError || error instanceof InvalidMetadataError) return undefined;
+    if (isMissing(error) || error instanceof SyntaxError || error instanceof InvalidFileSizeError) return undefined;
     throw error;
   }
   try {

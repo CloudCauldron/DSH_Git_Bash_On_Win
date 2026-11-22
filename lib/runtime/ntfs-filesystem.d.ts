@@ -16,7 +16,7 @@ interface FileInformation extends FileIdentity {
 export declare function requireWindows(): void;
 export declare function isMissing(error: unknown): boolean;
 export declare function isBusy(error: unknown): boolean;
-export declare class InvalidMetadataError extends LocalizedError {
+export declare class InvalidFileSizeError extends LocalizedError {
 }
 /** The new name was created, but neither admission nor its rollback completed. */
 export declare class DirectoryRollbackError extends LocalizedAggregateError {
@@ -33,6 +33,7 @@ export declare class NativeHold {
     information(): FileInformation;
     canonicalPath(): string;
     requireNtfs(): void;
+    readBytes(maxBytes: number): Buffer;
     readJson(maxBytes: number): unknown;
     /** FileLinkInformation uses the admitted source and destination directory handles. */
     linkTo(parent: NativeHold, name: string): void;
@@ -58,8 +59,12 @@ export declare function admitChildDirectory(parent: Directory, name: string, exp
 export declare function createDirectory(parent: Directory, name: string): Directory;
 export declare function ensureDirectory(parent: Directory, name: string): Directory;
 export declare function openOrdinaryFile(parent: Directory, name: string, writable?: boolean): NativeHold;
+/** Read one no-follow file under its admitted parent. Writers and deletion are excluded until close. */
+export declare function readFileBytes(parent: Directory, name: string, maxBytes: number): Buffer;
 export declare function readMetadata(parent: Directory, name: string, maxBytes: number): unknown;
 export declare function writeNewMetadata(parent: Directory, name: string, value: unknown): void;
+/** The caller holds the parent across creation and any rollback. */
+export declare function writeNewFile(parent: Directory, name: string, bytes: Buffer): void;
 export declare function pinDirectory(directory: Directory): NativeHold;
 export declare function claimDirectory(directory: Directory): NativeHold;
 /** Exclusive creation, no inheritance, automatically removed on close or death. */

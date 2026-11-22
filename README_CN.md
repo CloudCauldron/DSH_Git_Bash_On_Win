@@ -152,7 +152,7 @@ pnpm test:release   # 环境预检 + check + lint + test:windows
 pnpm test:browser   # Playwright 浏览器配置与弹窗测试
 ```
 
-如需手动验证真实 UAC 弹窗或运行监督器基准测试，先执行 `pnpm build`，再按需运行：
+如需手动验证真实 UAC 弹窗或测量运行时冷复制耗时，先执行 `pnpm build`，再按需运行：
 
 ```bash
 # 真实 UAC 弹窗验证（approve / deny / late）
@@ -164,6 +164,6 @@ DSH_GIT_BASH_UAC_TEST=late node --test --test-name-pattern='manual UAC' test/pro
 DSH_GIT_BASH_UAC_TEST=deny pnpm test:browser
 DSH_GIT_BASH_UAC_TEST=approve pnpm test:browser
 
-# 监督器基准测试
-node --test test/benchmark-supervisor.ts
+# 运行时冷复制耗时
+DSH_BENCH_COLD_ONLY=1 node --test test/benchmark-runtime.ts
 ```

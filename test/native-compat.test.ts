@@ -473,6 +473,19 @@ await test('optimized shim admission, forks, images and IPC under real DSH polic
     } finally { library.unload(); }
   });
   const f = await compatFixture(t), spawn = f.ctx.subprocess.spawn.bind(f.ctx.subprocess);
+  await t.test('shallow Bash, sh, Git, Perl and libexec resources in all three modes', async () => {
+    const command = [
+      'set -eu', 'sh -c \'printf "sh-ok\\n"\'', 'git --version', '"$GIT_EXEC_PATH/git.exe" --version',
+      '/usr/libexec/lessecho.exe libexec-ok', 'perl -MDigest::SHA -e \'print Digest::SHA::sha256_hex("copy")\'',
+    ].join('\n');
+    for (const mode of ['danger-full-access', 'read-only', 'workspace-write'] as const) {
+      const spec = await f.command(mode, command, 'shallow-' + mode);
+      const result = await runFixtureCommand(spawn, spec.argv, f.workspace, spec.env, t.signal);
+      success(result);
+      assert.match(result.stdout, /^sh-ok\r?\ngit version [^\r\n]+\r?\ngit version [^\r\n]+\r?\nlibexec-ok\r?\n/);
+      assert.ok(result.stdout.endsWith(createHash('sha256').update('copy').digest('hex')));
+    }
+  });
   await t.test('TokenLogonSid agrees with TokenGroups on actual DSH tokens', async t => {
     for (const mode of ['danger-full-access', 'read-only', 'workspace-write'] as const) {
       const command = [process.execPath, '--input-type=module', '-e',

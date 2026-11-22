@@ -277,10 +277,15 @@ await test('maintained compiler graphs, lint and emitted public exports exclude 
     // TypeScript follows transitive imports even when tsconfig excludes them.
     // Also reject literal runtime file/launch references to documentation and scratch directories.
     for (const source of program.getSourceFiles().filter(file => /^(src|scripts)\//.test(relative(root, file.fileName).replaceAll('\\', '/')))) {
-      const visit = (node: ts.Node): void => {
-        if (ts.isStringLiteralLike(node)) assert.doesNotMatch(node.text, /(?:^|[\\/])(?:docs|tmp)(?:[\\/]|$)/, source.fileName);
-        if (ts.isStringLiteralLike(node) && /^error\.\w+$/.test(node.text)) assert.ok(Object.hasOwn(en, node.text), node.text);
-        ts.forEachChild(node, visit);
+      const visit = (node: ts.Node, parent?: ts.Node): void => {
+        if (ts.isStringLiteralLike(node)) {
+          // Git's own tmp directory is excluded by a name comparison during shallow enumeration.
+          const comparesTempName = node.text === 'tmp' && parent && ts.isBinaryExpression(parent)
+            && parent.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken;
+          if (!comparesTempName) assert.doesNotMatch(node.text, /(?:^|[\\/])(?:docs|tmp)(?:[\\/]|$)/, source.fileName);
+          if (/^error\.\w+$/.test(node.text)) assert.ok(Object.hasOwn(en, node.text), node.text);
+        }
+        ts.forEachChild(node, child => visit(child, node));
       };
       visit(source);
     }

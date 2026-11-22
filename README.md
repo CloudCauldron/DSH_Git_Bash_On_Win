@@ -152,7 +152,7 @@ pnpm test:release   # Environment preflight + check + lint + test:windows
 pnpm test:browser   # Playwright browser configuration and dialog tests
 ```
 
-To manually verify real UAC prompts or run the supervisor benchmark, run `pnpm build` first, then run the commands below as needed:
+To manually verify real UAC prompts or measure cold copy provisioning, run `pnpm build` first, then run the commands below as needed:
 
 ```bash
 # Real UAC prompt verification (approve / deny / late)
@@ -164,6 +164,6 @@ DSH_GIT_BASH_UAC_TEST=late node --test --test-name-pattern='manual UAC' test/pro
 DSH_GIT_BASH_UAC_TEST=deny pnpm test:browser
 DSH_GIT_BASH_UAC_TEST=approve pnpm test:browser
 
-# Supervisor benchmark
-node --test test/benchmark-supervisor.ts
+# Cold copy provisioning
+DSH_BENCH_COLD_ONLY=1 node --test test/benchmark-runtime.ts
 ```

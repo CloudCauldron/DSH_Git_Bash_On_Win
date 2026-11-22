@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
 import { access, realpath, stat, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve, sep } from 'node:path';
 import { createInterface } from 'node:readline';
@@ -8,7 +7,7 @@ import { test } from 'node:test';
 import { writeFileAtomic } from '@deepseek-ai/dsh-atomic-write';
 import { chromium, type BrowserContext, type Locator, type Page } from 'playwright-core';
 import { installedDsh } from '../scripts/installed-dsh.ts';
-import { profileEnvironment, localSpawn, runFixtureCommand, runtimeFixture, success } from './fixtures.ts';
+import { chromeExecutable, pnpmExecutable, profileEnvironment, localSpawn, runFixtureCommand, runtimeFixture, success } from './fixtures.ts';
 import { purgeRuntimeCache } from '../src/runtime/runtime-cache.ts';
 
 async function checkDiagnostic(dialog: Locator, explanation: string, diagnostic: string) {
@@ -38,6 +37,7 @@ await test('installed DSH presents rebuild failures and conflicts in native dial
   await access(new URL('../lib/dsh-msys-compat.dll', import.meta.url)).catch(cause => {
     throw new Error('Missing compatibility DLL. Run pnpm build first.', { cause });
   });
+  const executablePath = chromeExecutable();
   const runtime = installedDsh();
   const spawn = await localSpawn(t);
   const fixture = await runtimeFixture(t, 'ucrt64', join('home', '.dsh-git-bash-on-win'));
@@ -46,8 +46,7 @@ await test('installed DSH presents rebuild failures and conflicts in native dial
   const env = profileEnvironment(fixture.directory, home);
   const cli = join(dirname(runtime.manifest), 'lib/bin.js'), cwd = fixture.workspace;
   success(await runFixtureCommand(spawn, [process.execPath, cli, '--profile', 'web', '--dump-config'], cwd, env, t.signal));
-  const pnpm = process.env.npm_execpath?.endsWith('.exe') ? process.env.npm_execpath
-    : execFileSync('where.exe', ['pnpm.exe'], { encoding: 'utf8' }).trim().split(/\r?\n/)[0]!;
+  const pnpm = pnpmExecutable();
   const repo = resolve(import.meta.dirname, '..');
   success(await runFixtureCommand(spawn, [process.execPath, join(repo, 'scripts/plugin.ts'), pnpm, 'web', 'add',
     'file:' + repo.replaceAll('\\', '/')], cwd, env, t.signal));
@@ -86,8 +85,7 @@ await test('installed DSH presents rebuild failures and conflicts in native dial
       if (url) break;
     }
     assert.ok(url, 'DSH must announce its authenticated Web URL');
-    const browser = await chromium.launchPersistentContext(join(fixture.directory, 'browser'), { env, locale: 'zh-CN',
-      executablePath: process.env.CHROME_PATH ?? join(process.env.ProgramFiles!, 'Google/Chrome/Application/chrome.exe') });
+    const browser = await chromium.launchPersistentContext(join(fixture.directory, 'browser'), { env, locale: 'zh-CN', executablePath });
     try {
       const first = await newPage(browser);
       let rebuilds = 0;

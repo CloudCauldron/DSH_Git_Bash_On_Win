@@ -7,9 +7,8 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import koffi from 'koffi';
 import type { SandboxExecutionPolicy } from '@deepseek-ai/dsh-sandbox';
-import type GitBashExecutor from '../src/index.ts';
 import { installedDsh } from '../scripts/installed-dsh.ts';
-import { executionFixture } from './fixtures.ts';
+import { executionFixture, loadPackedExecutor, qualifyPackedProfile } from './fixtures.ts';
 
 /** Sample only descendants of this test process. Keep each handle for the native exit code. */
 function observeAlias(name: string) {
@@ -61,18 +60,18 @@ function observeAlias(name: string) {
   };
 }
 
-await test('packaged CLI and debugger qualification through installed DSH providers', async t => {
+await test('packaged CLI and debugger qualification through installed DSH providers', t => qualifyPackedProfile(t, import.meta.url, async profile => {
   const f = await executionFixture(t);
   const dsh = installedDsh();
   const { default: Stock } = await dsh.load(dsh.baseRequire, '@deepseek-ai/dsh-pwsh-sandbox') as { default: new (ctx: Context, config: { pwshPath: string }) => object };
-  const { default: Bash } = await import(new URL('../lib/index.js', import.meta.url).href) as { default: typeof GitBashExecutor };
+  const { Executor: Bash } = await loadPackedExecutor(f.ctx, profile);
   const aliases = join(process.env.LOCALAPPDATA!, 'Microsoft/WindowsApps');
   const gdb = process.env.DSH_TEST_GDB ?? join(process.env.ProgramFiles!, 'Inkscape/bin/gdb.exe');
   const target = join(f.workspace, 'exit-target.exe');
   await copyFile(join(process.env.SystemRoot!, 'System32/cmd.exe'), target);
   const modes = ['read-only', 'workspace-write', 'danger-full-access'] as const;
   const expected = new Map<string, { packageName: string; status: number }>();
-  t.diagnostic('Windows ' + release() + ', DSH ' + dsh.version + ', Node ' + process.version + ', Git ' + f.installed.layout);
+  t.diagnostic('Windows ' + release() + ', DSH ' + dsh.version + ', Node ' + process.version + ', ' + execFileSync(join(f.source, f.installed.layout, 'bin/git.exe'), ['--version'], { encoding: 'utf8' }).trim() + ' ' + f.installed.layout);
   for (const backend of ['stock', 'bash']) {
     const fiber = backend === 'stock' ? f.ctx.plugin(Stock, { pwshPath: join(aliases, 'pwsh.exe') })
       : f.ctx.plugin(Bash, { gitBashPath: f.request.gitBashPath });
@@ -121,4 +120,4 @@ await test('packaged CLI and debugger qualification through installed DSH provid
       }
     } finally { await fiber.dispose(); }
   }
-});
+}));

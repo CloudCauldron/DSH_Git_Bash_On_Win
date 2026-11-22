@@ -1,3 +1,7 @@
+import { mkdirSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import type GitBashExecutor from '../src/index.ts';
 import { cp, readdir, mkdtemp, rm, mkdir, writeFile, link, readFile, stat, symlink } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
@@ -5,13 +9,13 @@ import assert from 'node:assert/strict';
 import koffi from 'koffi';
 import { closeHandleChecked, extendWin32ProcessBindings, type NativePtr } from '@deepseek-ai/dsh-win32-process';
 import { tmpdir } from 'node:os';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, join, sep } from 'node:path';
 import type { TestContext } from 'node:test';
 import type { Context } from '@deepseek-ai/cordis';
 import type { SandboxProvider, SandboxExecutionPolicy } from '@deepseek-ai/dsh-sandbox';
 import type Subprocess from '@deepseek-ai/dsh-subprocess';
 import { installedDsh } from '../scripts/installed-dsh.ts';
-import { admitDirectory, createDirectory, removeTree } from '../src/runtime/ntfs-filesystem.ts';
+import { admitDirectory, createDirectory, openOrdinaryFile, removeTree } from '../src/runtime/ntfs-filesystem.ts';
 import { bundledShimUrl, prepareRuntime, purgeRuntimeCache, type GenerationPin, type RuntimePreparation } from '../src/runtime/runtime-cache.ts';
 import { buildCopyLayout, buildRuntimeEnvironment, discoverGitInstallation, type SourceFreshness, type GitLayout } from '../src/runtime/git-installation.ts';
 
@@ -28,6 +32,81 @@ export async function temporaryDirectory(t: TestContext): Promise<string> {
   const directory = await mkdtemp(join(tmpdir(), 'dsh-git-bash-bootstrap-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   return directory;
+}
+
+export function pnpmExecutable(): string {
+  return process.env.npm_execpath?.endsWith('.exe') ? process.env.npm_execpath
+    : execFileSync('where.exe', ['pnpm.exe'], { encoding: 'utf8' }).trim().split(/\r?\n/)[0]!;
+}
+
+export function packRelease(directory: string, destination: string): string {
+  mkdirSync(destination, { recursive: true });
+  execFileSync(pnpmExecutable(), ['pack', '--pack-destination', destination], { cwd: directory, stdio: 'inherit' });
+  const files = readdirSync(destination).filter(name => name.endsWith('.tgz'));
+  assert.equal(files.length, 1);
+  return join(destination, files[0]!);
+}
+
+/** Use rc.5's profile template, package operation and host peer resolver for the packed plugin. */
+export async function installPackedProfile(home: string, name: 'web' | 'desktop', archive: string) {
+  const dsh = installedDsh(), dir = join(home, 'profiles', name);
+  // Desktop initializes its profile with the official Web template before managing packages.
+  const boot = await dsh.load(dsh.cliRequire, '@deepseek-ai/dsh-app-boot') as { initProfile(dir: string, bundles: string[]): void };
+  const { PROFILE_TEMPLATES } = await dsh.load(dsh.cliRequire, '@deepseek-ai/dsh-official-bundles') as { PROFILE_TEMPLATES: { web: { bundles: string[] } } };
+  boot.initProfile(dir, PROFILE_TEMPLATES.web.bundles);
+  const env = profileEnvironment(home, home);
+  const manager = await dsh.load(dsh.cliRequire, '@deepseek-ai/dsh-plugin-manager/operations') as {
+    runPluginCommand(context: object, args: string[], options: object): Promise<{ exitCode: number | null }>;
+  };
+  const operation = async (verb: string, spec: string) => {
+    let output = '';
+    const result = await manager.runPluginCommand({ profile: name, dir, installAnchor: dsh.manifest, cwd: home },
+      [verb, spec, '--config.ignore-scripts=true'], { command: pnpmExecutable(), execution: 'cli', env,
+        onOutput: (chunk: string) => { output += chunk; } });
+    assert.equal(result.exitCode, 0, output);
+  };
+  await operation('add', 'file:' + archive.replaceAll('\\', '/'));
+  assert.match(readFileSync(join(dir, 'pnpm-lock.yaml'), 'utf8'), /autoInstallPeers: false/);
+  const require = createRequire(join(dir, 'package.json'));
+  const root = dirname(realpathSync.native(require.resolve('dsh-git-bash-on-win/package.json')));
+  assert.ok(root.startsWith(realpathSync.native(dir) + sep));
+  return { dir, root, remove: () => operation('remove', 'dsh-git-bash-on-win') };
+}
+
+export async function loadPackedExecutor(ctx: Context, dir: string) {
+  const home = dirname(dirname(dir)), dsh = installedDsh(), require = createRequire(join(dir, 'package.json'));
+  const boot = await dsh.load(dsh.cliRequire, '@deepseek-ai/dsh-app-boot') as {
+    loadProfileDirectory(app: string, dir: string, anchor: string, options: { userLayer: boolean }): object;
+    createRuntimeResolution(options: object): Promise<object>;
+    PluginPackages: new (ctx: Context, config: { resolution: object }) => object;
+  };
+  const profile = boot.loadProfileDirectory('dsh', dir, dsh.manifest, { userLayer: false });
+  const resolution = await boot.createRuntimeResolution({ home, profile, installAnchor: dsh.manifest });
+  const peers = ctx.plugin(boot.PluginPackages, { resolution });
+  await peers;
+  const { default: Executor } = await import(pathToFileURL(require.resolve('dsh-git-bash-on-win/executor')).href) as { default: typeof GitBashExecutor };
+  return { Executor, require, root: dirname(require.resolve('dsh-git-bash-on-win/package.json')) };
+}
+
+/** End the native module's process lifetime before removing its installed profile. */
+export function runProfileHost(entry: string, ...args: string[]) {
+  execFileSync(process.execPath, [fileURLToPath(entry), ...args], { stdio: 'inherit', env: { ...process.env, NODE_TEST_CONTEXT: undefined } });
+}
+
+export async function qualifyPackedProfile(t: TestContext, entry: string, run: (dir: string) => Promise<void>) {
+  const profile = process.argv[2];
+  if (profile) return run(profile);
+  const home = await temporaryDirectory(t);
+  const archive = process.env.DSH_TEST_TARBALL ?? packRelease(join(import.meta.dirname, '..'), join(home, 'pack'));
+  const installed = await installPackedProfile(home, 'web', archive);
+  try { runProfileHost(entry, installed.dir, archive); }
+  finally { await installed.remove(); }
+}
+
+export function chromeExecutable(): string {
+  const path = process.env.CHROME_PATH ?? join(process.env.ProgramFiles!, 'Google/Chrome/Application/chrome.exe');
+  assert.ok(statSync(path, { throwIfNoEntry: false })?.isFile(), 'Chrome executable missing. Set CHROME_PATH: ' + path);
+  return path;
 }
 
 export const nativeWindows = process.platform === 'win32' && process.arch === 'x64';
@@ -277,15 +356,25 @@ export async function localSpawn(t: TestContext): Promise<Subprocess['spawn']> {
   return ctx.subprocess.spawn.bind(ctx.subprocess);
 }
 
-/** Real providers, owned Git bytes, and no personal Loader/profile state. */
-export async function executionFixture(t: TestContext) {
-  const runtime = installedDsh(), installed = discoverGitInstallation(process.env.DSH_TEST_GIT_BASH);
-  const directory = await mkdtemp(join(tmpdir(), 'dsh-git-bash-execution-'));
-  const source = join(directory, 'source'), workspace = join(directory, 'workspace 含空格'), cache = join(directory, '.dsh-git-bash-on-win');
+export async function executionContext(home: string, workspace: string, profile: string) {
+  const runtime = installedDsh();
   const { Context: InstalledContext } = await runtime.load(runtime.baseRequire, '@deepseek-ai/cordis') as typeof import('@deepseek-ai/cordis');
   const { LocalSubprocessRuntime } = await runtime.load(runtime.baseRequire, '@deepseek-ai/dsh-subprocess-local') as { LocalSubprocessRuntime: new (ctx: Context) => Subprocess };
   const { LocalSandboxProvider } = await runtime.load(runtime.baseRequire, '@deepseek-ai/dsh-sandbox-local') as { LocalSandboxProvider: new (ctx: Context, config: object) => SandboxProvider };
   const ctx = new InstalledContext();
+  await ctx.plugin(LocalSubprocessRuntime);
+  await ctx.plugin(LocalSandboxProvider, {});
+  ctx.provide('profileContext', { dir: profile, home });
+  ctx.provide('sandboxPolicy', { defaultMode: 'read-only', resolve: () => ({ mode: 'read-only', workspaceRoot: workspace }) });
+  return ctx;
+}
+
+/** Real providers, owned Git bytes, and no personal Loader/profile state. */
+export async function executionFixture(t: TestContext) {
+  const installed = discoverGitInstallation(process.env.DSH_TEST_GIT_BASH);
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-git-bash-execution-'));
+  const source = join(directory, 'source'), workspace = join(directory, 'workspace 含空格'), cache = join(directory, '.dsh-git-bash-on-win');
+  const ctx = await executionContext(directory, workspace, directory);
   const pins = new Set<GenerationPin>();
   let verifySource = async () => {};
   t.after(async () => {
@@ -301,23 +390,21 @@ export async function executionFixture(t: TestContext) {
   }
   const files = (await readdir(join(source, 'usr/bin'), { withFileTypes: true })).filter(file => file.isFile()).map(file => 'usr/bin/' + file.name);
   const snapshot = async () => {
-    const contents: Array<{ hash: string; links: number }> = [];
+    const contents: Array<{ hash: string; links: number; attributes: number }> = [];
+    const bin = admitDirectory(join(source, 'usr/bin'));
     for (let offset = 0; offset < files.length; offset += 16) {
-      contents.push(...await Promise.all(files.slice(offset, offset + 16).map(async file => ({
-        hash: createHash('sha256').update(await readFile(join(source, file))).digest('hex'),
-        links: (await stat(join(source, file))).nlink,
-      }))));
+      contents.push(...await Promise.all(files.slice(offset, offset + 16).map(async file => {
+        using handle = openOrdinaryFile(bin, basename(file));
+        return { attributes: handle.information().attributes, hash: createHash('sha256').update(await readFile(join(source, file))).digest('hex'),
+          links: (await stat(join(source, file))).nlink };
+      })));
     }
     return { contents, acl: readAclRecords(source, true) };
   };
   const before = await snapshot();
   verifySource = async () => {
-    assert.deepEqual(await snapshot(), before, 'preparation and purge must preserve source link counts, contents and ACLs');
+    assert.deepEqual(await snapshot(), before, 'preparation and purge must preserve source link counts, contents, attributes and ACLs');
   };
-  await ctx.plugin(LocalSubprocessRuntime);
-  await ctx.plugin(LocalSandboxProvider, {});
-  ctx.provide('profileContext', { dir: directory, home: directory });
-  ctx.provide('sandboxPolicy', { defaultMode: 'read-only', resolve: () => ({ mode: 'read-only', workspaceRoot: workspace }) });
   const request: RuntimePreparation = { cacheDirectory: cache, gitBashPath: join(source, 'usr/bin/bash.exe') };
   return { ctx, directory, source, workspace, cache, installed, request,
     async prepare() { const pin = await prepareRuntime(request, new AbortController().signal); pins.add(pin); return pin; },

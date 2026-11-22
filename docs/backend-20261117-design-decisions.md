@@ -1,4 +1,6 @@
-# Backend design decisions
+# Historical backend design decisions
+
+This record describes the November 17 backend. The [November 22 design decisions](backend-20261122-design-decisions.md) govern the current release.
 
 The backend design took shape on 15–17 November 2026. It lets a DSH profile run Git Bash on native Windows x64 under DSH's selected execution policy. The supported host is DSH 0.2.2-rc.5 with Node `^24.21.0 || >=26`, including Desktop's bundled Node 24.21.0. An installation can use the `ucrt64` or `mingw64` Git for Windows layout.
 

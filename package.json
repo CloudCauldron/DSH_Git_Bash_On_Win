@@ -39,7 +39,7 @@
     "test": "pnpm build && node --test test/*.test.ts",
     "test:browser": "pnpm build:js && node --test test/client-browser.ts",
     "test:windows": "node -e \"if (process.platform !== 'win32' || process.arch !== 'x64') throw new Error('Native Windows x64 Node is required.');\" && pnpm test",
-    "test:release": "node --input-type=module -e \"import { installedDsh } from './scripts/installed-dsh.ts'; import { discoverGitInstallation } from './src/runtime/git-installation.ts'; installedDsh(); discoverGitInstallation(process.env.DSH_TEST_GIT_BASH);\" && pnpm check && pnpm lint && pnpm test:windows"
+    "test:release": "node --input-type=module -e \"import { installedDsh } from './scripts/installed-dsh.ts'; import { discoverGitInstallation } from './src/runtime/git-installation.ts'; import { chromeExecutable } from './test/fixtures.ts'; installedDsh(); discoverGitInstallation(process.env.DSH_TEST_GIT_BASH); chromeExecutable();\" && pnpm check && pnpm lint && pnpm build:release && node --test test/*.test.ts && node --test test/client-browser.ts && node --test test/release.ts"
   },
   "dependencies": {
     "@deepseek-ai/schemastery": "3.19.0",

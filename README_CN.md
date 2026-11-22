@@ -47,11 +47,20 @@
 
 若升级时仍有 DSH 实例运行，请暂停命令并关闭所有实例，完成升级并修复更新程序报告的问题，再启动 DSH。重试前先检查被中断命令的执行结果。若仍有问题，可手动重建，或关闭全部实例后按第 6.2 节离线清理。
 
-## **4 - 命令行为**
+## **4 - 与原生 Linux Bash 的使用差异**
 
-管道、脚本和 Git 使用 Bash 语法。Windows ACL、MSYS 路径转换、Git 随附工具和原生 Windows 程序决定实际行为。DSH 管理进程范围并等待其结束。Windows 打包应用启动的原生后代可能在 DSH 报告结束后继续运行。
+Bash 的引号、管道、重定向、命令替换和 Git 命令沿用 Linux 上常见的写法。例如，`printf '%s\n' main | grep -Fx main` 和 `git status --short` 可直接使用。实际运行的是 Git for Windows 随附的 Windows 版工具。依赖 Linux 专用程序、设备或服务的脚本仍需要 Linux 环境。
 
-优先使用运行环境 PATH 中的 bash 或 sh。原生 `bin/bash.exe` 包装程序会启动已安装的 MSYS，在受限模式下可能失败。MSYS 子进程通过已安装的 `usr/bin` 路径启动时会重定向，原生程序硬编码该路径时会绕过此处理。受限模式下 Node 管道子进程可能报告 EPERM。Bash 对带引号的 Windows 扩展路径的处理与原生 argv 不同。
+| 场景 | Windows 上的实际行为 |
+| --- | --- |
+| 路径与权限 | 在 Bash 内可用 `/c/Work` 等 MSYS 路径。MSYS 可能转换传给 Windows 程序的路径参数。文件访问由 NTFS 和 Windows ACL 决定，工作区和临时目录的授权由 DSH 管理。 |
+| 嵌套 Shell | 使用运行环境 PATH 中的 `bash` 或 `sh`。MSYS 父进程也可启动已安装的 `usr/bin/bash.exe`。原生 `bin/bash.exe` 包装程序绕过 PATH，启动已安装的 MSYS，在受限模式下会失败。 |
+| 原生程序 | PowerShell 通过管道调用 Git 工具在三种模式中均成功。受限模式下，Node 通过管道启动子进程返回 `EPERM`。在 Bash 命令中使用带引号的 Windows 扩展长度可执行文件路径，三种模式均失败。 |
+| 打包应用与进程生命周期 | PowerShell 和 WinGet 的包身份、原生退出码与 DSH 默认后端一致，包括 WinGet 在受限模式下的错误 `0x8A150001`。Bash 只返回原生退出码的低八位。GDB 在三种模式下均能调试测试程序。其他 GUI 别名和调试器仍需单独验证。DSH 等待其管理的进程范围结束，打包应用启动的原生后代可能在此之后继续运行。 |
+
+**第三方程序启动 Git Bash。** 在 `read-only` 和 `workspace-write` 模式下，原生 Windows 程序若通过安装目录的绝对路径（例如 `C:\Program Files\Git\bin\bash.exe`）启动 Git Bash，会绕过插件运行环境，导致 Bash 启动失败。请将该程序配置为通过继承的 PATH 调用 `bash` 或 `sh`。
+
+**偶发的启动延迟。** 在测试机上，Windows 加载运行环境中的 MSYS DLL 时，Bash 有时会停顿约半秒。后来在 Microsoft Defender 实时保护开启的情况下复测，72 次管道命令均在一秒内完成。测试未验证把缓存加入排除列表能否解决停顿。DSH 主目录中的 `.dsh-git-bash-on-win` 缓存存有可执行文件和 DLL，建议保持杀毒软件对该目录的扫描。
 
 ## **5 - 环境要求**
 
@@ -126,8 +135,8 @@ pnpm check          # TypeScript 类型检查（src / scripts / test）
 pnpm lint           # ESLint 检查（零警告）
 pnpm build          # 重新构建 lib/
 pnpm test:windows   # 运行全部单元与原生集成测试
-pnpm test:release   # 环境预检 + check + lint + test:windows
+pnpm test:release   # 预检 DSH/Git/Chrome，执行检查、发布构建、核心、浏览器及压缩包安装测试
 pnpm test:browser   # Playwright 浏览器配置与弹窗测试
 ```
 
-可通过 `DSH_BENCH_COLD_ONLY=1 node --test test/benchmark-runtime.ts` 测量冷复制耗时。
+运行 `node --test test/benchmark-runtime.ts` 测量发布版本耗时，设置 `DSH_BENCH_COLD_ONLY=1` 可仅测冷复制。`DSH_TEST_WINGET=1 node --test test/qualify-host.ts` 验证打包版 PowerShell、WinGet 和 GDB，该选项允许 WinGet 写入自身的诊断日志。Chrome 安装在其他位置时可设置 `CHROME_PATH`。

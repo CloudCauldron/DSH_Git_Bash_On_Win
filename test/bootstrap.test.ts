@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { mkdir, rmdir, unlink, writeFile } from 'node:fs/promises';
 import { createRequire, findPackageJSON } from 'node:module';
@@ -21,7 +21,7 @@ import { readDictionaries } from '../src/locale/catalogs.ts';
 import GitBashPreset from '../src/preset.ts';
 import * as BashTool from '../src/tool.ts';
 import { installedDsh, SUPPORTED_DSH } from '../scripts/installed-dsh.ts';
-import { profileEnvironment, localSpawn, runFixtureCommand, success, runtimeFixture, temporaryDirectory, readAclRecords } from './fixtures.ts';
+import { pnpmExecutable, profileEnvironment, localSpawn, runFixtureCommand, success, runtimeFixture, temporaryDirectory, readAclRecords } from './fixtures.ts';
 import { pathExists } from '../src/runtime/ntfs-filesystem.ts';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -338,8 +338,7 @@ await test('checkout install, offline recovery and removal preserve shared Shell
 }, async t => {
   const spawn = await localSpawn(t);
   const runtime = installedDsh(), fixture = await runtimeFixture(t, 'ucrt64', join('home', '.dsh-git-bash-on-win'));
-  const pnpm = realpathSync(process.env.npm_execpath?.endsWith('.exe') ? process.env.npm_execpath
-    : execFileSync('where.exe', ['pnpm.exe'], { encoding: 'utf8' }).trim().split(/\r?\n/)[0]!);
+  const pnpm = pnpmExecutable();
   const home = join(fixture.directory, 'home'), profile = join(home, 'profiles', 'integration');
   const { initProfile, assertBundlePlatform } = await runtime.load(runtime.cliRequire, '@deepseek-ai/dsh-app-boot') as {
     initProfile(dir: string, bundles: string[]): void;

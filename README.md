@@ -48,11 +48,20 @@ The first command prepares the runtime with the user's ordinary permissions, inc
 
 If Git was upgraded with DSH open, stop issuing commands and close all instances. Finish the upgrade, repair Git if its updater failed, and reopen DSH. Review interrupted commands before running them again. If problems persist, use **Save and rebuild**, or close all instances and use the offline purge below.
 
-## **4 - Command behavior**
+## **4 - How it compares with native Linux Bash**
 
-Pipelines, shell scripts and Git use Bash syntax. Windows ACLs, MSYS path conversion, the installed Git toolset and native Windows programs determine how these commands behave. DSH supplies workspace and temporary-directory grants and waits for its managed process range. Native descendants of a Windows packaged application can outlive the settlement DSH reports.
+Bash quoting, pipes, redirection, command substitution and Git commands work much as they do on Linux. For example, `printf '%s\n' main | grep -Fx main` and `git status --short` use the usual syntax. The shell runs Windows builds of the tools shipped with Git for Windows. Scripts that need Linux-only programs, devices or services need a Linux environment.
 
-Use Bash or sh from the runtime PATH. The native `bin/bash.exe` wrapper launches the installed runtime and can fail under restricted tokens. The plugin redirects explicit installed `usr/bin` children started by MSYS. Native programs that hardcode that path bypass the redirect. Piped native Node children can report EPERM in restricted modes. Bash treats quoted extended Windows executable paths differently from native argv.
+| When you use | What to expect on Windows |
+| --- | --- |
+| Paths and permissions | Use MSYS paths such as `/c/Work` in Bash. MSYS can translate arguments passed to Windows programs. NTFS and Windows ACLs govern access, including the workspace and temporary-directory grants DSH supplies. |
+| Nested shells | Use `bash` or `sh` from the runtime PATH. An MSYS parent can also launch the installed `usr/bin/bash.exe` entry. The native `bin/bash.exe` wrapper bypasses PATH, starts the installed MSYS runtime and fails in restricted modes. |
+| Native commands | Native PowerShell pipelines into Git tools worked in all three modes. Node piped child processes reported `EPERM` in the restricted modes. A quoted Windows extended-length executable path inside Bash failed in all three. |
+| Packaged tools and process lifetime | PowerShell and WinGet matched stock DSH package identity and native exit status, including WinGet’s restricted-mode error `0x8A150001`. Bash exposes the low byte of a native exit code. GDB ran an owned target in all three modes. Other GUI aliases and debuggers need individual qualification. DSH waits for its managed process range. A native descendant of a packaged application can outlive that wait. |
+
+**Third-party launchers.** In `read-only` and `workspace-write`, a native Windows program that launches Git Bash by its installed absolute path (for example, `C:\Program Files\Git\bin\bash.exe`) bypasses the plugin runtime and Bash fails to start. Configure the program to run `bash` or `sh` from its inherited PATH.
+
+**Occasional startup delays.** On the test machine, Bash sometimes paused for about half a second while Windows loaded its private MSYS DLL. In a later run with Microsoft Defender real-time protection on, all 72 test pipelines finished within one second. The tests did not establish that excluding the cache would fix a stall. Keep antivirus scanning enabled for `.dsh-git-bash-on-win` in your DSH home. This cache contains executables and DLLs.
 
 ## **5 - Requirements**
 
@@ -127,8 +136,8 @@ pnpm check          # TypeScript type-checking (src / scripts / test)
 pnpm lint           # ESLint check (zero warnings)
 pnpm build          # Rebuild lib/
 pnpm test:windows   # Run all unit and native integration tests
-pnpm test:release   # Environment preflight + check + lint + test:windows
+pnpm test:release   # Preflight DSH/Git/Chrome, check, lint, release build, core, browser and packed-profile tests
 pnpm test:browser   # Playwright browser configuration and dialog tests
 ```
 
-Cold copy provisioning can be measured with `DSH_BENCH_COLD_ONLY=1 node --test test/benchmark-runtime.ts`.
+Run `node --test test/benchmark-runtime.ts` for release timings, or set `DSH_BENCH_COLD_ONLY=1` for cold copying alone. `DSH_TEST_WINGET=1 node --test test/qualify-host.ts` checks packaged PowerShell, WinGet and GDB. The opt-in permits WinGet’s normal diagnostic logs. `CHROME_PATH` selects a non-default Chrome executable.

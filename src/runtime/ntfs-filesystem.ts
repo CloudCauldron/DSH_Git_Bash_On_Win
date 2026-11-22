@@ -68,6 +68,7 @@ export function isBusy(error: unknown): boolean {
 }
 
 export class InvalidFileSizeError extends LocalizedError {}
+export class WrongEntryKindError extends LocalizedError {}
 
 /** The new name was created, but neither admission nor its rollback completed. */
 export class DirectoryRollbackError extends LocalizedAggregateError {}
@@ -192,7 +193,7 @@ function requireKind(info: FileInformation, kind: 'file' | 'directory', path: st
   if (info.attributes & ATTR_REPARSE) {
     throw new LocalizedError('error.reparsePoint', { path }, { fallback: `Refusing reparse point: ${path}` });
   }
-  if (!!(info.attributes & ATTR_DIRECTORY) !== (kind === 'directory')) throw new LocalizedError('error.ordinaryEntryRequired', { kind, path });
+  if (!!(info.attributes & ATTR_DIRECTORY) !== (kind === 'directory')) throw new WrongEntryKindError('error.ordinaryEntryRequired', { kind, path });
 }
 
 function ordinaryPath(path: string): string {

@@ -18,6 +18,8 @@ export declare function isMissing(error: unknown): boolean;
 export declare function isBusy(error: unknown): boolean;
 export declare class InvalidFileSizeError extends LocalizedError {
 }
+export declare class WrongEntryKindError extends LocalizedError {
+}
 /** The new name was created, but neither admission nor its rollback completed. */
 export declare class DirectoryRollbackError extends LocalizedAggregateError {
 }

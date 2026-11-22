@@ -119,6 +119,7 @@ await test('discovery skips missing or incomplete defaults without hiding select
   const stale = join(fixture.directory, 'stale'), valid = join(fixture.directory, 'valid');
   await mkdir(join(stale, 'Git/bin'), { recursive: true });
   await writeFile(join(stale, 'Git/bin/bash.exe'), 'incomplete installation');
+  await writeFile(join(stale, 'Git/ucrt64'), 'unrelated root file');
   await mkdir(valid);
   await symlink(fixture.source, join(valid, 'Git'), 'junction');
   const keys = ['ProgramW6432', 'ProgramFiles', 'ProgramFiles(x86)', 'LOCALAPPDATA'];
@@ -129,6 +130,11 @@ await test('discovery skips missing or incomplete defaults without hiding select
     assert.equal(discoverGitInstallation().root, fixture.source);
 
     const candidate = join(stale, 'Git/bin/bash.exe');
+    const malformedEtc = join(stale, 'Git/etc');
+    await writeFile(malformedEtc, 'ordinary file');
+    assert.equal(discoverGitInstallation().root, fixture.source);
+    assert.throws(() => discoverGitInstallation(candidate), /ordinary directory/);
+    await unlink(malformedEtc);
     await unlink(candidate);
     // A dangling junction exercises native reparse resolution without requiring
     // file-symlink privileges or changing any installed Git directory.
@@ -740,15 +746,18 @@ await test('both Bash entry points require ordinary etc, bin and the native wrap
   const sibling = join(f.directory, selection.layout);
   await writeFile(sibling, 'unrelated file outside the installation');
   for (const dir of ['bin', 'usr/bin']) assert.equal(discoverGitInstallation(join(usr, dir, 'bash.exe')).root, usr);
-  const close = NativeHold.prototype.close, fault = new Win32Error('CloseHandle', 6, sibling);
+  const outsideBin = join(f.directory, 'bin');
+  await writeFile(outsideBin, 'outside the selected Git root');
+  assert.equal(discoverGitInstallation(join(usr, 'bin/bash.exe')).root, usr);
+  const close = NativeHold.prototype.close, fault = new Win32Error('CloseHandle', 6, outsideBin);
   const mock = t.mock.method(NativeHold.prototype, 'close', function (this: NativeHold) {
     close.call(this);
-    if (this.path === sibling) throw fault;
+    if (this.path === outsideBin) throw fault;
   });
   try { assert.throws(() => discoverGitInstallation(join(usr, 'bin/bash.exe')), error => error === fault); }
   finally { mock.mock.restore(); }
   await unlink(join(usr, 'usr/bin/bash.exe'));
-  assert.throws(() => discoverGitInstallation(join(usr, 'bin/bash.exe')), error => error instanceof Error && error.message.includes(sibling));
+  assert.throws(() => discoverGitInstallation(join(usr, 'bin/bash.exe')), error => error instanceof Error && error.message.includes(outsideBin));
 });
 
 await test('copy refuses admitted reparses and a reserved shim name at any flat entry type', nativeOnly, async t => {
@@ -765,6 +774,23 @@ await test('copy refuses admitted reparses and a reserved shim name at any flat 
   assert.equal(await readFile(shim, 'utf8'), 'collision');
   await unlink(shim); await mkdir(shim);
   await assert.rejects(f.build('reserved-dir'), /Unsupported/);
+});
+
+await test('layout discovery skips ordinary type mismatches and rejects reparses', nativeOnly, async t => {
+  const f = await runtimeFixture(t, 'mingw64'), other = join(f.source, 'ucrt64');
+  const select = () => discoverGitInstallation(f.request.gitBashPath);
+  await writeFile(other, 'ordinary root file');
+  assert.equal(select().layout, 'mingw64');
+  const { runtime } = await buildCopyLayout(createDirectory(admitDirectory(f.directory), 'generation'), select(), await readFile(bundledShimUrl), t.signal);
+  assert.equal(pathExists(join(runtime.path, 'ucrt64')), false);
+  await unlink(other); await mkdir(other);
+  await writeFile(join(other, 'bin'), 'ordinary file');
+  assert.equal(select().layout, 'mingw64');
+  await unlink(join(other, 'bin')); await mkdir(join(other, 'bin/git.exe'), { recursive: true });
+  assert.equal(select().layout, 'mingw64');
+  removeTree(admitDirectory(f.source), 'ucrt64');
+  await symlink(f.workspace, other, 'junction');
+  assert.throws(select, /reparse/);
 });
 
 await test('a protected real Git payload keeps its bytes, ACL, attributes and link count', nativeOnly, async t => {

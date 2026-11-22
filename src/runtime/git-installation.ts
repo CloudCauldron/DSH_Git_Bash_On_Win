@@ -6,7 +6,7 @@ import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
 import {
   admitChildDirectory, admitDirectory, admitJunction, createDirectory, createHardlink, createJunction,
   hasCloseFailure, isMissing, openOrdinaryFile, ordinaryFileExists, overlaps, pathExists, pinDirectory, readFileBytes,
-  revalidateDirectory, sameIdentity, writeNewFile, type Directory, type FileIdentity,
+  revalidateDirectory, sameIdentity, writeNewFile, WrongEntryKindError, type Directory, type FileIdentity,
 } from './ntfs-filesystem.ts';
 import { patchMsysDll } from './pe.ts';
 import { LocalizedError } from '../locale/errors.ts';
@@ -62,13 +62,14 @@ export function discoverGitInstallation(setting?: string): GitInstallation {
     for (const rootPath of roots) {
       try {
         const root = admitDirectory(realpathSync(rootPath));
-        const layout = (['ucrt64', 'mingw64'] as const).find(name => hasSourceFile(root, `${name}/bin/git.exe`));
-        if (!layout) continue;
         sourceJunctionTargets(root);
-        if (hasSourceFile(root, 'usr/bin/bash.exe') && hasSourceFile(root, 'usr/bin/msys-2.0.dll')) return { root: root.path, layout };
+        if (!hasSourceFile(root, 'usr/bin/bash.exe') || !hasSourceFile(root, 'usr/bin/msys-2.0.dll')) continue;
+        const layout = (['ucrt64', 'mingw64'] as const).find(name => hasSourceFile(root, `${name}/bin/git.exe`));
+        if (layout) return { root: root.path, layout };
       } catch (error) {
         if (hasCloseFailure(error)) throw error;
-        if (!isMissing(error)) admissionError ??= error;
+        const incompleteDefault = setting === undefined && error instanceof WrongEntryKindError;
+        if (!isMissing(error) && !incompleteDefault) admissionError ??= error;
       }
     }
     if (admissionError) throw admissionError;
@@ -86,7 +87,10 @@ function sourceJunctionTargets(root: Directory, layout?: GitLayout): Directory[]
 
 function hasSourceFile(root: Directory, path: string): boolean {
   try { return ordinaryFileExists(directoryAt(root, posix.dirname(path)), posix.basename(path)); }
-  catch (error) { if (!isMissing(error)) throw error; return false; }
+  catch (error) {
+    if (isMissing(error) || error instanceof WrongEntryKindError) return false;
+    throw error;
+  }
 }
 
 /** Directory observations are shared within each source pass, never persisted. */

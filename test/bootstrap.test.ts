@@ -290,7 +290,8 @@ await test('maintained compiler graphs, lint and emitted public exports exclude 
   assert.equal(await eslint.isPathIgnored('test/bootstrap.test.ts'), false);
   const outputs = filesUnder(join(root, 'lib'));
   const expected = filesUnder(join(root, 'src'))
-    .filter(file => file.endsWith('.ts')).flatMap(file => [file.replace(/\.ts$/, '.js'), file.replace(/\.ts$/, '.d.ts')]).sort();
+    .filter(file => file.endsWith('.ts')).flatMap(file => [file.replace(/\.ts$/, '.js'), file.replace(/\.ts$/, '.d.ts')]);
+  expected.push('dsh-msys-compat.dll'); expected.sort();
   assert.deepEqual(outputs, expected, 'clean build contains only maintained production outputs');
   assert.equal(packageJson.main, './lib/adapter.js');
   assert.equal(packageJson.types, './lib/adapter.d.ts');

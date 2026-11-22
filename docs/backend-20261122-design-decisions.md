@@ -1,6 +1,6 @@
 # Backend design decisions — 22 November 2026
 
-This record governs replacement of the debugger-supervised hardlink backend with ordinary copies and an in-process compatibility DLL. The target is DSH 0.2.2-rc.5 on native Windows 11 x64, using ucrt64 or mingw64 Git layouts. Implementation starts from `33fa0a9039d193452ccab7eefc222144437f8aaa` on `be_refactor`; backend implementation has not started.
+This record governs replacement of the debugger-supervised hardlink backend with ordinary copies and an in-process compatibility DLL. The target is DSH 0.2.2-rc.5 on native Windows 11 x64, using ucrt64 or mingw64 Git layouts. Implementation starts from `33fa0a9039d193452ccab7eefc222144437f8aaa` on `be_refactor`. Phase 1 adds the independently qualified native artifact, PE contract and build checks; shipping execution still uses the existing backend until the coordinated cutover.
 
 Keep the [2026-11-17 design](backend-20261117-design-decisions.md) as history and consolidate the implemented architecture here. This document records durable choices and rejected alternatives; the roadmap owns the phase-by-phase checks.
 

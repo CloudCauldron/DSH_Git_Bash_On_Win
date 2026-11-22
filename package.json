@@ -32,9 +32,13 @@
   "scripts": {
     "lint": "eslint src scripts test eslint.config.mjs --max-warnings 0",
     "check": "tsc --noEmit",
-    "build": "node --input-type=module -e \"import { rm } from 'node:fs/promises'; await rm('lib', { recursive: true, force: true });\" && tsc -p tsconfig.build.json && esbuild src/client.ts --bundle --format=iife --platform=browser --target=esnext --outfile=lib/client.js",
+    "clean": "node --input-type=module -e \"import { rm } from 'node:fs/promises'; await rm('lib', { recursive: true, force: true });\"",
+    "build:js": "tsc -p tsconfig.build.json && esbuild src/client.ts --bundle --format=iife --platform=browser --target=esnext --outfile=lib/client.js",
+    "build": "pnpm clean && pnpm build:js && node scripts/build-compat-dll.ts",
+    "build:release": "pnpm clean && pnpm build:js && node scripts/build-compat-dll.ts --release",
+    "prepack": "pnpm build:release",
     "test": "pnpm build && node --test test/*.test.ts",
-    "test:browser": "pnpm build && node --test test/client-browser.ts",
+    "test:browser": "pnpm build:js && node --test test/client-browser.ts",
     "test:windows": "node -e \"if (process.platform !== 'win32' || process.arch !== 'x64') throw new Error('Native Windows x64 Node is required.');\" && pnpm test",
     "test:release": "node --input-type=module -e \"import { installedDsh } from './scripts/installed-dsh.ts'; import { discoverGitInstallation } from './src/runtime/git-installation.ts'; installedDsh(); discoverGitInstallation(process.env.DSH_TEST_GIT_BASH);\" && pnpm check && pnpm lint && pnpm test:windows"
   },

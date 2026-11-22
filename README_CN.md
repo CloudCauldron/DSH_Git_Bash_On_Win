@@ -138,6 +138,10 @@ node '<已安装插件目录>/lib/purge-runtime-cache.js' '<DSH 主目录绝对�
 
 <span style="margin-left:2em;">&#8203;</span>请在 **Windows 原生 Git Bash** 中执行以下命令。构建通过 `@typescript/native`（TypeScript 7）编译 `src/` 至受跟踪的 `lib/`，`typescript`（TypeScript 6）仅用于 ESLint；修改 `src/` 后请运行 `pnpm build` 并一并提交产物。
 
+完整构建还会使用 x64 MSVC 和 Windows SDK 编译 `native/dsh-msys-compat.c`。`native/build.json` 记录发布工具版本、经审查的导入函数和获准的 DLL 哈希。工具发现使用 `vswhere`，优先选择固定工具集；开发时可通过 `DSH_MSVC_TOOLS_DIR`、`DSH_WINSDK_DIR` 和 `DSH_WINSDK_VERSION` 指定工具。开发构建验证 DLL 并报告实际工具版本及哈希；`pnpm build:release` 和 `pnpm pack` 还会强制校验发布记录。安装后的包不需要编译器。原生产物在[后端重构](docs/backend-20261122-design-decisions.md)期间独立测试，现有执行器尚未切换至它。
+
+`pnpm build:js` 和 `pnpm test:browser` 会保留此前完整构建的 DLL。请先运行 `pnpm build`，修改原生代码后也必须重新完整构建。
+
 ```bash
 pnpm install --ignore-scripts --frozen-lockfile
 pnpm check          # TypeScript 类型检查（src / scripts / test）

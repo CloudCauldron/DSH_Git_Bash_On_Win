@@ -138,6 +138,10 @@ After cleanup succeeds, restart DSH to rebuild on demand, or click **Save and li
 
 <span style="margin-left:2em;">&#8203;</span>Run the following commands in **native Windows Git Bash**. The build compiles `src/` into the tracked `lib/` directory via `@typescript/native` (TypeScript 7), while `typescript` (TypeScript 6) is used only for ESLint; after modifying `src/`, run `pnpm build` and commit the updated build artifacts alongside your changes.
 
+Full builds also compile `native/dsh-msys-compat.c` with x64 MSVC and the Windows SDK. `native/build.json` records the release tool versions, reviewed imports and approved DLL hash. Discovery uses `vswhere` and prefers the pinned toolset; development overrides are `DSH_MSVC_TOOLS_DIR`, `DSH_WINSDK_DIR` and `DSH_WINSDK_VERSION`. Development builds verify the DLL and report their actual tools/hash; `pnpm build:release` and `pnpm pack` additionally enforce the release pins. Installed packages need no compiler. The native artifact is independently tested during the [backend refactor](docs/backend-20261122-design-decisions.md); the shipping executor has not yet switched to it.
+
+`pnpm build:js` and `pnpm test:browser` preserve the DLL from a prior full build. Run `pnpm build` first, and again after any native edit.
+
 ```bash
 pnpm install --ignore-scripts --frozen-lockfile
 pnpm check          # TypeScript type-checking (src / scripts / test)

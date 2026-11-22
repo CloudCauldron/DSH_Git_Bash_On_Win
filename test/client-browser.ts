@@ -41,6 +41,9 @@ async function openPlugin(page: Page, url: string) {
 }
 
 await test('installed DSH presents link failures and conflicts in native dialogs and success in a native toast', { timeout: 300_000 }, async t => {
+  await access(new URL('../lib/dsh-msys-compat.dll', import.meta.url)).catch(cause => {
+    throw new Error('Missing compatibility DLL. Run pnpm build first.', { cause });
+  });
   const runtime = installedDsh();
   const spawn = await localSpawn(t);
   assert.ok(spawn);

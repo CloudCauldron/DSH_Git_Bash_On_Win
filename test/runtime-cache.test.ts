@@ -737,7 +737,18 @@ await test('both Bash entry points require ordinary etc, bin and the native wrap
   for (const dir of ['bin', 'usr/bin']) assert.deepEqual(discoverGitInstallation(join(usr, dir, 'bash.exe')), selection);
   unlinkEntry(f.parent, 'usr');
   await rename(f.source, usr);
+  const sibling = join(f.directory, selection.layout);
+  await writeFile(sibling, 'unrelated file outside the installation');
   for (const dir of ['bin', 'usr/bin']) assert.equal(discoverGitInstallation(join(usr, dir, 'bash.exe')).root, usr);
+  const close = NativeHold.prototype.close, fault = new Win32Error('CloseHandle', 6, sibling);
+  const mock = t.mock.method(NativeHold.prototype, 'close', function (this: NativeHold) {
+    close.call(this);
+    if (this.path === sibling) throw fault;
+  });
+  try { assert.throws(() => discoverGitInstallation(join(usr, 'bin/bash.exe')), error => error === fault); }
+  finally { mock.mock.restore(); }
+  await unlink(join(usr, 'usr/bin/bash.exe'));
+  assert.throws(() => discoverGitInstallation(join(usr, 'bin/bash.exe')), error => error instanceof Error && error.message.includes(sibling));
 });
 
 await test('copy refuses admitted reparses and a reserved shim name at any flat entry type', nativeOnly, async t => {

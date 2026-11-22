@@ -5,7 +5,7 @@ import { basename, dirname, isAbsolute, join, posix, resolve, toNamespacedPath }
 import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
 import {
   admitChildDirectory, admitDirectory, admitJunction, createDirectory, createHardlink, createJunction,
-  isMissing, openOrdinaryFile, ordinaryFileExists, overlaps, pathExists, pinDirectory, readFileBytes,
+  hasCloseFailure, isMissing, openOrdinaryFile, ordinaryFileExists, overlaps, pathExists, pinDirectory, readFileBytes,
   revalidateDirectory, sameIdentity, writeNewFile, type Directory, type FileIdentity,
 } from './ntfs-filesystem.ts';
 import { patchMsysDll } from './pe.ts';
@@ -58,14 +58,20 @@ export function discoverGitInstallation(setting?: string): GitInstallation {
     // A root (or its alias) can itself be named usr. Only the two supported entry paths can identify a root.
     const usrBin = /[\\/]usr[\\/]bin$/i;
     const roots = usrBin.test(parent) && usrBin.test(dirname(executable)) ? [dirname(nativeRoot), nativeRoot] : [nativeRoot];
+    let admissionError: unknown;
     for (const rootPath of roots) {
-      const root = admitDirectory(realpathSync(rootPath));
-      const layout = (['ucrt64', 'mingw64'] as const).find(name => hasSourceFile(root, `${name}/bin/git.exe`));
-      if (!layout) continue;
-      try { sourceJunctionTargets(root); }
-      catch (error) { if (isMissing(error)) continue; throw error; }
-      if (hasSourceFile(root, 'usr/bin/bash.exe') && hasSourceFile(root, 'usr/bin/msys-2.0.dll')) return { root: root.path, layout };
+      try {
+        const root = admitDirectory(realpathSync(rootPath));
+        const layout = (['ucrt64', 'mingw64'] as const).find(name => hasSourceFile(root, `${name}/bin/git.exe`));
+        if (!layout) continue;
+        sourceJunctionTargets(root);
+        if (hasSourceFile(root, 'usr/bin/bash.exe') && hasSourceFile(root, 'usr/bin/msys-2.0.dll')) return { root: root.path, layout };
+      } catch (error) {
+        if (hasCloseFailure(error)) throw error;
+        if (!isMissing(error)) admissionError ??= error;
+      }
     }
+    if (admissionError) throw admissionError;
   }
   throw new LocalizedError('error.gitNotFound', { bin: 'bin/bash.exe', usrBin: 'usr/bin/bash.exe' });
 }

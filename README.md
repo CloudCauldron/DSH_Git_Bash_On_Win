@@ -61,8 +61,6 @@ Bash quoting, pipes, redirection, command substitution and Git commands work muc
 
 **Third-party launchers.** In `read-only` and `workspace-write`, a native Windows program that launches Git Bash by its installed absolute path (for example, `C:\Program Files\Git\bin\bash.exe`) bypasses the plugin runtime and Bash fails to start. Configure the program to run `bash` or `sh` from its inherited PATH.
 
-**Occasional startup delays.** On the test machine, Bash sometimes paused for about half a second while Windows loaded its private MSYS DLL. In a later run with Microsoft Defender real-time protection on, all 72 test pipelines finished within one second. The tests did not establish that excluding the cache would fix a stall. Keep antivirus scanning enabled for `.dsh-git-bash-on-win` in your DSH home. This cache contains executables and DLLs.
-
 ## **5 - Requirements**
 
 - **DeepSeek Harness**: `0.2.2-rc.5` (`web` / `desktop` profiles and `dsh headless`)

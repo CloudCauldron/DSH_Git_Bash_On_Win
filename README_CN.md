@@ -60,8 +60,6 @@ Bash 的引号、管道、重定向、命令替换和 Git 命令沿用 Linux 上
 
 **第三方程序启动 Git Bash。** 在 `read-only` 和 `workspace-write` 模式下，原生 Windows 程序若通过安装目录的绝对路径（例如 `C:\Program Files\Git\bin\bash.exe`）启动 Git Bash，会绕过插件运行环境，导致 Bash 启动失败。请将该程序配置为通过继承的 PATH 调用 `bash` 或 `sh`。
 
-**偶发的启动延迟。** 在测试机上，Windows 加载运行环境中的 MSYS DLL 时，Bash 有时会停顿约半秒。后来在 Microsoft Defender 实时保护开启的情况下复测，72 次管道命令均在一秒内完成。测试未验证把缓存加入排除列表能否解决停顿。DSH 主目录中的 `.dsh-git-bash-on-win` 缓存存有可执行文件和 DLL，建议保持杀毒软件对该目录的扫描。
-
 ## **5 - 环境要求**
 
 - **DeepSeek Harness**：`0.2.2-rc.5`（`web` / `desktop` 配置与 `dsh headless`）

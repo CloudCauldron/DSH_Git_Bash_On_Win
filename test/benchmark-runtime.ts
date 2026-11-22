@@ -5,7 +5,6 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { test, type TestContext } from 'node:test';
 import { pathToFileURL } from 'node:url';
-import { createHash } from 'node:crypto';
 import type { SubprocessHandle, SubprocessSpawnSpec } from '@deepseek-ai/dsh-subprocess';
 import type { SandboxExecutionPolicy } from '@deepseek-ai/dsh-sandbox';
 import { installedDsh } from '../scripts/installed-dsh.ts';
@@ -21,8 +20,7 @@ function protection() {
 }
 
 async function coldCopy(t: TestContext) {
-  assert.ok(process.platform === 'win32' && process.arch === 'x64' && process.env.DSH_BENCH_COLD_ONLY === '1',
-    'Run with Windows x64 Node and DSH_BENCH_COLD_ONLY=1.');
+  assert.ok(process.platform === 'win32' && process.arch === 'x64', 'Run with Windows x64 Node.');
   const setting = process.env.DSH_TEST_GIT_BASH;
   const sourceBin = join(discoverGitInstallation(setting).root, 'usr/bin');
   const home = admitDirectory(mkdtempSync(join(tmpdir(), 'dsh-copy-bench-')));
@@ -51,11 +49,12 @@ async function coldCopy(t: TestContext) {
 
 if (process.env.DSH_BENCH_COLD_ONLY === '1') await test('cold copy provisioning on fresh NTFS generations', coldCopy);
 else await test('packed runtime and shipping revision on identical Git workloads', t => qualifyPackedProfile(t, import.meta.url, async profile => {
-  const repo = join(import.meta.dirname, '..'), staging = dirname(dirname(profile)), archive = process.argv[3]!;
+  const repo = join(import.meta.dirname, '..'), staging = dirname(dirname(profile));
   const f = await executionFixture(t);
   const old = await executionFixture(t);
   const { root, Executor } = await loadPackedExecutor(f.ctx, profile);
-  const runtime = await import(pathToFileURL(join(root, 'lib/runtime/runtime-cache.js')).href) as typeof import('../src/runtime/runtime-cache.ts');
+  const cacheModule = pathToFileURL(join(root, 'lib/runtime/runtime-cache.js')).href;
+  const runtime = await import(cacheModule) as typeof import('../src/runtime/runtime-cache.ts');
   const shipping = '33fa0a9039d193452ccab7eefc222144437f8aaa';
   const tree = join(staging, 'shipping'), snapshot = join(staging, 'shipping.tar');
   mkdirSync(tree);
@@ -75,7 +74,7 @@ else await test('packed runtime and shipping revision on identical Git workloads
   };
   const emit = (data: object) => console.log(JSON.stringify(data));
   const before = protection();
-  emit({ shipping, archiveSha256: createHash('sha256').update(readFileSync(archive)).digest('hex'), protection: before,
+  emit({ shipping, protection: before,
     node: process.version, dsh: dsh.version, git: execFileSync(join(f.source, f.installed.layout, 'bin/git.exe'), ['--version'], { encoding: 'utf8' }).trim() });
   const warm: number[] = [], cold: number[] = [], ready: number[] = [];
   const payload = () => readdirSync(join(f.cache, 'g')).map(id => {
@@ -87,9 +86,20 @@ else await test('packed runtime and shipping revision on identical Git workloads
     const start = performance.now(), pin = await runtime.prepareRuntime(f.request, t.signal);
     cold.push(performance.now() - start);
     await pin.release();
-    const restart = performance.now(), resumed = await runtime.prepareRuntime(f.request, t.signal);
-    warm.push(performance.now() - restart);
-    await resumed.release();
+    const selector = join(f.cache, 'current.json'), published = readFileSync(selector, 'utf8');
+    const elapsed = execFileSync(process.execPath, ['--input-type=module', '-e', `
+      const { prepareRuntime } = await import(process.argv[1]);
+      const request = JSON.parse(process.argv[2]);
+      const start = performance.now();
+      const pin = await prepareRuntime(request, new AbortController().signal);
+      const elapsed = performance.now() - start;
+      await pin.release();
+      console.log(elapsed);
+    `, cacheModule, JSON.stringify(f.request)], { encoding: 'utf8' });
+    assert.equal(readFileSync(selector, 'utf8'), published, 'fresh process must reuse the same generation');
+    const ms = Number(elapsed.trim());
+    assert.ok(Number.isFinite(ms) && ms > 0);
+    warm.push(ms);
     if (i < 4) await runtime.purgeRuntimeCache(f.cache);
   }
   const first = await runtime.prepareRuntime(f.request, t.signal);
@@ -162,6 +172,8 @@ else await test('packed runtime and shipping revision on identical Git workloads
           assert.ok(child, result.stderr.text);
           assert.equal(await child.waitForExit(AbortSignal.timeout(5000)), true);
           const ms = performance.now() - start;
+          assert.equal(result.timedOut, false);
+          assert.equal(result.aborted, false);
           assert.equal(result.exitCode, 0, result.stderr.text);
           assert.equal(result.stdout.text.trimEnd(), expected);
           if (round < 0) continue;

@@ -1,4 +1,4 @@
-import { mkdirSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import type GitBashExecutor from '../src/index.ts';
@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import koffi from 'koffi';
 import { closeHandleChecked, extendWin32ProcessBindings, type NativePtr } from '@deepseek-ai/dsh-win32-process';
 import { tmpdir } from 'node:os';
-import { basename, dirname, join, sep } from 'node:path';
+import { basename, dirname, join, resolve, sep } from 'node:path';
 import type { TestContext } from 'node:test';
 import type { Context } from '@deepseek-ai/cordis';
 import type { SandboxProvider, SandboxExecutionPolicy } from '@deepseek-ai/dsh-sandbox';
@@ -70,22 +70,24 @@ export async function installPackedProfile(home: string, name: 'web' | 'desktop'
   const require = createRequire(join(dir, 'package.json'));
   const root = dirname(realpathSync.native(require.resolve('dsh-git-bash-on-win/package.json')));
   assert.ok(root.startsWith(realpathSync.native(dir) + sep));
-  return { dir, root, remove: () => operation('remove', 'dsh-git-bash-on-win') };
+  return { dir, root, async remove() {
+    await operation('remove', 'dsh-git-bash-on-win');
+    assert.equal(lstatSync(join(dir, 'node_modules/dsh-git-bash-on-win'), { throwIfNoEntry: false }), undefined);
+  } };
 }
 
 export async function loadPackedExecutor(ctx: Context, dir: string) {
   const home = dirname(dirname(dir)), dsh = installedDsh(), require = createRequire(join(dir, 'package.json'));
   const boot = await dsh.load(dsh.cliRequire, '@deepseek-ai/dsh-app-boot') as {
-    loadProfileDirectory(app: string, dir: string, anchor: string, options: { userLayer: boolean }): object;
+    loadProfileDirectory(app: string, dir: string, anchor: string): { layers: { patches: object[] }[]; patches: object[] };
     createRuntimeResolution(options: object): Promise<object>;
     PluginPackages: new (ctx: Context, config: { resolution: object }) => object;
   };
-  const profile = boot.loadProfileDirectory('dsh', dir, dsh.manifest, { userLayer: false });
+  const profile = boot.loadProfileDirectory('dsh', dir, dsh.manifest);
   const resolution = await boot.createRuntimeResolution({ home, profile, installAnchor: dsh.manifest });
-  const peers = ctx.plugin(boot.PluginPackages, { resolution });
-  await peers;
+  await ctx.plugin(boot.PluginPackages, { resolution });
   const { default: Executor } = await import(pathToFileURL(require.resolve('dsh-git-bash-on-win/executor')).href) as { default: typeof GitBashExecutor };
-  return { Executor, require, root: dirname(require.resolve('dsh-git-bash-on-win/package.json')) };
+  return { Executor, require, profile, root: dirname(require.resolve('dsh-git-bash-on-win/package.json')) };
 }
 
 /** End the native module's process lifetime before removing its installed profile. */
@@ -97,9 +99,10 @@ export async function qualifyPackedProfile(t: TestContext, entry: string, run: (
   const profile = process.argv[2];
   if (profile) return run(profile);
   const home = await temporaryDirectory(t);
-  const archive = process.env.DSH_TEST_TARBALL ?? packRelease(join(import.meta.dirname, '..'), join(home, 'pack'));
+  const archive = process.env.DSH_TEST_TARBALL ? resolve(process.env.DSH_TEST_TARBALL) : packRelease(join(import.meta.dirname, '..'), join(home, 'pack'));
+  t.diagnostic('Tarball SHA-256 ' + createHash('sha256').update(readFileSync(archive)).digest('hex'));
   const installed = await installPackedProfile(home, 'web', archive);
-  try { runProfileHost(entry, installed.dir, archive); }
+  try { runProfileHost(entry, installed.dir); }
   finally { await installed.remove(); }
 }
 
@@ -362,24 +365,22 @@ export async function executionContext(home: string, workspace: string, profile:
   const { LocalSubprocessRuntime } = await runtime.load(runtime.baseRequire, '@deepseek-ai/dsh-subprocess-local') as { LocalSubprocessRuntime: new (ctx: Context) => Subprocess };
   const { LocalSandboxProvider } = await runtime.load(runtime.baseRequire, '@deepseek-ai/dsh-sandbox-local') as { LocalSandboxProvider: new (ctx: Context, config: object) => SandboxProvider };
   const ctx = new InstalledContext();
-  await ctx.plugin(LocalSubprocessRuntime);
-  await ctx.plugin(LocalSandboxProvider, {});
-  ctx.provide('profileContext', { dir: profile, home });
-  ctx.provide('sandboxPolicy', { defaultMode: 'read-only', resolve: () => ({ mode: 'read-only', workspaceRoot: workspace }) });
-  return ctx;
+  try {
+    await ctx.plugin(LocalSubprocessRuntime);
+    await ctx.plugin(LocalSandboxProvider, {});
+    ctx.provide('profileContext', { dir: profile, home });
+    ctx.provide('sandboxPolicy', { defaultMode: 'read-only', resolve: () => ({ mode: 'read-only', workspaceRoot: workspace }) });
+    return ctx;
+  } catch (error) { await ctx.fiber.dispose(); throw error; }
 }
 
-/** Real providers, owned Git bytes, and no personal Loader/profile state. */
-export async function executionFixture(t: TestContext) {
+/** Release qualification checks all owned Git files. The core suites sample the copied payload. */
+export async function ownedGitFixture(t: TestContext, integrityRoot: '.' | 'usr/bin') {
   const installed = discoverGitInstallation(process.env.DSH_TEST_GIT_BASH);
   const directory = await mkdtemp(join(tmpdir(), 'dsh-git-bash-execution-'));
   const source = join(directory, 'source'), workspace = join(directory, 'workspace 含空格'), cache = join(directory, '.dsh-git-bash-on-win');
-  const ctx = await executionContext(directory, workspace, directory);
-  const pins = new Set<GenerationPin>();
   let verifySource = async () => {};
   t.after(async () => {
-    await ctx.fiber.dispose();
-    for (const pin of pins) await pin.release();
     await purgeRuntimeCache(cache);
     try { await verifySource(); }
     finally { removeTree(admitDirectory(dirname(directory)), basename(directory)); }
@@ -388,15 +389,16 @@ export async function executionFixture(t: TestContext) {
   for (const name of ['bin', 'etc', 'usr', installed.layout]) {
     await cp(join(installed.root, name), join(source, name), { recursive: true });
   }
-  const files = (await readdir(join(source, 'usr/bin'), { withFileTypes: true })).filter(file => file.isFile()).map(file => 'usr/bin/' + file.name);
+  const base = join(source, integrityRoot);
   const snapshot = async () => {
-    const contents: Array<{ hash: string; links: number; attributes: number }> = [];
-    const bin = admitDirectory(join(source, 'usr/bin'));
+    const entries = await readdir(base, { recursive: integrityRoot === '.', withFileTypes: true });
+    const files = entries.filter(entry => entry.isFile()).map(entry => join(entry.parentPath, entry.name)).sort();
+    const contents: Array<{ file: string; hash: string; links: number; attributes: number }> = [];
     for (let offset = 0; offset < files.length; offset += 16) {
       contents.push(...await Promise.all(files.slice(offset, offset + 16).map(async file => {
-        using handle = openOrdinaryFile(bin, basename(file));
-        return { attributes: handle.information().attributes, hash: createHash('sha256').update(await readFile(join(source, file))).digest('hex'),
-          links: (await stat(join(source, file))).nlink };
+        using handle = openOrdinaryFile(admitDirectory(dirname(file)), basename(file));
+        return { file, attributes: handle.information().attributes, hash: createHash('sha256').update(await readFile(file)).digest('hex'),
+          links: (await stat(file)).nlink };
       })));
     }
     return { contents, acl: readAclRecords(source, true) };
@@ -406,9 +408,24 @@ export async function executionFixture(t: TestContext) {
     assert.deepEqual(await snapshot(), before, 'preparation and purge must preserve source link counts, contents, attributes and ACLs');
   };
   const request: RuntimePreparation = { cacheDirectory: cache, gitBashPath: join(source, 'usr/bin/bash.exe') };
-  return { ctx, directory, source, workspace, cache, installed, request,
-    async prepare() { const pin = await prepareRuntime(request, new AbortController().signal); pins.add(pin); return pin; },
-  };
+  return { directory, source, workspace, cache, installed, request };
+}
+
+export async function executionFixture(t: TestContext) {
+  const pins = new Set<GenerationPin>();
+  let ctx: Context | null = null;
+  // The host and pins must close before the owned Git fixture's purge hook.
+  t.after(async () => {
+    await ctx?.fiber.dispose();
+    for (const pin of pins) await pin.release();
+  });
+  const f = await ownedGitFixture(t, 'usr/bin');
+  ctx = await executionContext(f.directory, f.workspace, f.directory);
+  return { ...f, ctx, async prepare() {
+    const pin = await prepareRuntime(f.request, t.signal);
+    pins.add(pin);
+    return pin;
+  } };
 }
 
 /** Exercise the shallow copy layout through the installed DSH providers. */

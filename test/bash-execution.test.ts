@@ -65,7 +65,7 @@ async function executorFixture(t: TestContext) {
     override commit() {} // No settings file or personal profile.
   }
   await ctx.plugin(FixtureLoader);
-  const options = { id: 'phase4-executor', name: 'fixture-executor', config: { gitBashPath: fixture.request.gitBashPath } };
+  const options = { id: 'git-bash-executor', name: 'fixture-executor', config: { gitBashPath: fixture.request.gitBashPath } };
   await ctx.loader.root.update([options]);
   await ctx.loader.await();
   const executor = ctx.shell as GitBashExecutor;

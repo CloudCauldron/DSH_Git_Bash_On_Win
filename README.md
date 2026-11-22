@@ -59,7 +59,7 @@ Bash quoting, pipes, redirection, command substitution and Git commands work muc
 | Native commands | Native PowerShell pipelines into Git tools worked in all three modes. Node piped child processes reported `EPERM` in the restricted modes. A quoted Windows extended-length executable path inside Bash failed in all three. |
 | Packaged tools and process lifetime | PowerShell and WinGet matched stock DSH package identity and native exit status, including WinGet’s restricted-mode error `0x8A150001`. Bash exposes the low byte of a native exit code. GDB ran an owned target in all three modes. Other GUI aliases and debuggers need individual qualification. DSH waits for its managed process range. A native descendant of a packaged application can outlive that wait. |
 
-**Third-party launchers.** In `read-only` and `workspace-write`, a native Windows program that launches Git Bash by its installed absolute path (for example, `C:\Program Files\Git\bin\bash.exe`) bypasses the plugin runtime and Bash fails to start. Configure the program to run `bash` or `sh` from its inherited PATH.
+**Third-party launchers.** In `read-only` and `workspace-write`, a native Windows program that launches Git Bash by its installed absolute path (for example, `C:\Program Files\Git\bin\bash.exe` or `C:\Program Files\Git\usr\bin\bash.exe`) bypasses the plugin runtime and Bash fails to start. Configure the program to run `bash` or `sh` from its inherited PATH.
 
 ## **5 - Requirements**
 

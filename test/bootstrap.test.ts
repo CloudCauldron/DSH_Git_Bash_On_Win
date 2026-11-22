@@ -74,8 +74,8 @@ await test('bundle adaptation preserves Loader entry/config identity and restore
     ['dsh-git-bash-on-win/tool', BashTool],
     ['dsh-git-bash-on-win/preset', GitBashPreset],
   ]);
-  // Real Loader entries/lifecycles, with in-memory module resolution and no
-  // persistence provider. Runtime services are deliberately absent in Phase 1.
+  // The Loader resolves modules in memory and records commits. Omitting runtime services
+  // lets the test exercise namespace replacement and restoration without starting providers.
   class FixtureLoader extends Loader {
     readonly changes: EntryChange[] = [];
     override import(name: string): unknown { return replacements.get(name) ?? original; }

@@ -58,7 +58,7 @@ Bash 的引号、管道、重定向、命令替换和 Git 命令沿用 Linux 上
 | 原生程序 | PowerShell 通过管道调用 Git 工具在三种模式中均成功。受限模式下，Node 通过管道启动子进程返回 `EPERM`。在 Bash 命令中使用带引号的 Windows 扩展长度可执行文件路径，三种模式均失败。 |
 | 打包应用与进程生命周期 | PowerShell 和 WinGet 的包身份、原生退出码与 DSH 默认后端一致，包括 WinGet 在受限模式下的错误 `0x8A150001`。Bash 只返回原生退出码的低八位。GDB 在三种模式下均能调试测试程序。其他 GUI 别名和调试器仍需单独验证。DSH 等待其管理的进程范围结束，打包应用启动的原生后代可能在此之后继续运行。 |
 
-**第三方程序启动 Git Bash。** 在 `read-only` 和 `workspace-write` 模式下，原生 Windows 程序若通过安装目录的绝对路径（例如 `C:\Program Files\Git\bin\bash.exe`）启动 Git Bash，会绕过插件运行环境，导致 Bash 启动失败。请将该程序配置为通过继承的 PATH 调用 `bash` 或 `sh`。
+**第三方程序启动 Git Bash。** 在 `read-only` 和 `workspace-write` 模式下，原生 Windows 程序若通过安装目录的绝对路径（例如 `C:\Program Files\Git\bin\bash.exe` 或 `C:\Program Files\Git\usr\bin\bash.exe`）启动 Git Bash，会绕过插件运行环境，导致 Bash 启动失败。请将该程序配置为通过继承的 PATH 调用 `bash` 或 `sh`。
 
 ## **5 - 环境要求**
 

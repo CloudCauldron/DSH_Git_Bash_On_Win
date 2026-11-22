@@ -18,29 +18,37 @@ import {
   hasCloseFailure, isBusy, openOrdinaryFile, pathExists, pinDirectory, readFileBytes, removeTree, unlinkEntry, writeNewFile,
 } from '../src/runtime/ntfs-filesystem.ts';
 
-await test('F1 refuses markerless and unrecognized roots before mutation or purge', nativeOnly, async t => {
+await test('markerless directories are refused before preparation or purge', nativeOnly, async t => {
   const fixture = await runtimeFixture(t);
   await mkdir(fixture.cache);
-  await writeFile(join(fixture.cache, 'sentinel'), 'retain');
-  await assert.rejects(fixture.prepare());
-  await assert.rejects(purgeRuntimeCache(fixture.cache));
-  assert.deepEqual(readdirSync(fixture.cache), ['sentinel']);
-  await writeFile(join(fixture.cache, '.owner.json'), JSON.stringify({ schemaVersion: 1 }));
-  await assert.rejects(fixture.prepare());
-  await assert.rejects(purgeRuntimeCache(fixture.cache));
-  assert.equal(await readFile(join(fixture.cache, 'sentinel'), 'utf8'), 'retain');
-  // Explicitly owned test scratch, never adopted by production cache admission.
-  removeTree(admitDirectory(fixture.directory), 'cache');
+  try {
+    await writeFile(join(fixture.cache, 'sentinel'), 'retain');
+    const missingMarker = { api: 'CreateFileW', win32Code: 2, message: /\.owner\.json$/ };
+    await assert.rejects(fixture.prepare(), missingMarker);
+    await assert.rejects(purgeRuntimeCache(fixture.cache), missingMarker);
+    assert.deepEqual(readdirSync(fixture.cache), ['sentinel']);
+  } finally { removeTree(admitDirectory(fixture.directory), 'cache'); }
 });
 
 await test('root identity, source overlap and reparse ancestors are admission errors', nativeOnly, async t => {
   const fixture = await runtimeFixture(t), pin = await fixture.prepare();
   await pin.release();
   const markerPath = join(fixture.cache, '.owner.json'), marker = await readFile(markerPath, 'utf8');
-  await writeFile(markerPath, JSON.stringify({ ...JSON.parse(marker) as object, fileId: '0' }));
-  await assert.rejects(fixture.prepare(), /ownership/);
-  await assert.rejects(purgeRuntimeCache(fixture.cache), /ownership/);
-  await writeFile(markerPath, marker);
+  const saved = JSON.parse(marker);
+  assert.equal(saved.schemaVersion, 1);
+  assert.equal(saved.owner, 'dsh-git-bash-on-win/runtime-cache');
+  assert.equal((await fixture.current()).schemaVersion, 1);
+  try {
+    for (const [changed, expected] of [
+      [{ schemaVersion: 99 }, /schemaVersion expected 1 but got 99/],
+      [{ owner: 'foreign' }, /owner expected .* but got foreign/],
+      [{ fileId: '0' }, /ownership/],
+    ] as const) {
+      await writeFile(markerPath, JSON.stringify({ ...saved, ...changed }));
+      await assert.rejects(fixture.prepare(), expected);
+      await assert.rejects(purgeRuntimeCache(fixture.cache), expected);
+    }
+  } finally { await writeFile(markerPath, marker); }
   await assert.rejects(prepareRuntime({ ...fixture.request, cacheDirectory: join(fixture.source, 'cache') }, new AbortController().signal), /overlap/);
   assert.equal(pathExists(join(fixture.source, 'cache')), false);
   const alias = join(fixture.directory, 'alias');
@@ -64,7 +72,8 @@ await test('cancelling a contended writer preserves the reason used to retire sh
   const fixture = await runtimeFixture(t), controller = new AbortController();
   const owner = await acquireWriterLock(fixture.cache, controller.signal);
   try {
-    await assert.rejects(purgeRuntimeCache(fixture.cache));
+    await assert.rejects(purgeRuntimeCache(fixture.cache), error => error instanceof Win32Error
+      && error.api === 'CreateFileW' && [80, 183].includes(error.win32Code) && error.message.endsWith(fixture.cache + '.writer-lock'));
     assert.equal(pathExists(fixture.cache), false);
     const reason = new Error('selection superseded');
     const waiting = acquireWriterLock(fixture.cache, controller.signal);
@@ -285,7 +294,7 @@ await test('concurrent preparations recheck under the writer lock and own indepe
   const [first, second] = await Promise.all([fixture.prepare(), fixture.prepare()]);
   assert.equal(readdirSync(join(fixture.cache, 'g')).length, 1);
   await first.release();
-  await assert.rejects(purgeRuntimeCache(fixture.cache));
+  await assert.rejects(purgeRuntimeCache(fixture.cache), { api: 'CreateFileW', win32Code: 32 });
   await second.release();
   const id = (await fixture.current()).generationId;
   const alias = await prepareRuntime({ ...fixture.request, gitBashPath: fixture.request.gitBashPath!.toUpperCase() }, new AbortController().signal);
@@ -386,6 +395,38 @@ await test('safe malformed current rebuilds; extra fields are ignored; unsafe co
   await unlink(join(fixture.cache, 'current.json'));
   await mkdir(join(fixture.cache, 'current.json'));
   await assert.rejects(fixture.prepare(), /ordinary file/);
+});
+
+await test('a malformed package digest invalidates the selector before opening its generation', nativeOnly, async t => {
+  const f = await runtimeFixture(t);
+  await writeFile(join(f.source, 'etc/package-versions.txt'), 'packages');
+  await (await f.prepare()).release();
+  const before = await f.current(), generation = join(f.cache, 'g', before.generationId);
+  assert.match(before.sourceFreshness.packageVersionsSha256!, /^[a-f0-9]{64}$/);
+  await writeFile(join(f.cache, 'current.json'), JSON.stringify({ ...before,
+    sourceFreshness: { ...before.sourceFreshness, packageVersionsSha256: [before.sourceFreshness.packageVersionsSha256] } }));
+  const canonical = NativeHold.prototype.canonicalPath;
+  t.mock.method(NativeHold.prototype, 'canonicalPath', function (this: NativeHold) {
+    if (this.path === generation) assert.ok(pathExists(f.cache + '.writer-lock'), 'a malformed selector must not be pinned for warm use');
+    return canonical.call(this);
+  });
+  await (await f.prepare()).release();
+  assert.notEqual((await f.current()).generationId, before.generationId);
+});
+
+await test('an unsupported MSYS image fails before copying payloads and preserves current', nativeOnly, async t => {
+  const f = await runtimeFixture(t);
+  await (await f.prepare()).release();
+  const before = await f.current();
+  await writeFile(join(f.source, 'usr/bin/msys-2.0.dll'), 'invalid PE');
+  const writes = t.mock.method(fs, 'writeFileSync');
+  syncBuiltinESMExports();
+  try {
+    await assert.rejects(f.prepare(true), /Unsupported PE image/);
+    assert.equal(writes.mock.callCount(), 0);
+  } finally { writes.mock.restore(); syncBuiltinESMExports(); }
+  assert.deepEqual(await f.current(), before);
+  assert.deepEqual(readdirSync(join(f.cache, 'g')), [before.generationId]);
 });
 
 await test('a redirected dangling internal junction is an error, not a cold cache miss', nativeOnly, async t => {

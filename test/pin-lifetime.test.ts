@@ -183,7 +183,7 @@ await test('interrupted purge unpublishes before payload removal and remains ret
   const record = await fixture.current(), generation = join(fixture.cache, 'g', record.generationId);
   // A reader denying delete on a non-anchor payload obstructs ordinary unlink.
   const blocker = blockFile(join(generation, 'r/usr/bin/sh.exe'));
-  try { await assert.rejects(purgeRuntimeCache(fixture.cache)); }
+  try { await assert.rejects(purgeRuntimeCache(fixture.cache), { api: 'CreateFileW', win32Code: 32 }); }
   finally { blocker.close(); }
   assert.equal(pathExists(join(fixture.cache, 'current.json')), false);
   assert.ok(pathExists(join(fixture.cache, '.owner.json')));

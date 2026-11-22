@@ -110,7 +110,10 @@ function junctionDirectories(source: Directory, destination: Directory, handled?
     if (!handled && name === 'dsh-msys-compat.dll') throw new LocalizedError('error.unsupportedRuntimeEntry', { path: join(source.path, entry.name) });
     if (entry.isDirectory()) createJunction(destination, entry.name, admitChildDirectory(source, entry.name));
     else if (entry.isFile()) {
-      if (!handled) files.push(entry.name);
+      if (handled) continue;
+      // Validate and write the private MSYS image before copying other payloads.
+      if (name === 'msys-2.0.dll') files.unshift(entry.name);
+      else files.push(entry.name);
     } else throw new LocalizedError('error.unsupportedRuntimeEntry', { path: join(source.path, entry.name) });
   }
   return files;

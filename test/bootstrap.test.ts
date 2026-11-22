@@ -20,7 +20,7 @@ import * as Adapter from '../src/adapter.ts';
 import { readDictionaries } from '../src/locale/catalogs.ts';
 import GitBashPreset from '../src/preset.ts';
 import * as BashTool from '../src/tool.ts';
-import { findInstalledDshManifest, installedDsh, SUPPORTED_DSH } from '../scripts/installed-dsh.ts';
+import { installedDsh, SUPPORTED_DSH } from '../scripts/installed-dsh.ts';
 import { profileEnvironment, localSpawn, runFixtureCommand, success, runtimeFixture, temporaryDirectory, readAclRecords } from './fixtures.ts';
 import { pathExists } from '../src/runtime/ntfs-filesystem.ts';
 
@@ -229,13 +229,8 @@ await test('public pinned dependencies resolve and atomic-write is usable', asyn
   assert.equal(readFileSync(join(directory, 'metadata.json'), 'utf8'), '{}\n');
 });
 
-await test('installed CLI resolution needs no personal profile', { skip: !nativeWindows && 'Requires native Windows x64.' }, async t => {
-  const manifest = findInstalledDshManifest();
-  if (manifest === undefined) {
-    t.skip('No installed DSH found; set DSH_PACKAGE_JSON to run this check.');
-    return;
-  }
-  const runtime = installedDsh(manifest);
+await test('installed CLI resolution needs no personal profile', { skip: !nativeWindows && 'Requires native Windows x64.' }, async () => {
+  const runtime = installedDsh();
   assert.equal(runtime.version, SUPPORTED_DSH);
   const app = await runtime.load(runtime.cliRequire, '@deepseek-ai/dsh-app-boot') as { resolveProfileDir: unknown };
   const manager = await runtime.load(runtime.cliRequire, '@deepseek-ai/dsh-plugin-manager/operations') as { runPluginCommand: unknown };
@@ -341,7 +336,7 @@ await test('offline tooling rejects unowned directories and unsupported package 
 await test('checkout install, offline recovery and removal preserve shared Shell settings and source files', {
   skip: !nativeWindows && 'Requires native Windows x64, pinned DSH and pnpm.',
 }, async t => {
-  const spawn = await localSpawn(t); if (!spawn) return;
+  const spawn = await localSpawn(t);
   const runtime = installedDsh(), fixture = await runtimeFixture(t, 'ucrt64', join('home', '.dsh-git-bash-on-win'));
   const pnpm = realpathSync(process.env.npm_execpath?.endsWith('.exe') ? process.env.npm_execpath
     : execFileSync('where.exe', ['pnpm.exe'], { encoding: 'utf8' }).trim().split(/\r?\n/)[0]!);

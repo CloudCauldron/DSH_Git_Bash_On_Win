@@ -27,8 +27,9 @@ export interface RuntimeUse {
   bindView(scope: { prefix: string; workspace: string; sessionId?: string }): string;
   release(): Promise<void>;
 }
+const owner = 'dsh-git-bash-on-win/runtime-cache';
 interface CurrentRuntime {
-  readonly schemaVersion: 2;
+  readonly schemaVersion: 1;
   readonly patchAbi: 1;
   readonly generationId: string;
   readonly sourceRoot: string;
@@ -49,19 +50,20 @@ const pathSchema = z.string().min(3).max(32767).required();
 const integerString = z.string().pattern(/^\d{1,20}$/).required();
 const identityFields = { volumeSerial: integerString, fileId: integerString };
 const markerSchema = z.object({
-  schemaVersion: z.const(2).required(), owner: z.const('dsh-git-bash-on-win').required(),
+  schemaVersion: z.const(1).required(), owner: z.const(owner).required(),
   rootPath: pathSchema, ...identityFields,
 }).required();
 const stamp = z.object({ ...identityFields, size: integerString, lastWriteTime: integerString }).required();
+const sha256 = z.string().pattern(/^[a-f0-9]{64}$/);
 const currentSchema = z.object({
-  schemaVersion: z.const(2).required(), patchAbi: z.const(1).required(), generationId, sourceRoot: pathSchema,
+  schemaVersion: z.const(1).required(), patchAbi: z.const(1).required(), generationId, sourceRoot: pathSchema,
   sourceIdentity: z.object(identityFields).required(), layout: z.union([z.const('ucrt64'), z.const('mingw64')]).required(),
-  sourceFreshness: z.object({ git: stamp, msys: stamp, packageVersionsSha256: z.any() }).required(),
-  patchedMsysSha256: z.string().pattern(/^[a-f0-9]{64}$/).required(),
+  sourceFreshness: z.object({ git: stamp, msys: stamp, packageVersionsSha256: sha256 }).required(),
+  patchedMsysSha256: sha256.required(),
 }).required();
 
 function writeOwnerMarker(root: Directory): void {
-  writeNewMetadata(root, markerName, { schemaVersion: 2, owner: 'dsh-git-bash-on-win',
+  writeNewMetadata(root, markerName, { schemaVersion: 1, owner,
     rootPath: root.path, volumeSerial: root.volumeSerial, fileId: root.fileId });
 }
 
@@ -98,7 +100,7 @@ function currentRecord(root: Directory): CurrentRuntime | undefined {
   }
   try {
     const record = (currentSchema as unknown as (value: unknown) => CurrentRuntime)(raw);
-    if (record.sourceFreshness.packageVersionsSha256 !== null && !/^[a-f0-9]{64}$/.test(record.sourceFreshness.packageVersionsSha256)) return undefined;
+    if (record.sourceFreshness.packageVersionsSha256 === undefined) return undefined;
     if (absolutePath(record.sourceRoot) !== record.sourceRoot) return undefined;
     return record;
   } catch { return undefined; }
@@ -192,7 +194,7 @@ async function buildFresh(root: Directory, source: Directory, installation: GitI
       || !isDeepStrictEqual(readSourceFreshness(source, layout), sourceFreshness)) throw new LocalizedError('error.sourceChanged');
     revalidateRoot(root);
     const { volumeSerial, fileId } = source;
-    const record: CurrentRuntime = { schemaVersion: 2, patchAbi: 1, generationId: id, sourceRoot: source.path,
+    const record: CurrentRuntime = { schemaVersion: 1, patchAbi: 1, generationId: id, sourceRoot: source.path,
       sourceIdentity: { volumeSerial, fileId }, layout, sourceFreshness, patchedMsysSha256 };
     hold = pinDirectory(generation);
     signal.throwIfAborted();

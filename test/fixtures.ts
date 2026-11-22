@@ -10,7 +10,7 @@ import type { TestContext } from 'node:test';
 import type { Context } from '@deepseek-ai/cordis';
 import type { SandboxProvider, SandboxExecutionPolicy } from '@deepseek-ai/dsh-sandbox';
 import type Subprocess from '@deepseek-ai/dsh-subprocess';
-import { findInstalledDshManifest, installedDsh } from '../scripts/installed-dsh.ts';
+import { installedDsh } from '../scripts/installed-dsh.ts';
 import { admitDirectory, createDirectory, removeTree } from '../src/runtime/ntfs-filesystem.ts';
 import { bundledShimUrl, prepareRuntime, purgeRuntimeCache, type GenerationPin, type RuntimePreparation } from '../src/runtime/runtime-cache.ts';
 import { buildCopyLayout, buildRuntimeEnvironment, discoverGitInstallation, type SourceFreshness, type GitLayout } from '../src/runtime/git-installation.ts';
@@ -226,7 +226,7 @@ export async function runtimeFixture(t: TestContext, layout: GitLayout = 'ucrt64
     },
     async current() {
       return JSON.parse(await readFile(join(cache, 'current.json'), 'utf8')) as {
-        schemaVersion: 2; patchAbi: 1; generationId: string; sourceRoot: string; layout: GitLayout; sourceFreshness: SourceFreshness; patchedMsysSha256: string;
+        schemaVersion: 1; patchAbi: 1; generationId: string; sourceRoot: string; layout: GitLayout; sourceFreshness: SourceFreshness; patchedMsysSha256: string;
       };
     },
   };
@@ -265,10 +265,8 @@ export function blockFile(path: string) {
 }
 
 /** An isolated installed provider, with no Loader, settings or personal profile. */
-export async function localSpawn(t: TestContext): Promise<Subprocess['spawn'] | undefined> {
-  const manifest = findInstalledDshManifest();
-  if (!manifest) { t.skip('No installed DSH; set DSH_PACKAGE_JSON for native subprocess checks.'); return; }
-  const runtime = installedDsh(manifest);
+export async function localSpawn(t: TestContext): Promise<Subprocess['spawn']> {
+  const runtime = installedDsh();
   const { Context } = await runtime.load(runtime.baseRequire, '@deepseek-ai/cordis') as typeof import('@deepseek-ai/cordis');
   const { LocalSubprocessRuntime } = await runtime.load(runtime.baseRequire, '@deepseek-ai/dsh-subprocess-local') as {
     LocalSubprocessRuntime: new (ctx: Context) => Subprocess;

@@ -22,7 +22,7 @@ interface Attempt {
   controller: AbortController;
   ready: Promise<void>;
 }
-interface Command { child?: SubprocessHandle; release(): Promise<void> }
+interface Command { stop?(): void; release(): Promise<void> }
 
 /** Cancel a caller's wait without cancelling the shared preparation. */
 async function waitForReady(attempt: Attempt, signal: AbortSignal): Promise<void> {
@@ -192,12 +192,23 @@ export default class GitBashExecutor extends SandboxBashExecutor {
       this.observeSelection();
       if (this.ready?.pin !== pin) throw new LocalizedError('error.changedDuringConfinement');
       const env = buildRuntimeEnvironment(view, use!.sourceRoot, use!.layout, spawn.env ?? {});
-      const child = command.child = this.ctx.subprocess.spawn({ ...spawn, env });
-      const done = this.track(child.done.finally(async () => {
-        try { if (!await child.waitForExit()) throw new LocalizedError('error.commandRangeUnconfirmed'); }
-        catch (error) { this.cleanupErrors.push(error); throw error; }
+      const child = this.ctx.subprocess.spawn({ ...spawn, env });
+      let unconfirmed: LocalizedError | undefined;
+      const settle = async () => {
+        try {
+          if (!await child.waitForExit()) throw unconfirmed ??= new LocalizedError('error.commandRangeUnconfirmed');
+        } catch (error) {
+          if (!this.cleanupErrors.includes(error)) this.cleanupErrors.push(error);
+          throw error;
+        }
         await command.release();
-      }));
+      };
+      const done = this.track(child.done.finally(settle));
+      command.stop = () => {
+        if (release) return;
+        try { child.terminate(); } catch (error) { this.cleanupErrors.push(error); }
+        if (!this.work.has(done)) void this.track(settle());
+      };
       return { ...child, done };
     });
     const prepare = async (signal: AbortSignal) => {
@@ -243,7 +254,7 @@ export default class GitBashExecutor extends SandboxBashExecutor {
     };
     return this.track(super.executeArgv.call(receiver, spec, signal => preparation = this.track(prepare(signal)), onStarted)
       .finally(() => {
-        if (command.child) return;
+        if (command.stop) return;
         if (preparation && this.work.has(preparation)) {
           // DSH has already stopped waiting. Keep the use until our abandoned preparation settles.
           void this.track(preparation.then(command.release, command.release));
@@ -257,17 +268,7 @@ export default class GitBashExecutor extends SandboxBashExecutor {
     this.stopping.abort(new LocalizedError('error.providerStopping'));
     this.retireAttempt();
     if (this.ready) { void this.ownCleanup(this.ready.pin.release()); this.ready = undefined; }
-    for (const command of this.commands) {
-      const child = command.child;
-      if (!child) continue;
-      try { child.terminate(); } catch (error) { this.cleanupErrors.push(error); }
-      void this.track((async () => {
-        try {
-          if (!await child.waitForExit()) throw new LocalizedError('error.commandRangeUnconfirmed');
-        } catch (error) { if (!this.cleanupErrors.includes(error)) this.cleanupErrors.push(error); return; }
-        await command.release();
-      })());
-    }
+    for (const command of this.commands) command.stop?.();
     while (this.work.size || this.cleanup.size) await Promise.allSettled([...this.work, ...this.cleanup]);
     if (this.cleanupErrors.length) throw new LocalizedAggregateError(this.cleanupErrors, 'error.providerCleanupFailed');
   }

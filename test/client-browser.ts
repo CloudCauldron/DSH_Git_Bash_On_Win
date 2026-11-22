@@ -40,7 +40,6 @@ await test('installed DSH presents rebuild failures and conflicts in native dial
   });
   const runtime = installedDsh();
   const spawn = await localSpawn(t);
-  assert.ok(spawn);
   const fixture = await runtimeFixture(t, 'ucrt64', join('home', '.dsh-git-bash-on-win'));
   const valid = fixture.request.gitBashPath!, originalLinks = (await stat(valid)).nlink;
   const home = join(fixture.directory, 'home'), profile = join(home, 'profiles/web');

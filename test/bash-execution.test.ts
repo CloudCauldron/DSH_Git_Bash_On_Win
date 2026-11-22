@@ -413,30 +413,43 @@ await test('target completion retains uses and disposal until DSH confirms the c
   assert.equal(pathExists(f.cache), false);
 });
 
-await test('range observation failure survives cancellation and retains the last native pin', nativeOnly, async t => {
-  const f = await executorFixture(t), controller = new AbortController();
-  const failure = new Error('fixture command range cannot be observed');
-  const holds = new Set<NativeHold>(), information = NativeHold.prototype.information;
-  const capture = t.mock.method(NativeHold.prototype, 'information', function (this: NativeHold) {
-    if (dirname(this.path) === join(f.cache, 'g')) holds.add(this);
-    return information.call(this);
-  });
-  const logged: unknown[][] = [];
-  const log = t.mock.method(f.providerContext.logger, 'error', (...args: unknown[]) => { logged.push(args); });
-  f.controls.range = async () => { throw failure; };
-  try {
-    const execution = await f.run({ signal: controller.signal });
-    controller.abort(new Error('caller cancellation'));
-    assert.equal((await execution.result()).aborted, true);
-    await f.dispose();
-    assert.ok(logged.flat().some(value => value instanceof AggregateError && value.errors.includes(failure)));
-    await assert.rejects(purgeRuntimeCache(f.cache), isBusy);
-    assert.ok(pathExists(invocation(f.spawned[0]!.spec).view));
-  } finally {
-    capture.mock.restore(); log.mock.restore();
-    // Simulate the final host-process teardown only AFTER asserting retention.
-    // A fake observation failure must not strand real fixture handles.
-    for (const hold of holds) hold.close();
+await test('unconfirmed range waits retain the pin and record one diagnostic', nativeOnly, async t => {
+  for (const disposeFirst of [false, true]) for (const reject of [true, false]) {
+    await t.test((disposeFirst ? 'disposal during execution' : 'disposal after failed wait') + (reject ? ', rejection' : ', false'), async t => {
+      const f = await executorFixture(t), controller = new AbortController();
+      const failure = new Error('fixture command range cannot be observed');
+      const holds = new Set<NativeHold>(), information = NativeHold.prototype.information;
+      const capture = t.mock.method(NativeHold.prototype, 'information', function (this: NativeHold) {
+        if (dirname(this.path) === join(f.cache, 'g')) holds.add(this);
+        return information.call(this);
+      });
+      const logged: unknown[][] = [];
+      const log = t.mock.method(f.providerContext.logger, 'error', (...args: unknown[]) => { logged.push(args); });
+      let waits = 0;
+      f.controls.range = async () => { waits++; if (reject) throw failure; return false; };
+      try {
+        const execution = await f.run({ signal: controller.signal });
+        if (!disposeFirst) {
+          controller.abort(new Error('caller cancellation'));
+          assert.equal((await execution.result()).aborted, true);
+        }
+        await f.dispose();
+        await execution.done;
+        assert.equal(waits, disposeFirst ? 1 : 2);
+        const errors = logged.flat().filter(value => value instanceof AggregateError);
+        assert.equal(errors.length, 1);
+        assert.equal(errors[0]!.errors.length, 1);
+        if (reject) assert.equal(errors[0]!.errors[0], failure);
+        else assert.match(errors[0]!.errors[0].message, /settlement was not confirmed/);
+        await assert.rejects(purgeRuntimeCache(f.cache), isBusy);
+        assert.ok(pathExists(invocation(f.spawned[0]!.spec).view));
+      } finally {
+        capture.mock.restore(); log.mock.restore();
+        // Simulate the final host-process teardown only AFTER asserting retention.
+        // A fake observation failure must not strand real fixture handles.
+        for (const hold of holds) hold.close();
+      }
+    });
   }
 });
 
@@ -455,6 +468,15 @@ await test('final environment uses DSH enumeration order, preserves tombstones a
   for (const name of ['TMP', 'KEEP']) assert.ok(Object.hasOwn(env, name) && env[name] === undefined);
   assert.ok(!Object.hasOwn(env, 'Path') && !Object.hasOwn(env, 'GIt_ExeC_PAth'));
   f.spawned[0]!.finish(); await run.done;
+  for (const request of [
+    { env: { Path: undefined } },
+    { env: { Path: 'X:/caller' }, dshEnv: { PATH: undefined } },
+  ]) {
+    const ex = await f.run(request as unknown as Partial<ShellExecRequest>);
+    const { spec, finish } = f.spawned.at(-1)!, { view } = invocation(spec);
+    assert.equal(spec.env!.PATH, [join(view, 'ucrt64/bin'), join(view, 'usr/bin')].join(';'));
+    finish(); await ex.done;
+  }
 });
 
 await test('native canonical workspace admission rejects overlap and changed runner arguments before spawn', nativeOnly, async t => {
@@ -611,8 +633,12 @@ await test('a rejected child remains owned after Shell reports killed and an unc
   f.controls.range = async () => ++waits > 1;
   const ex = await f.run(); await assert.rejects(ex.result(), /settlement/);
   assert.equal(ex.status, 'killed');
-  t.mock.method(f.providerContext.logger, 'error', () => {});
+  const logged: unknown[][] = [];
+  t.mock.method(f.providerContext.logger, 'error', (...args: unknown[]) => { logged.push(args); });
   await f.dispose(); assert.equal(f.controls.terminations, 1); assert.equal(waits, 2);
+  const errors = logged.flat().filter(value => value instanceof AggregateError);
+  assert.equal(errors.length, 1); assert.equal(errors[0]!.errors.length, 1);
+  assert.match(errors[0]!.errors[0].message, /settlement was not confirmed/);
   await purgeRuntimeCache(f.cache);
 });
 
@@ -757,9 +783,9 @@ await test('native DSH Bash execution across all modes', nativeOnly, async t => 
       const object = '\\BaseNamedObjects\\' + ns[1] + '\\cygpid.' + pid[1];
       const probe = 'import {sectionAccess} from ' + JSON.stringify(new URL('./fixtures.ts', import.meta.url).href)
         + '; const name=' + JSON.stringify(object) + '; console.log(JSON.stringify([sectionAccess(name,false),sectionAccess(name,true)]));';
+      const callerScript = join(f.workspace, 'section-access.mjs');
+      await fsp.writeFile(callerScript, probe);
       for (const [caller, sessionId, write] of [[mode, session, true], [mode, 'peer', false], ['read-only', 'ro', false], ['danger-full-access', 'fa', true]] as const) {
-        const callerScript = join(f.workspace, 'section-access.mjs');
-        await fsp.writeFile(callerScript, probe);
         const access = await run(caller, 'node.exe ' + bashPath(callerScript), sessionId);
         assert.equal(access.exitCode, 0, access.stderr.text);
         assert.deepEqual(JSON.parse(access.stdout.text), [0, write ? 0 : 0xc0000022]);

@@ -69,7 +69,7 @@ await test('Save and rebuild fences the path write and rebuilds once after confi
   });
   await load.mock.calls[0]!.arguments[0].factory(name => {
     if (name === 'react') return React;
-    return { SettingsForm, SettingsValueField, Button: 'button', Modal, Toast };
+    return { SettingsForm, SettingsValueField, Modal, Toast };
   }).apply(applyContext);
 
   let language: keyof typeof dictionaries = 'en';

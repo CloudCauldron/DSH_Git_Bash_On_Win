@@ -117,7 +117,7 @@ node '<已安装插件目录>/lib/purge-runtime-cache.js' '<DSH 主目录绝对�
     node scripts/plugin.ts "$gitbash_pnpm" web remove dsh-git-bash-on-win --purge-cache
     ```
 
-    若直接使用原生 CLI，需**先**运行第 6.2 节清理命令，再执行 `dsh plugin --profile web remove dsh-git-bash-on-win --config.ignore-scripts=true`（多个配置使用此包时请逐个卸载，共享缓存只需清理一次）。
+    若直接使用原生 CLI，需**先**运行第 6.2 节清理命令，再执行 `dsh plugin --profile web remove dsh-git-bash-on-win --ignore-scripts`（多个配置使用此包时请逐个卸载，共享缓存只需清理一次）。
 
 ## **7 - 开发与测试**
 

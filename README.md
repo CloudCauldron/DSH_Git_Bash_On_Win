@@ -118,7 +118,7 @@ After cleanup succeeds, restart DSH to rebuild on demand, or click **Save and re
     node scripts/plugin.ts "$gitbash_pnpm" web remove dsh-git-bash-on-win --purge-cache
     ```
 
-    If using the native CLI directly, run the Section 6.2 cleanup command **first**, and then run `dsh plugin --profile web remove dsh-git-bash-on-win --config.ignore-scripts=true` (remove the package from each remaining profile; purge the home cache only once).
+    If using the native CLI directly, run the Section 6.2 cleanup command **first**, and then run `dsh plugin --profile web remove dsh-git-bash-on-win --ignore-scripts` (remove the package from each remaining profile; purge the home cache only once).
 
 ## **7 - Development and Testing**
 

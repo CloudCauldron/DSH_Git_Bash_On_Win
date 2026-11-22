@@ -118,29 +118,6 @@ export function probeTokenLogonSid() {
   } finally { assert.equal(close(token), 0); }
 }
 
-/** Native tests share stock providers and own every workspace/temp artifact. */
-export async function sandboxFixture(t: TestContext) {
-  const runtime = installedDsh();
-  const directory = await mkdtemp(join(tmpdir(), 'dsh-native-'));
-  const workspace = join(directory, 'w');
-  await mkdir(workspace);
-  const { Context } = await runtime.load(runtime.baseRequire, '@deepseek-ai/cordis') as typeof import('@deepseek-ai/cordis');
-  const { LocalSubprocessRuntime } = await runtime.load(runtime.baseRequire, '@deepseek-ai/dsh-subprocess-local') as {
-    LocalSubprocessRuntime: new (ctx: Context) => Subprocess;
-  };
-  const { LocalSandboxProvider } = await runtime.load(runtime.baseRequire, '@deepseek-ai/dsh-sandbox-local') as {
-    LocalSandboxProvider: new (ctx: Context, config: object) => SandboxProvider;
-  };
-  const ctx = new Context();
-  t.after(async () => {
-    await ctx.fiber.dispose();
-    removeTree(admitDirectory(dirname(directory)), basename(directory));
-  });
-  await ctx.plugin(LocalSubprocessRuntime);
-  await ctx.plugin(LocalSandboxProvider, {});
-  return { ctx, directory, workspace };
-}
-
 /** Query actual section write/read authorization without mapping or altering pinfo. */
 export function sectionAccess(name: string, write: boolean): number {
   const unicode = koffi.struct({ Length: 'uint16', MaximumLength: 'uint16', Buffer: 'str16' });
@@ -393,6 +370,10 @@ export async function compatFixture(t: TestContext) {
       assert.deepEqual(confined.slice(-3), ['bash', '-c', command]);
       const sidIndex = confined.indexOf('--temp-write-sid'), sid = sidIndex < 0 ? undefined : confined[sidIndex + 1];
       const parts = sid && /^S-1-4-(\d+)-(\d+)-1$/.exec(sid);
+      if (mode === 'workspace-write') {
+        if (session) assert.ok(parts, 'DSH must supply a valid session temp SID');
+        else assert.equal(sidIndex, -1, 'agentless DSH confinement supplies no temp SID');
+      }
       const prefix = mode === 'danger-full-access' ? 'fa' : mode === 'read-only' ? 'ro' : parts ? `ww-${parts[1]}-${parts[2]}` : 'ww-u';
       const view = join(views, leafOverride ?? `${prefix}-${randomBytes(8).toString('hex')}`);
       await symlink(runtime, view, 'junction');

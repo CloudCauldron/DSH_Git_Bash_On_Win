@@ -1,5 +1,5 @@
 /** Bounded x64 PE reader shared by the fixed MSYS patch and build-time verification. */
-export interface PeSection {
+interface PeSection {
     name: string;
     header: number;
     va: number;
@@ -8,14 +8,13 @@ export interface PeSection {
     rawSize: number;
     characteristics: number;
 }
-export interface PeImport {
+interface PeImport {
     dll: string;
     symbols: string[];
     descriptor: number;
     iat: number;
 }
 export declare function readPe(bytes: Buffer): {
-    bytes: Buffer<ArrayBufferLike>;
     coff: number;
     optional: number;
     directories: number;
@@ -40,3 +39,4 @@ export declare function readPe(bytes: Buffer): {
 };
 /** Append one fixed static import without moving existing sections or normalizing debug accounting. */
 export declare function patchMsysDll(input: Buffer): Buffer;
+export {};

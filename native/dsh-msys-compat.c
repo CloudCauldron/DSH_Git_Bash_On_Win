@@ -379,7 +379,7 @@ static BOOL dacl_has_exact_allow_ace(PACL dacl, PSID sid, BOOL acceptFileAll) {
          || !bounded_sid((BYTE *)hdr + FIELD_OFFSET(ACCESS_ALLOWED_ACE, SidStart),
                           hdr->AceSize - FIELD_OFFSET(ACCESS_ALLOWED_ACE, SidStart), &allowAce->SidStart)) return FALSE;
         BOOL maskOk = (allowAce->Mask == GENERIC_ALL)
-                   || (acceptFileAll && ((allowAce->Mask & FILE_ALL_ACCESS_MASK) == FILE_ALL_ACCESS_MASK));
+                   || (acceptFileAll && allowAce->Mask == FILE_ALL_ACCESS_MASK);
         if (!maskOk) continue;
         if (RtlEqualSid((PSID)&allowAce->SidStart, sid)) return TRUE;
     }
@@ -454,7 +454,9 @@ static BOOL build_extended_sd(
     if (!NT_SUCCESS(RtlGetControlSecurityDescriptor(origSd, &origControl, &origRev))) return FALSE;
     SECURITY_DESCRIPTOR_CONTROL mask = SE_DACL_PROTECTED | SE_DACL_AUTO_INHERITED | SE_DACL_AUTO_INHERIT_REQ
                                      | SE_SACL_PROTECTED | SE_SACL_AUTO_INHERITED | SE_SACL_AUTO_INHERIT_REQ;
-    return NT_SUCCESS(RtlSetControlSecurityDescriptor(outSd, mask, (SECURITY_DESCRIPTOR_CONTROL)(origControl & mask)));
+    if (!NT_SUCCESS(RtlSetControlSecurityDescriptor(outSd, mask, (SECURITY_DESCRIPTOR_CONTROL)(origControl & mask)))) return FALSE;
+    /* Keep the original descriptor if conversion would drop any other control information. */
+    return outSd->Control == (origControl & ~SE_SELF_RELATIVE);
 }
 
 /* Hook 1: GetFinalPathNameByHandleW                                          */
@@ -499,7 +501,7 @@ static BOOL parse_own_sigwait_pipe(LPCSTR name) {
     p++;
 
     /* Match decimal current Windows PID. */
-    if (*p < '0' || *p > '9') return FALSE;
+    if (*p < '1' || *p > '9') return FALSE;
     UINT64 pid = 0;
     while (*p >= '0' && *p <= '9') {
         pid = pid * 10u + (UINT64)(*p - '0');
@@ -577,7 +579,7 @@ static NTSTATUS NTAPI Hook_NtSetInformationToken(
 /* Hook 4: NtCreateSection (cygpid.<digits> inside our verified namespace)    */
 
 static BOOL unicode_is_cygpid(const UNICODE_STRING *us) {
-    if (!us || !us->Buffer || (us->Length % sizeof(WCHAR)) != 0) return FALSE;
+    if (!us || !us->Buffer || us->Length > us->MaximumLength || (us->Length % sizeof(WCHAR)) != 0) return FALSE;
     size_t len = us->Length / sizeof(WCHAR);
     if (len < 8) return FALSE; /* "cygpid." (7) + at least 1 digit */
     static const WCHAR prefix[7] = { L'c',L'y',L'g',L'p',L'i',L'd',L'.' };
@@ -590,6 +592,16 @@ static BOOL unicode_is_cygpid(const UNICODE_STRING *us) {
     return TRUE;
 }
 
+static BOOL is_msys_namespace(const WCHAR *name, size_t len) {
+    static const WCHAR prefix[] = L"\\BaseNamedObjects\\msys-2.0S";
+    const size_t prefixLen = ARRAYSIZE(prefix) - 1;
+    if (len < prefixLen + 1 + 17 || !wide_eq_n_ci(name, prefix, prefixLen)) return FALSE;
+    for (size_t i = prefixLen; i < len - 17; i++) {
+        if (name[i] < L'0' || name[i] > L'9') return FALSE;
+    }
+    return name[len - 17] == L'-' && wide_eq_n_ci(name + len - 16, g_expectedKeyHexW, 16);
+}
+
 static BOOL root_dir_matches_expected_namespace(HANDLE rootDir) {
     BYTE buf[1024];
     ULONG retLen = 0;
@@ -598,15 +610,7 @@ static BOOL root_dir_matches_expected_namespace(HANDLE rootDir) {
     const UNICODE_STRING *name = (const UNICODE_STRING *)buf;
     if (!name->Buffer || name->Length > name->MaximumLength || (name->Length % sizeof(WCHAR)) != 0
      || !inside(buf + sizeof(UNICODE_STRING), retLen - sizeof(UNICODE_STRING), name->Buffer, name->Length)) return FALSE;
-    size_t len = name->Length / sizeof(WCHAR);
-
-    static const WCHAR nsPrefix[] = L"\\BaseNamedObjects\\msys-";
-    const size_t prefixLen = 23;
-    /* Need at least prefix + "-" + 16 hex key chars */
-    if (len < prefixLen + 17) return FALSE;
-    if (!wide_eq_n_ci(name->Buffer, nsPrefix, prefixLen)) return FALSE;
-    if (name->Buffer[len - 17] != L'-') return FALSE;
-    return wide_eq_n_ci(name->Buffer + (len - 16), g_expectedKeyHexW, 16);
+    return is_msys_namespace(name->Buffer, name->Length / sizeof(WCHAR));
 }
 
 static NTSTATUS NTAPI Hook_NtCreateSection(

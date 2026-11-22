@@ -122,3 +122,9 @@ The independent 4 KiB PE32+ fixture passes the real patcher with no production e
 | `pnpm pack` | PASS; prepack performed the strict release build. The 51-file tarball contains exactly one DLL, byte-identical to the approved artifact, and no native sources, build/test scripts or compiler intermediates. This is one packaging check, not Phase 4's two-tarball/install qualification. |
 
 All DSH-launched fixture processes joined their managed ranges and owned source copies passed guarded teardown checks. No installed Git/DSH files, live profiles/caches, global environment, registry values or endpoint-protection settings were changed. Raw logs and archive provenance remain ignored local evidence. Phase 0's real-mingw64 prerequisite gap is resolved. Actual Electron/ASAR, cross-volume, active-Defender, production copying/cutover and final release qualification remain the later-phase checks; no optional alias/debugger qualification or live upgrade was attempted.
+
+### Phase 1 audit follow-up
+
+The original qualification above describes commit `0f245e9`. Independent review found gaps in import-table overlap and IAT coverage, namespace matching, and security descriptor preservation. The revised PE reader checks adjacent virtual sections, the complete image size and separate, section-bounded thunk tables. The shim limits the section grant to the MSYS namespace component, requires an exact access mask, and uses the original descriptor when rebuilding it would lose control information.
+
+Two isolated MSVC builds produced the revised 23,040-byte DLL with SHA-256 `abccf046d49c2e9e956cf1f6d7b47bf78a00126827906a16f64af2fdde2e1d0c`. Before updating the release hash, the real mingw64 2.55.0 PE/native suite passed all 39 checks, including the dumpbin comparison, token observations, fork stress, IPC matrix and negative controls. The archive SHA-256 matched the original acquisition record.

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { test, type TestContext } from 'node:test';
 import { readFile, unlink, copyFile, writeFile, mkdtemp, rm, mkdir, readdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
@@ -12,7 +12,7 @@ import koffi from 'koffi';
 import type { SandboxExecutionPolicy } from '@deepseek-ai/dsh-sandbox';
 import { readPe } from '../src/runtime/pe.ts';
 import { compilerFlags, linkerFlags, nativeToolchain } from '../scripts/build-compat-dll.ts';
-import { nativeOnly, sandboxFixture, compatFixture, runFixtureCommand, success, msysHolderCommand,
+import { nativeOnly, compatFixture, runFixtureCommand, success, msysHolderCommand,
   observeMsysImages, expectedMsysKey, type probeTokenLogonSid } from './fixtures.ts';
 
 // Compile the actual static functions, with test-only syscall fault injection.
@@ -133,12 +133,31 @@ __declspec(dllexport) int native_checks(void) {
     groups->Groups[0].Sid = token + 90; CHECK(!checked_logon_sid(token, sizeof(token), 96));
     groups->Groups[0].Sid = token; CHECK(!checked_logon_sid(token, sizeof(token), 44));
 
+    format_hex64_lower(1, g_expectedKeyHexA, g_expectedKeyHexW);
+    const WCHAR *namespaces[] = {
+        L"\\BaseNamedObjects\\msys-2.0S5-0000000000000001",
+        L"\\BaseNamedObjects\\msys-2.0S-0000000000000001",
+        L"\\BaseNamedObjects\\msys-2.0S5\\other-0000000000000001",
+        L"\\BaseNamedObjects\\msys-2.0S5-0000000000000002"
+    };
+    for (size_t i = 0; i < ARRAYSIZE(namespaces); i++) CHECK(is_msys_namespace(namespaces[i], wlen(namespaces[i])) == (i == 0));
+
     const WCHAR *sddls[] = {
       L"D:(A;;GA;;;S-1-4-1-2-1)", L"D:(A;;GA;;;S-1-4-1-2-1-1)",
       L"O:S-1-4-1-2-1D:(A;;GA;;;SY)", L"D:(D;;GA;;;S-1-4-1-2-1)", L"D:(A;;GR;;;S-1-4-1-2-1)",
       L"O:SYG:BAD:PAI(A;;GA;;;SY)S:PAI(AU;SA;GA;;;WD)"
     };
     g_grantSidLen = 20; memcpy(g_grantSid, &sid, 20);
+    PSECURITY_DESCRIPTOR fileAccess;
+    CHECK(ConvertStringSecurityDescriptorToSecurityDescriptorW(L"D:(A;;FA;;;S-1-4-1-2-1)", 1, &fileAccess, NULL));
+    BOOLEAN filePresent, fileDefaulted; PACL fileDacl;
+    CHECK(NT_SUCCESS(RtlGetDaclSecurityDescriptor(fileAccess, &filePresent, &fileDacl, &fileDefaulted)) && filePresent);
+    CHECK(dacl_has_exact_allow_ace(fileDacl, &sid, TRUE));
+    PACCESS_ALLOWED_ACE fileAce;
+    CHECK(NT_SUCCESS(RtlGetAce(fileDacl, 0, (PVOID *)&fileAce)));
+    fileAce->Mask |= ACCESS_SYSTEM_SECURITY;
+    CHECK(!dacl_has_exact_allow_ace(fileDacl, &sid, TRUE));
+    CHECK(LocalFree(fileAccess) == NULL);
     for (int i = 0; i < 6; i++) {
         PSECURITY_DESCRIPTOR original;
         CHECK(ConvertStringSecurityDescriptorToSecurityDescriptorW(sddls[i], 1, &original, NULL));
@@ -164,6 +183,8 @@ __declspec(dllexport) int native_checks(void) {
             CHECK(NT_SUCCESS(RtlGetControlSecurityDescriptor(original, &oldControl, &revision)));
             CHECK(NT_SUCCESS(RtlGetControlSecurityDescriptor(&changed, &newControl, &revision)));
             CHECK((oldControl & ~SE_SELF_RELATIVE) == newControl);
+            ((SECURITY_DESCRIPTOR_RELATIVE *)original)->Control |= SE_RM_CONTROL_VALID;
+            CHECK(!build_extended_sd(original, &changed, acl, sizeof(acl), &already));
         }
         CHECK(LocalFree(original) == NULL);
     }
@@ -294,7 +315,7 @@ __declspec(dllexport) int loader_check(LPCWSTR runtime, LPCWSTR source, LPCWSTR 
 }
 `;
 
-async function nativeHarness(t: Parameters<typeof sandboxFixture>[0]) {
+async function nativeHarness(t: TestContext) {
   const directory = await mkdtemp(join(tmpdir(), 'dsh-native-unit-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const tools = nativeToolchain(directory);
@@ -317,16 +338,19 @@ await test('isolated native builds reproduce bytes and enforce release tools/has
     for (const path of inputs) await copyFile(new URL('../' + path, import.meta.url), join(root, path));
     await writeFile(join(root, 'package.json'), '{"type":"module"}');
   }
+  const scratch = join(directory, 'scratch');
+  await mkdir(scratch);
+  const env = { ...process.env, TMP: scratch, TEMP: scratch };
   const build = (root: string, release = false) => execFileSync(process.execPath,
-    [join(root, 'scripts/build-compat-dll.ts'), ...(release ? ['--release'] : [])], { encoding: 'utf8', stdio: 'pipe', windowsHide: true });
-  const before = (await readdir(tmpdir())).filter(x => x.startsWith('dsh-compat-build-')).sort();
+    [join(root, 'scripts/build-compat-dll.ts'), ...(release ? ['--release'] : [])], { env, encoding: 'utf8', stdio: 'pipe', windowsHide: true });
+  const tools = nativeToolchain(scratch);
   for (const root of roots) build(root);
   const a = roots[0]!, b = roots[1]!, output = join(a, 'lib/dsh-msys-compat.dll');
   const bytes = await readFile(output), hash = createHash('sha256').update(bytes).digest('hex');
   assert.deepEqual(await readFile(join(b, 'lib/dsh-msys-compat.dll')), bytes);
   assert.deepEqual(await readFile(new URL('../lib/dsh-msys-compat.dll', import.meta.url)), bytes);
   const manifestPath = join(a, 'native/build.json');
-  const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as Record<string, unknown>;
+  const manifest = { ...JSON.parse(await readFile(manifestPath, 'utf8')) as Record<string, unknown>, ...tools.versions };
   await writeFile(manifestPath, JSON.stringify({ ...manifest, sha256: '0'.repeat(64) }));
   assert.throws(() => build(a, true), /Unapproved release DLL hash/);
   assert.equal(existsSync(output), false);
@@ -346,7 +370,7 @@ await test('isolated native builds reproduce bytes and enforce release tools/has
   assert.equal(existsSync(output), false);
   await writeFile(join(a, 'native/dsh-msys-compat.c'), source + '\n#error intentional compile failure\n');
   assert.throws(() => build(a)); assert.equal(existsSync(output), false);
-  assert.deepEqual((await readdir(tmpdir())).filter(x => x.startsWith('dsh-compat-build-')).sort(), before);
+  assert.deepEqual(await readdir(scratch), []);
   await writeFile(join(a, 'native/dsh-msys-compat.c'), source);
   const blockedScratch = join(directory, 'blocked-cleanup');
   const injection = `import fs from 'node:fs'; import {syncBuiltinESMExports} from 'node:module';
@@ -361,7 +385,7 @@ await test('isolated native builds reproduce bytes and enforce release tools/has
   assert.equal(existsSync(output), false);
   await rm(blockedScratch, { recursive: true, force: true });
 
-  const tools = nativeToolchain(directory), dll = join(b, 'lib/dsh-msys-compat.dll');
+  const dll = join(b, 'lib/dsh-msys-compat.dll');
   const dump = (flag: string) => execFileSync(join(tools.bin, 'dumpbin.exe'), ['/nologo', flag, dll],
     { env: tools.env, encoding: 'utf8', windowsHide: true });
   const imported = [...dump('/imports').matchAll(/^\s+[0-9A-F]+\s+([A-Za-z_]\w*)\s*$/gm)].map(x => x[1]!).sort();
@@ -380,24 +404,6 @@ await test('isolated native builds reproduce bytes and enforce release tools/has
   }
 });
 
-await test('TokenLogonSid agrees with TokenGroups on actual DSH tokens', nativeOnly, async t => {
-  const f = await sandboxFixture(t);
-  for (const mode of ['danger-full-access', 'read-only', 'workspace-write'] as const) {
-    const command = [process.execPath, '--input-type=module', '-e',
-      `import { probeTokenLogonSid } from ${JSON.stringify(new URL('./fixtures.ts', import.meta.url).href)}; console.log(JSON.stringify(probeTokenLogonSid()));`];
-    const argv = mode === 'danger-full-access' ? command : [...(await f.ctx.sandbox.confine(command,
-      { mode, workspaceRoot: f.workspace, sessionId: 'token-probe' as SandboxExecutionPolicy['sessionId'] }, t.signal)).argv];
-    const result = await runFixtureCommand(f.ctx.subprocess.spawn.bind(f.ctx.subprocess), argv, f.workspace, {}, t.signal);
-    success(result);
-    const observation = JSON.parse(result.stdout) as ReturnType<typeof probeTokenLogonSid>;
-    if (mode !== 'danger-full-access') {
-      assert.equal(observation.integrityRid, 4096);
-      assert.equal(observation.logonRestricted, true);
-    } else assert.equal(observation.restrictedCount, 0);
-    t.diagnostic(JSON.stringify({ mode, ...observation }));
-  }
-});
-
 await test('optimized shim admission, forks, images and IPC under real DSH policies', nativeOnly, async t => {
   const helper = await nativeHarness(t);
   await t.test('bounded native predicates and ACL/control preservation', () => {
@@ -406,6 +412,22 @@ await test('optimized shim admission, forks, images and IPC under real DSH polic
     finally { library.unload(); }
   });
   const f = await compatFixture(t), spawn = f.ctx.subprocess.spawn.bind(f.ctx.subprocess);
+  await t.test('TokenLogonSid agrees with TokenGroups on actual DSH tokens', async t => {
+    for (const mode of ['danger-full-access', 'read-only', 'workspace-write'] as const) {
+      const command = [process.execPath, '--input-type=module', '-e',
+        `import { probeTokenLogonSid } from ${JSON.stringify(new URL('./fixtures.ts', import.meta.url).href)}; console.log(JSON.stringify(probeTokenLogonSid()));`];
+      const argv = mode === 'danger-full-access' ? command : [...(await f.ctx.sandbox.confine(command,
+        { mode, workspaceRoot: f.workspace, sessionId: 'token-probe' as SandboxExecutionPolicy['sessionId'] }, t.signal)).argv];
+      const result = await runFixtureCommand(spawn, argv, f.workspace, {}, t.signal);
+      success(result);
+      const observation = JSON.parse(result.stdout) as ReturnType<typeof probeTokenLogonSid>;
+      if (mode !== 'danger-full-access') {
+        assert.equal(observation.integrityRid, 4096);
+        assert.equal(observation.logonRestricted, true);
+      } else assert.equal(observation.restrictedCount, 0);
+      t.diagnostic(JSON.stringify({ mode, ...observation }));
+    }
+  });
   const runNative = async (spec: Awaited<ReturnType<typeof f.command>>, code: string) => {
     const script = `import {createRequire} from 'node:module'; const k=createRequire(${JSON.stringify(new URL('./fixtures.ts', import.meta.url).href)})('koffi'); const library=k.load(${JSON.stringify(helper)}); ${code}`;
     const result = await runFixtureCommand(spawn, [...spec.prefix, process.execPath, '--input-type=module', '-e', script],

@@ -70,6 +70,8 @@ await test('malformed, signed and unsupported layouts reject before producing a 
   const cases: [string, (b: Buffer) => void][] = [
     ['signed', b => b.writeUInt32LE(1, 0x98 + 112 + 4 * 8)],
     ['header padding', b => { b[0x1d8] = 1; }],
+    ['overlapping import tables', b => b.writeUInt32LE(b.readUInt32LE(0x600), 0x610)],
+    ['gap before appended IAT section', b => b.writeUInt32LE(0x4000, 0x98 + 56)],
     ['overlapping raw', b => b.writeUInt32LE(0x400, 0x188 + 40 + 20)],
     ['overlapping virtual', b => b.writeUInt32LE(0x1000, 0x188 + 40 + 12)],
     ['unmapped import', b => b.writeUInt32LE(0xffff0000, 0x98 + 120)],
@@ -115,8 +117,10 @@ await test('build-only verification enforces mitigations, export and named-funct
   assert.doesNotThrow(() => verifyCompatDll(bytes, manifest));
   const pe = readPe(bytes);
   const first = pe.imports[0]!.symbols[0]!;
-  manifest.imports[pe.imports[0]!.dll] = manifest.imports[pe.imports[0]!.dll]!.filter(n => n !== first);
+  const allowed = manifest.imports[pe.imports[0]!.dll]!;
+  manifest.imports[pe.imports[0]!.dll] = allowed.filter(n => n !== first);
   assert.throws(() => verifyCompatDll(bytes, manifest), /Unreviewed/);
+  manifest.imports[pe.imports[0]!.dll] = allowed;
   for (const mask of [0x20, 0x40, 0x100]) {
     const b = Buffer.from(bytes); b.writeUInt16LE(pe.dllCharacteristics & ~mask, pe.optional + 70);
     assert.throws(() => verifyCompatDll(b), /mitigations/);

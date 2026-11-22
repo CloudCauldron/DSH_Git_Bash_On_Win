@@ -30,7 +30,7 @@ export function nativeToolchain(scratch: string, pins = readBuildManifest()) {
   let tools = process.env.DSH_MSVC_TOOLS_DIR;
   if (!tools) {
     const vswhere = join(programFiles, 'Microsoft Visual Studio/Installer/vswhere.exe');
-    const vs = execFileSync(vswhere, ['-latest', '-products', '*', '-requires',
+    const vs = execFileSync(vswhere, ['-utf8', '-latest', '-products', '*', '-requires',
       'Microsoft.VisualStudio.Component.VC.Tools.x86.x64', '-property', 'installationPath'],
     { encoding: 'utf8', windowsHide: true }).trim();
     assert.ok(vs && !vs.includes('\n'), 'Select one MSVC installation with DSH_MSVC_TOOLS_DIR');
@@ -49,15 +49,15 @@ export function nativeToolchain(scratch: string, pins = readBuildManifest()) {
   // In particular CL/_CL_/LINK/_LINK_ and ambient INCLUDE/LIB never enter this map.
   const env = { SystemRoot: system, WINDIR: system, PATH: [bin, join(system, 'System32'), system].join(';'),
     INCLUDE: include.join(';'), LIB: libs.join(';'), TMP: scratch, TEMP: scratch, VSLANG: '1033' };
-  const banner = (path: string, args: string[], expression: RegExp) => {
+  const banner = (path: string, args: string[]) => {
     const result = spawnSync(path, args, { env, encoding: 'utf8', windowsHide: true });
     if (result.error) throw result.error;
-    const value = expression.exec((result.stdout ?? '') + (result.stderr ?? ''))?.[0];
+    const value = /\b\d+\.\d+\.\d+(?:\.\d+)?\b/.exec((result.stdout ?? '') + (result.stderr ?? ''))?.[0];
     assert.ok(value, `Cannot read tool version: ${path}`);
     return value;
   };
   return { cl, link, bin, env, versions: { toolset: basename(tools), sdk,
-    compiler: banner(cl, [], /19\.\d+\.\d+/), linker: banner(link, ['/help'], /14\.\d+\.\d+\.\d+/) } };
+    compiler: banner(cl, []), linker: banner(link, ['/help']) } };
 }
 
 /** Build-only policy: the runtime reader deliberately preserves ordinal and repeated imports. */
@@ -118,6 +118,7 @@ export function buildCompatDll(release = false) {
   mkdirSync(join(root, 'lib'), { recursive: true });
   try { writeFileSync(output, bytes!, { flag: 'wx' }); }
   catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw error;
     try { rmSync(output, { force: true }); }
     catch (cleanup) { throw new AggregateError([error, cleanup], 'Native output cleanup failed', { cause: cleanup }); }
     throw error;

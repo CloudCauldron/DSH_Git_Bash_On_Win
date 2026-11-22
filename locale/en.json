@@ -6,19 +6,30 @@
   },
   "messages": {
     "form.unavailable": "Settings unavailable",
+
     "path.label": "Git Bash path",
     "path.placeholder": "Leave blank to find Git Bash automatically",
     "path.hint": "Enter the full path to bash.exe, which DSH uses to run commands.",
+
+    "action.saveRebuild": "Save and rebuild",
+    "action.rebuilding": "Rebuilding…",
+
     "save.failed": "Could not save the path",
     "save.review": "Changes were not saved",
     "save.reviewDetail": "Last saved path: {path}. Review it and try again.",
     "save.reviewEmpty": "The last saved path is empty.",
+
+    "rebuild.ok": "Runtime rebuilt",
+    "rebuild.failed": "Could not rebuild the runtime",
+    "rebuild.failedAfterSave": "Path saved, but runtime rebuild failed",
+
     "error.separator": "; ",
     "error.unknown": "Unknown error.",
     "error.invalidLocaleDictionaries": "Invalid locale catalogs.",
     "error.invalidLocaleDictionary": "Invalid locale catalog.",
     "error.localeHttp": "Locale catalogs: HTTP {status}",
     "error.httpStatus": "HTTP {status}",
+
     "error.dshManifestPath": "{variable} must be an absolute {manifest} path.",
     "error.dshNotInstalled": "No installed DSH found; set {variable} to its absolute {manifest} path.",
     "error.dshVersion": "Expected {packageName} {version}; review compatibility before using this installation.",
@@ -26,54 +37,57 @@
     "error.pluginPlatform": "This plugin runs only on native Windows x64.",
     "error.runtimePlatform": "Native Windows x64 is required for the Git Bash runtime.",
     "error.toolingPlatform": "Installed DSH tooling requires native Windows x64 Node.",
+
     "error.pluginUsage": "Usage: {command}",
-    "error.purgeIncomplete": "Runtime cleanup and uninstallation are incomplete.",
     "error.purgeUsage": "Usage: {command}",
+    "error.purgeIncomplete": "Runtime cleanup and uninstallation are incomplete.",
     "error.removalBlocked": "Runtime cleanup is incomplete; package removal was not started. Close every DSH instance sharing this DSH home and resolve the reported obstruction before retrying.",
+
     "error.customizedModule": "Cannot adapt the customized {id} module; the shell was not replaced.",
     "error.profileRequired": "Git Bash requires a DSH profile context.",
     "error.shellEntryRequired": "The native {entry} entry is required.",
+
     "error.changedBeforeConfinement": "Git Bash runtime changed before confinement.",
     "error.changedDuringConfinement": "Git Bash runtime changed during command preparation.",
     "error.commandRangeUnconfirmed": "DSH command range settlement was not confirmed.",
     "error.executionPolicyRequired": "Git Bash requires a resolved DSH execution policy.",
     "error.unexpectedShellArguments": "Unexpected DSH shell argv; the command did not run.",
+    "error.workspaceOverlap": "Workspace must not overlap Git source or runtime cache.",
+
     "error.pinRetired": "Runtime generation pin is retired.",
     "error.preparationSuperseded": "Git Bash runtime preparation was superseded.",
     "error.priorCleanupFailed": "Previous runtime cleanup failed.",
     "error.providerCleanupFailed": "Git Bash provider failed to release owned resources.",
     "error.providerStopping": "The Git Bash provider is stopping.",
     "error.rebuildBusy": "Git Bash runtime rebuilding is busy.",
+
     "error.gitNotFound": "Supported Git for Windows was not found. In the Git Bash path field, enter the absolute path to {bin} or {usrBin}.",
     "error.unsupportedRuntimeEntry": "Unsupported Git runtime entry: {path}",
-    "error.ntfsRequired": "The path {path} must be on an NTFS volume.",
-    "error.volumeBoundaryChanged": "Volume boundary changed: {path}",
+    "error.sourceChanged": "Git changed during preparation.",
+
     "error.cacheOverlap": "The Git installation and the runtime cache must not overlap.",
     "error.cacheOwner": "Could not verify that the cache directory {path} belongs to this plugin.",
     "error.cacheOwnershipChanged": "Cache ownership changed: {path}",
     "error.generationAfterPreflight": "Generation appeared after purge preflight: {name}",
-    "error.fileSizeChanged": "Size changed while reading {path}. Expected {size} bytes and read {read}.",
-    "error.fileTooLarge": "{path} has {size} bytes. The limit is {limit} bytes.",
-    "error.viewPathBudget": "The runtime view path exceeds 260 bytes. Use a shorter DSH home: {path}",
     "error.purgeCloseFailed": "Runtime purge failed to close native resources.",
-    "error.workspaceOverlap": "Workspace must not overlap Git source or runtime cache.",
+    "error.viewPathBudget": "The runtime view path exceeds 260 bytes. Use a shorter DSH home: {path}",
+
     "error.absoluteWindowsPath": "Expected an ordinary absolute Windows path: {path}",
-    "error.cannotUnlinkDirectory": "Expected an unlinkable name, not a directory: {path}",
     "error.canonicalPathTooLong": "Canonical path exceeds the supported bound: {path}",
     "error.invalidChildName": "Invalid child name: {name}",
+    "error.ntfsRequired": "The path {path} must be on an NTFS volume.",
+    "error.volumeBoundaryChanged": "Volume boundary changed: {path}",
     "error.ordinaryEntryRequired": "Expected ordinary {kind}: {path}",
+    "error.fileSizeChanged": "Size changed while reading {path}. Expected {size} bytes and read {read}.",
+    "error.fileTooLarge": "{path} has {size} bytes. The limit is {limit} bytes.",
+
+    "error.cannotUnlinkDirectory": "Expected an unlinkable name, not a directory: {path}",
     "error.directoryIdentityChanged": "Directory identity changed: {path}",
     "error.directoryRedirected": "Directory path redirected: {path}",
     "error.directoryRollbackFailed": "Directory admission and cleanup failed: {path}",
     "error.junctionRollbackFailed": "Junction admission and cleanup failed: {path}",
     "error.reparsePoint": "Unexpected reparse point at {path}.",
     "error.unexpectedJunction": "Unexpected runtime junction: {path}",
-    "error.unsupportedReparseTag": "Unsupported reparse tag at {path}",
-    "action.saveRebuild": "Save and rebuild",
-    "action.rebuilding": "Rebuilding…",
-    "rebuild.ok": "Runtime rebuilt",
-    "rebuild.failed": "Could not rebuild the runtime",
-    "rebuild.failedAfterSave": "Path saved, but runtime rebuild failed",
-    "error.sourceChanged": "Git changed during preparation."
+    "error.unsupportedReparseTag": "Unsupported reparse tag at {path}"
   }
 }

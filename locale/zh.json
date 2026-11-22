@@ -6,19 +6,30 @@
   },
   "messages": {
     "form.unavailable": "配置不可用",
+
     "path.label": "Git Bash 路径",
     "path.placeholder": "留空则自动查找 Git Bash 路径",
     "path.hint": "填写 bash.exe 的完整路径，DSH 会用它运行命令。",
+
+    "action.saveRebuild": "保存并重建",
+    "action.rebuilding": "正在重建…",
+
     "save.failed": "路径保存失败",
     "save.review": "未保存",
     "save.reviewDetail": "最近保存的路径为 {path}，请核对后重试。",
     "save.reviewEmpty": "最近保存的路径为空",
+
+    "rebuild.ok": "运行环境已重建",
+    "rebuild.failed": "运行环境重建失败",
+    "rebuild.failedAfterSave": "路径已保存，但运行环境重建失败",
+
     "error.separator": "；",
     "error.unknown": "未知错误。",
     "error.invalidLocaleDictionaries": "语言词典格式无效。",
     "error.invalidLocaleDictionary": "语言词典格式无效。",
     "error.localeHttp": "读取语言词典失败：HTTP {status}。",
     "error.httpStatus": "HTTP {status}",
+
     "error.dshManifestPath": "{variable} 必须是 {manifest} 的绝对路径。",
     "error.dshNotInstalled": "未找到已安装的 DSH。请将 {variable} 设为其 {manifest} 的绝对路径。",
     "error.dshVersion": "需要 {packageName} {version}。升级前请核对此安装的兼容性。",
@@ -26,54 +37,57 @@
     "error.pluginPlatform": "此插件仅支持原生 Windows x64。",
     "error.runtimePlatform": "Git Bash 运行时需要原生 Windows x64。",
     "error.toolingPlatform": "检查已安装的 DSH 需要在原生 Windows x64 上运行 Node。",
+
     "error.pluginUsage": "用法：{command}",
-    "error.purgeIncomplete": "运行时清理和卸载未完成。",
     "error.purgeUsage": "用法：{command}",
+    "error.purgeIncomplete": "运行时清理和卸载未完成。",
     "error.removalBlocked": "运行时清理未完成，尚未开始移除包。请关闭共用该 DSH 主目录的所有实例，排除报告的阻碍后重试。",
+
     "error.customizedModule": "无法适配已自定义的 {id} 模块，Shell 未被替换。",
     "error.profileRequired": "Git Bash 需要 DSH 配置上下文。",
     "error.shellEntryRequired": "缺少必需的原生 {entry} 条目。",
+
     "error.changedBeforeConfinement": "应用沙箱限制前，Git Bash 运行时已发生变化。",
     "error.changedDuringConfinement": "应用沙箱限制期间，Git Bash 运行时发生了变化。",
     "error.commandRangeUnconfirmed": "未能确认 DSH 命令所属的进程已全部退出。",
     "error.executionPolicyRequired": "Git Bash 需要已解析的 DSH 执行策略。",
     "error.unexpectedShellArguments": "DSH Shell 参数异常，命令未执行。",
+    "error.workspaceOverlap": "工作区不能与 Git 源目录或运行时缓存重叠。",
+
     "error.pinRetired": "该运行时代的固定引用已撤销。",
     "error.preparationSuperseded": "本次 Git Bash 运行时准备已被后续操作取代。",
     "error.priorCleanupFailed": "上一次运行时清理失败。",
     "error.providerCleanupFailed": "Git Bash 执行器未能释放其持有的资源。",
     "error.providerStopping": "Git Bash 执行器正在停止。",
     "error.rebuildBusy": "Git Bash 运行环境正在重建。",
+
     "error.gitNotFound": "未找到受支持的 Git for Windows。请将 Git Bash 路径设置为 {bin} 或 {usrBin} 的绝对路径。",
     "error.unsupportedRuntimeEntry": "不支持此 Git 运行时条目：{path}。",
-    "error.ntfsRequired": "路径 {path} 必须位于 NTFS 卷上。",
-    "error.volumeBoundaryChanged": "卷边界已改变：{path}。",
+    "error.sourceChanged": "Git 在准备过程中已更改。",
+
     "error.cacheOverlap": "Git 安装目录与运行时缓存目录不能相同，也不能互相包含。",
     "error.cacheOwner": "无法确认缓存目录 {path} 归此插件所有。",
     "error.cacheOwnershipChanged": "缓存目录的所有权已改变：{path}。",
     "error.generationAfterPreflight": "清除预检完成后出现了运行时代：{name}。",
-    "error.fileSizeChanged": "读取 {path} 时大小发生变化，预期 {size} 字节，读到 {read} 字节。",
-    "error.fileTooLarge": "{path} 的大小为 {size} 字节，上限为 {limit} 字节。",
-    "error.viewPathBudget": "运行时视图路径超出 260 字节。请使用更短的 DSH 主目录：{path}。",
     "error.purgeCloseFailed": "清除运行时缓存时未能关闭原生资源。",
-    "error.workspaceOverlap": "工作区不能与 Git 源目录或运行时缓存重叠。",
+    "error.viewPathBudget": "运行时视图路径超出 260 字节。请使用更短的 DSH 主目录：{path}。",
+
     "error.absoluteWindowsPath": "需要常规 Windows 绝对路径：{path}。",
-    "error.cannotUnlinkDirectory": "需要可取消链接的条目，但此路径是目录：{path}。",
     "error.canonicalPathTooLong": "规范路径超出支持的长度：{path}。",
     "error.invalidChildName": "子项名称无效：{name}。",
+    "error.ntfsRequired": "路径 {path} 必须位于 NTFS 卷上。",
+    "error.volumeBoundaryChanged": "卷边界已改变：{path}。",
     "error.ordinaryEntryRequired": "需要常规的 {kind} 类型条目：{path}。",
+    "error.fileSizeChanged": "读取 {path} 时大小发生变化，预期 {size} 字节，读到 {read} 字节。",
+    "error.fileTooLarge": "{path} 的大小为 {size} 字节，上限为 {limit} 字节。",
+
+    "error.cannotUnlinkDirectory": "需要可取消链接的条目，但此路径是目录：{path}。",
     "error.directoryIdentityChanged": "目录身份已改变：{path}。",
     "error.directoryRedirected": "目录路径被重定向：{path}。",
     "error.directoryRollbackFailed": "目录验证及回滚清理失败：{path}。",
     "error.junctionRollbackFailed": "目录联接的验证及清理失败：{path}。",
     "error.reparsePoint": "{path} 是意外的重解析点。",
     "error.unexpectedJunction": "运行时目录联接异常：{path}。",
-    "error.unsupportedReparseTag": "路径 {path} 的重解析标记不受支持。",
-    "action.saveRebuild": "保存并重建",
-    "action.rebuilding": "正在重建…",
-    "rebuild.ok": "运行环境已重建",
-    "rebuild.failed": "运行环境重建失败",
-    "rebuild.failedAfterSave": "路径已保存，但运行环境重建失败",
-    "error.sourceChanged": "Git 在准备过程中已更改。"
+    "error.unsupportedReparseTag": "路径 {path} 的重解析标记不受支持。"
   }
 }

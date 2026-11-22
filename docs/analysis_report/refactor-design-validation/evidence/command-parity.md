@@ -1,8 +1,8 @@
 # Command and alias parity across three DSH policies
 
-On November 21, 2026, DSH 0.2.2-rc.5 ran 24 cases per policy on the normal Windows 11 desktop with Node 26.12.1 and ucrt64 Git 2.56.0.windows.4. One fixture used ordinary files in the private executable directory. The other substituted verified NTFS file symlinks for Bash, sh, grep and Perl. Both used junction views and the [same proof-of-concept DLLs](builds.md).
+On November 21, 2026, DSH 0.2.2-rc.5 ran 24 test cases per policy on the normal Windows 11 desktop with Node 26.12.1 and `ucrt64` Git 2.56.0.windows.4. Both fixtures used junction views and the [same proof-of-concept DLLs](builds.md), differing only in the private executable directory: one used ordinary file copies, while the other replaced Bash, sh, grep, and Perl with verified NTFS file symlinks.
 
-Each fixture produced **63 passes and 9 accepted limitations across 72 trials**. Every cell below had the same verdict and exit code in both fixtures. FAIL records an observed failure to run the requested command. PASS means the oracle matched, including expected nonzero parity results. All launched candidate ranges settled.
+Both fixtures produced **63 passes and 9 accepted limitations across 72 trials**, with identical verdicts and exit codes in every cell below and every launched candidate range settling cleanly. `PASS` means the output and exit code matched the expected oracle (including expected nonzero parity exits); `FAIL` marks commands that could not run as requested.
 
 | Case | read-only | workspace-write | danger-full-access |
 |---|---|---|---|
@@ -33,14 +33,14 @@ Each fixture produced **63 passes and 9 accepted limitations across 72 trials**.
 
 ## How to read the failures
 
-- **Restricted Node pipes.** Node’s piped grep child failed at spawn with `EPERM` in read-only and workspace-write. With inherited stdio and an input file, grep succeeded. Under the stock PowerShell executor, Node launching ordinary Windows `cmd.exe` reproduced the same piped/inherited split. This isolates a restricted native-pipe limitation for this Node version, independent of MSYS. PowerShell’s own pipeline into grep worked.
-- **Native Bash wrapper.** The genuine 44,904-byte `bin/bash.exe` directly launched the installed, unpatched 2,449,886-byte MSYS Bash. In restricted modes its namespace creation returned `0xC0000022`. The launcher returned `0xC0000142` (3221225794) and invoking the wrapper from inside Bash yielded 127. Stock PowerShell reproduced the native exit. Full access ran the wrapper with the installed runtime. Calling the installed `usr/bin/bash.exe` from candidate Bash reached the private runtime through the MSYS child redirection in all three modes.
-- **Extended Windows path.** Native DSH argv accepted the extended-length executable name. Used as a quoted command inside Bash, the `\\?\` spelling failed command lookup with 127, also observed in ordinary Git Bash. The shebang and short-path tests passed with distinct 8.3 names and a quoted Unicode argument.
+- **Restricted Node pipes.** In read-only and workspace-write modes, Node spawning `grep` with piped stdio failed with `EPERM`, whereas inherited stdio with an input file succeeded. Under stock `pwsh-sandbox`, Node spawning ordinary Windows `cmd.exe` hit the exact same piped-versus-inherited split, isolating a restricted native-pipe limitation in this Node version unrelated to MSYS; PowerShell's own pipeline into `grep` worked.
+- **Native Bash wrapper.** The 44,904-byte `bin/bash.exe` wrapper launches the installed, unpatched 2,449,886-byte MSYS Bash directly. In restricted modes, namespace creation returned `0xC0000022`, causing the launcher to exit `0xC0000142` (3221225794; reproduced under stock PowerShell) and Bash invocations of the wrapper to return 127. Full access ran the wrapper against the installed runtime, while invoking the installed `usr/bin/bash.exe` from inside candidate Bash redirected to the private runtime in all three modes.
+- **Extended Windows path.** Native DSH `argv` accepted an extended-length executable path, but using a quoted `\\?\` path as a command inside Bash failed lookup with exit 127 (matching ordinary Git Bash). The shebang and short-path cases passed with distinct 8.3 names and a quoted Unicode argument.
 
 ## Nonzero parity results and debugger scope
 
-Package identity and native exit came from the held process handle. Both stock DSH and candidate Bash launched PowerShell 7.7.0.0, which deliberately exited 19. Both launched DesktopAppInstaller 1.29.380.0. WinGet printed v1.29.380 and exited zero in full access. Restricted WinGet returned native `0x8A150001`, exposed as shell status 1. No diagnostic debugger was attached. Windows Terminal and Notepad aliases were inventoried only.
+Package identities and native exits were read from the held process handle. Both stock DSH and candidate Bash launched PowerShell 7.7.0.0 (which deliberately exited 19) and DesktopAppInstaller 1.29.380.0 (WinGet printed `v1.29.380` and exited 0 in full access, while restricted WinGet returned native `0x8A150001`, surfaced as shell status 1). No diagnostic debugger was attached, and Windows Terminal and Notepad aliases were inventoried only.
 
-The vendor Perl version command printed 6.83 and exited 255, matching ordinary Git. The group helper exited zero with empty output in both fixtures. Each GDB 16.3 run reported the owned target’s PID and exit 027 (octal for 23), then exited zero. The test exercised a debugger launching its own target.
+The vendor Perl version check printed 6.83 and exited 255 (matching ordinary Git), and the group helper exited 0 with empty output in both fixtures. Each GDB 16.3 run launched its own owned target, reported the target's PID and exit `027` (octal 23), and exited 0.
 
 [Design experiment summary](../README.md) · [Reproduction](../REPRODUCING.md)

@@ -1,10 +1,10 @@
 # Shipping baseline and preserved locale files
 
-On 22 November 2026 the starting point was `33fa0a9039d193452ccab7eefc222144437f8aaa`. All five checks used native Windows Git Bash and an unelevated Windows Node process. The fixtures used owned Git copies and isolated DSH profiles. A Git bundle of the starting revision passed verification with complete history and no prerequisites (SHA-256 `435c53b552a9f73364119bf09c3ad13157a9b205c155f11aa509959307a5cf97`).
+On November 22, 2026, work started from commit `33fa0a9039d193452ccab7eefc222144437f8aaa`. A complete Git bundle of that starting revision passed verification with no prerequisites (SHA-256 `435c53b552a9f73364119bf09c3ad13157a9b205c155f11aa509959307a5cf97`), and all five baseline checks ran unelevated in native Windows Git Bash using Windows Node, owned Git copies, and isolated DSH profiles.
 
 ## Preserved locale bytes
 
-These SHA-256 values were captured before the tests and checked again afterward against the raw file bytes.
+These raw SHA-256 digests were recorded before the baseline checks and verified unchanged afterward.
 
 | File | SHA-256 |
 | --- | --- |
@@ -15,7 +15,7 @@ These SHA-256 values were captured before the tests and checked again afterward 
 
 ## Host at baseline
 
-Windows 11 x64 build 26200, Node 26.12.1, pnpm 12.18.0, DSH 0.2.2-rc.5 and Chrome 158.0.8127.37. Default discovery found ucrt64 Git 2.56.0.windows.4, MSVC toolset 14.52.37025 (compiler 19.52.37029, linker 14.52.37029.0) and SDK 10.0.26100.0. Developer Mode was off. These runs exercised the shipping hardlink backend.
+The baseline host ran Windows 11 x64 build 26200 with Developer Mode off, Node 26.12.1, pnpm 12.18.0, DSH 0.2.2-rc.5, and Chrome 158.0.8127.37. Default discovery resolved `ucrt64` Git 2.56.0.windows.4, MSVC toolset 14.52.37025 (compiler 19.52.37029, linker 14.52.37029.0), and Windows SDK 10.0.26100.0. These runs exercised the shipping hardlink backend.
 
 ## Results
 
@@ -27,8 +27,8 @@ Windows 11 x64 build 26200, Node 26.12.1, pnpm 12.18.0, DSH 0.2.2-rc.5 and Chrom
 | `pnpm test:browser` | Passed, 1 test, 0 failures, 0 cancelled, 0 skipped, test-runner duration 127,753.387 ms. |
 | `pnpm test:release` | Passed, prerequisite checks, check, lint, clean build and 187 tests, 0 failures, 0 cancelled, 0 skipped, test-runner duration 81,107.6336 ms. |
 
-The release command at this revision preflighted DSH and Git. The browser test ran separately. The optional real-consent cases were unregistered, and the browser simulated consent responses. No alias or debugger qualification ran here. All four locale files and the old uninstaller matched the baseline after the clean builds.
+At this revision, `pnpm test:release` preflighted DSH and Git while the browser test ran separately with simulated consent responses, optional real-consent tests were unregistered, and no alias or debugger qualification ran. After the clean builds, all four locale files and the old uninstaller matched the baseline.
 
-At this point only the ucrt64 layout and one local NTFS volume were available. Subsequent runs qualified [real mingw64](native.md), [Electron Desktop, cross-volume operation and an offline upgrade](release.md). Defender antivirus and real-time protection were both inactive. Registering a product with Security Center alone does not establish whether it scanned a particular file.
+Only the `ucrt64` layout and a single local NTFS volume were available at baseline, and Defender antivirus and real-time protection were both off. Later runs qualified [real mingw64](native.md) as well as [Electron Desktop, cross-volume operation, and an offline upgrade](release.md).
 
 [Verification summary](../README.md) · [Reproduction](../REPRODUCING.md)

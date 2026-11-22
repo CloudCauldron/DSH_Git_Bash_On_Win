@@ -2,11 +2,11 @@
 
 ## Independent audit
 
-The independent audit measured the installed release at `67d8a04` on Windows 11 x64 build 26200, Windows Node 26.12.1, DSH 0.2.2-rc.5 and ucrt64 Git 2.56.0.windows.4. The tarball SHA-256 was `849b7ea2a2b83001af04afe955ccac80edbb5c344465359a03ccf3eeccedf02f`. Defender reported antivirus and real-time protection off before and after. The shipping comparison used revision `33fa0a9039d193452ccab7eefc222144437f8aaa` and owned Git files. Direct Bash ran on the owned tree in full access.
+The independent audit measured the installed release at `67d8a04` (tarball SHA-256 `849b7ea2a2b83001af04afe955ccac80edbb5c344465359a03ccf3eeccedf02f`) on Windows 11 x64 build 26200 with Windows Node 26.12.1, DSH 0.2.2-rc.5, and `ucrt64` Git 2.56.0.windows.4. Defender antivirus and real-time protection were reported off before and after the run. The shipping comparison used revision `33fa0a9039d193452ccab7eefc222144437f8aaa` on owned Git files, with direct Bash on the same owned tree as a full-access baseline.
 
-The three workloads were `echo ok`, a command substitution with a three-stage `printf | grep | wc` pipeline, and `git --version`. Each cell had two excluded warmups and 24 timed rounds. Lane order was balanced within each cell. Timing began at Shell resolution and included the result, completion and positive managed-range settlement. Every timed command returned its expected output and exit code.
+The three workloads were `echo ok`, a command substitution containing a three-stage `printf | grep | wc` pipeline, and `git --version`. Each cell ran two excluded warmups and 24 timed rounds in balanced lane order, measuring from Shell resolution through command result, completion, and positive managed-range settlement. Every timed command returned its expected output and exit code.
 
-Each cell gives median, nearest-rank p95 and maximum in milliseconds, followed by the count over one second.
+Each cell gives median / nearest-rank p95 / maximum in milliseconds, followed by the count over one second.
 
 | Mode | Workload | Copy | Shipping | Direct |
 | --- | --- | --- | --- | --- |
@@ -20,7 +20,7 @@ Each cell gives median, nearest-rank p95 and maximum in milliseconds, followed b
 | workspace-write | pipeline | 430.7 / 495.7 / 533.1 / 0 | 772.1 / 873.1 / 874.6 / 0 | — |
 | workspace-write | git | 346.6 / 419.0 / 496.2 / 0 | 636.7 / 747.2 / 834.0 / 0 | — |
 
-Commands over one second totaled 0/216 on the copy backend, 0/216 on the shipping backend and 0/72 on direct Bash.
+Commands over one second totaled 0/216 on the copy backend, 0/216 on the shipping backend, and 0/72 on direct Bash.
 
 | Separate measurement | Samples or result |
 | --- | --- |
@@ -30,13 +30,13 @@ Commands over one second totaled 0/216 on the copy backend, 0/216 on the shippin
 | Logical flat payload | 356 files and 92,929,414 bytes per generation |
 | After a rebuild with an active pin, then releasing it | Two generations and 185,858,828 payload bytes. The following rebuild left one generation. |
 
-Each warm sample timed the new process’s first call to the packed preparation code through acquisition of the generation pin. Node startup and module import preceded the timer. The selector stayed byte-identical across every restart. Ready-use timing included acquiring a use, canonicalizing and checking workspace overlap, admitting the reused view and releasing the use. These measurements exclude shell startup. Payload sizes exclude filesystem allocation, junctions and cache metadata.
+Warm admission timed each fresh process's first call to the packed preparation code through pin acquisition (after Node startup and module import), confirming that the selector stayed byte-identical across every restart. Ready-use timing covered acquiring a use, canonicalizing and checking workspace overlap, admitting the reused view, and releasing the use, excluding shell startup. Payload totals count logical flat file bytes and omit filesystem allocation overhead, junctions, and cache metadata.
 
 [All 504 audit samples and cache timings](audit-samples.json)
 
 ## Initial release qualification
 
-The run recorded at `6c84a30` used the same host, Git and shipping revision, workloads, round count and timing boundary. Both Defender flags were false at each endpoint. The installed archive had SHA-256 `63e19312681d91493712c137ae9f6a067197f96cdb24272b480e150b3a7d6a29`. Only the two README files changed before the release was packed. This run measured warm admission in the existing Node process.
+An earlier run at `6c84a30` (archive SHA-256 `63e19312681d91493712c137ae9f6a067197f96cdb24272b480e150b3a7d6a29`, before the final README-only edits) used the same host, Git and shipping revisions, workloads, round counts, timing boundaries, and Defender-off state, except that warm admission ran inside the existing Node process.
 
 | Mode | Workload | Copy | Shipping | Direct |
 | --- | --- | --- | --- | --- |
@@ -50,7 +50,7 @@ The run recorded at `6c84a30` used the same host, Git and shipping revision, wor
 | workspace-write | pipeline | 455.4 / 543.1 / 562.0 / 0 | 775.1 / 930.4 / 1827.6 / 1 | — |
 | workspace-write | git | 367.1 / 427.5 / 503.9 / 0 | 644.3 / 750.5 / 1154.4 / 1 | — |
 
-The installed copy completed all 216 timed commands within one second. Two of the 216 shipping commands took longer than one second. Direct Bash contributed 72 full-access samples.
+All 216 copy commands and 72 full-access direct Bash commands finished within one second, while 2 of 216 shipping commands exceeded one second.
 
 | Separate measurement | Samples or result |
 | --- | --- |
@@ -60,19 +60,19 @@ The installed copy completed all 216 timed commands within one second. Two of th
 | Logical flat payload | 356 files and 92,929,414 bytes per generation |
 | Retained after rebuilding with an active pin, then releasing it | Two generations, 185,858,828 payload bytes. The following rebuild left one generation. |
 
-Warm admission ran in the same Node process. Ready-use timing included acquiring a use, canonicalizing and checking workspace overlap, admitting the reused view and releasing the use. These measurements exclude shell startup. Payload sizes exclude filesystem allocation, junctions and cache metadata.
+Ready-use timing and payload totals use the same measurement boundaries as the audit above.
 
 [All 504 initial samples and cache timings](release-samples.json)
 
 ## Cold-copy provisioning
 
-Before executor cutover, a separate five-destination test timed discovery through layout creation, private MSYS patching, file writes, admitted junctions and final handle closure. The existing ucrt64 source contained 355 flat files totaling 92,906,374 bytes. Each sample used a fresh destination and the same source. Selector publication and shell launch were outside the interval. Defender real-time protection was off at both endpoints.
+Before executor cutover, a standalone five-destination benchmark timed discovery through layout creation, private MSYS patching, file writes, admitted junctions, and final handle closure from the existing 355-file `ucrt64` source (92,906,374 bytes), excluding selector publication and shell launch. Defender real-time protection was off at both endpoints.
 
 | Provisioning series | Five elapsed times, ms |
 | --- | --- |
 | First qualification | 366.26, 338.44, 324.92, 331.77, 325.11 |
 | Audited build | 361.37, 322.61, 344.02, 423.72, 394.28 |
 
-The longest sample in the first series consumed 7.33% of a five-second budget and 3.66% of a ten-second budget. These results supported sequential copying with per-file cancellation. They do not measure active-Defender provisioning.
+Because even the slowest sample in the first series took just 7.33% of a five-second budget (3.66% of a ten-second budget), sequential copying with per-file cancellation was fast enough without parallel copy complexity. Provisioning latency under active Defender remains unmeasured.
 
 [Performance study](../README.md) · [Reproduction](../REPRODUCING.md)

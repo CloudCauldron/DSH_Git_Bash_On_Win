@@ -1,10 +1,10 @@
 # Supervisor measurements
 
-On 18 November 2026, a Windows 11 x64 laptop with an Intel Core i9-12900HK ran Git for Windows 2.56.0.windows.4, Node 26.12.1 and DSH 0.2.2-rc.2. Each launch used the same warm Git copy, session view, environment and DSH subprocess provider in full-access mode. Timing began after acquiring the runtime and ended at confirmed process exit.
+On November 18, 2026, a Windows 11 x64 laptop (Intel Core i9-12900HK) ran Git for Windows 2.56.0.windows.4, Node 26.12.1, and DSH 0.2.2-rc.2. Every launch shared the same warm Git copy, session view, environment, and DSH subprocess provider in full-access mode, timing from after runtime acquisition through confirmed process exit.
 
 ## Original supervisor
 
-The direct run launched Bash. The Node parent launched the same Bash with inherited standard streams and waited for exit. The production supervisor also established a private Job, checked the runtime and processed Windows debug events. Each path ran once to warm up. The table gives the median of nine timed rounds with rotating launch order.
+Direct launches ran Bash straight from the harness; the Node parent launched Bash with inherited standard streams and waited for exit; and the production supervisor additionally set up a private Job, checked the runtime, and handled Windows debug events. After one warmup per path, the table reports medians across nine timed rounds in rotating launch order.
 
 | Work in one Bash invocation | Direct Bash | Node parent | Supervisor | Added vs. direct |
 | --- | ---: | ---: | ---: | ---: |
@@ -12,9 +12,9 @@ The direct run launched Bash. The Node parent launched the same Bash with inheri
 | One external `true.exe`, then `printf ok` | 209 ms | 266 ms | 474 ms | 264 ms |
 | 50 sequential `true.exe` children, then `printf ok` | 2,130 ms | 1,652 ms | 3,006 ms | 877 ms |
 
-Differences use the unrounded medians. Direct runs of the 50-child loop ranged from 1.53 to 3.40 seconds. The node-parent range was 1.57–1.84 seconds and the supervisor range was 2.87–4.34 seconds.
+Differences use unrounded medians. On the 50-child loop, elapsed times ranged across 1.53–3.40 s for direct Bash, 1.57–1.84 s for the Node parent, and 2.87–4.34 s for the supervisor.
 
-Three additional launches per cell measured the reporting Node process. Peak working set includes shared resident pages. CPU time sums user and kernel time.
+Three additional launches per cell sampled the reporting Node process, where peak working set includes shared resident pages and CPU time sums user and kernel time:
 
 | Workload | Node parent peak | Supervisor peak | Node parent CPU | Supervisor CPU |
 | --- | ---: | ---: | ---: | ---: |
@@ -24,7 +24,7 @@ Three additional launches per cell measured the reporting Node process. Peak wor
 
 ## Skipping redundant thread-context writes
 
-The supervisor began comparing live thread state with the desired settings before writing during DLL loads. Live state matters because a thread can lose settings during MSYS startup. The comparison ran both builds, direct Bash and the Node parent in rotating order for 12 rounds. Each supervisor ran first in six paired comparisons. Counts of context writes came from a separate instrumented launch per build and workload.
+To cut debug-event writes, the supervisor was changed to check live thread state before writing during DLL loads (checking live state matters because a thread can lose settings during MSYS startup). Both builds, direct Bash, and the Node parent ran in rotating order for 12 rounds, with each supervisor running first in six pairs, and one separate instrumented launch per build and workload counted context writes.
 
 | Workload | Median before | Median after | Pairs faster after (of 12) | Writes before | Writes after |
 | --- | ---: | ---: | ---: | ---: | ---: |
@@ -32,6 +32,6 @@ The supervisor began comparing live thread state with the desired settings befor
 | One external child | 458 ms | 459 ms | 5 | 165 | 10 |
 | 50 external children | 3,296 ms | 3,333 ms | 7 | 3,847 | 282 |
 
-For the 50-child loop the median paired difference favored the change by 53 ms. Individual pairs ranged from 2.14 seconds faster to 0.78 seconds slower. Median supervisor CPU time moved from 718 to 702 ms and peak working set from 69.0 to 69.1 MiB. The reduction in context writes was repeatable across the three workloads. The wall-clock results varied in both directions.
+On the 50-child loop, the median paired difference favored the optimization by 53 ms—ranging from 2.14 s faster to 0.78 s slower across individual pairs—while median supervisor CPU moved from 718 to 702 ms and peak working set from 69.0 to 69.1 MiB. Although the drop in context writes repeated across all three workloads, wall-clock times shifted in both directions.
 
 [Supervisor study](../README.md) · [Reproduction](../REPRODUCING.md)

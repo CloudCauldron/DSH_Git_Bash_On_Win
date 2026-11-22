@@ -359,8 +359,7 @@ export async function localSpawn(t: TestContext): Promise<Subprocess['spawn']> {
   return ctx.subprocess.spawn.bind(ctx.subprocess);
 }
 
-export async function executionContext(home: string, workspace: string, profile: string) {
-  const runtime = installedDsh();
+export async function executionContext(home: string, workspace: string, profile: string, runtime = installedDsh()) {
   const { Context: InstalledContext } = await runtime.load(runtime.baseRequire, '@deepseek-ai/cordis') as typeof import('@deepseek-ai/cordis');
   const { LocalSubprocessRuntime } = await runtime.load(runtime.baseRequire, '@deepseek-ai/dsh-subprocess-local') as { LocalSubprocessRuntime: new (ctx: Context) => Subprocess };
   const { LocalSandboxProvider } = await runtime.load(runtime.baseRequire, '@deepseek-ai/dsh-sandbox-local') as { LocalSandboxProvider: new (ctx: Context, config: object) => SandboxProvider };
@@ -375,7 +374,7 @@ export async function executionContext(home: string, workspace: string, profile:
 }
 
 /** Release qualification checks all owned Git files. The core suites sample the copied payload. */
-export async function ownedGitFixture(t: TestContext, integrityRoot: '.' | 'usr/bin') {
+export async function ownedGitFixture(t: TestContext, integrityRoot: '.' | 'usr/bin', readOnlyPayload?: string) {
   const installed = discoverGitInstallation(process.env.DSH_TEST_GIT_BASH);
   const directory = await mkdtemp(join(tmpdir(), 'dsh-git-bash-execution-'));
   const source = join(directory, 'source'), workspace = join(directory, 'workspace 含空格'), cache = join(directory, '.dsh-git-bash-on-win');
@@ -383,11 +382,20 @@ export async function ownedGitFixture(t: TestContext, integrityRoot: '.' | 'usr/
   t.after(async () => {
     await purgeRuntimeCache(cache);
     try { await verifySource(); }
-    finally { removeTree(admitDirectory(dirname(directory)), basename(directory)); }
+    finally {
+      // Git copies can retain ReadOnly. The plugin-owned cache has already been purged.
+      await rm(source, { recursive: true, force: true });
+      removeTree(admitDirectory(dirname(directory)), basename(directory));
+    }
   });
   await mkdir(source); await mkdir(workspace);
   for (const name of ['bin', 'etc', 'usr', installed.layout]) {
     await cp(join(installed.root, name), join(source, name), { recursive: true });
+  }
+  if (readOnlyPayload) {
+    const file = join(source, readOnlyPayload);
+    openOrdinaryFile(admitDirectory(dirname(file)), basename(file)).close();
+    execFileSync('attrib.exe', ['+R', file, '/L']);
   }
   const base = join(source, integrityRoot);
   const snapshot = async () => {
@@ -412,6 +420,7 @@ export async function ownedGitFixture(t: TestContext, integrityRoot: '.' | 'usr/
 }
 
 export async function executionFixture(t: TestContext) {
+  const runtime = installedDsh();
   const pins = new Set<GenerationPin>();
   let ctx: Context | null = null;
   // The host and pins must close before the owned Git fixture's purge hook.
@@ -420,7 +429,7 @@ export async function executionFixture(t: TestContext) {
     for (const pin of pins) await pin.release();
   });
   const f = await ownedGitFixture(t, 'usr/bin');
-  ctx = await executionContext(f.directory, f.workspace, f.directory);
+  ctx = await executionContext(f.directory, f.workspace, f.directory, runtime);
   return { ...f, ctx, async prepare() {
     const pin = await prepareRuntime(f.request, t.signal);
     pins.add(pin);

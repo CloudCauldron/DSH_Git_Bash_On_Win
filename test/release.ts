@@ -19,7 +19,7 @@ function fileInfo(path: string) {
 }
 
 async function exerciseProfile(dir: string, workspace: string) {
-  const dsh = installedDsh(), ctx = await executionContext(dirname(dirname(dir)), workspace, dir);
+  const dsh = installedDsh(), ctx = await executionContext(dirname(dirname(dir)), workspace, dir, dsh);
   try {
     const p = await loadPackedExecutor(ctx, dir);
     const metadata = JSON.parse(readFileSync(join(p.root, 'package.json'), 'utf8'));
@@ -100,8 +100,9 @@ else await test('independent release packs install, execute, share a cache and u
   assert.deepEqual(readFileSync(archives[0]!), readFileSync(archives[1]!));
   t.diagnostic('Tarball SHA-256 ' + hash(archives[0]!) + ', DLL SHA-256 ' + hash(join(checkout, 'lib/dsh-msys-compat.dll')));
 
-  const f = await ownedGitFixture(t, '.');
-  const marker = join(f.cache, 'current.json'), source = join(f.source, 'usr/bin/grep.exe');
+  const payload = 'usr/bin/grep.exe';
+  const f = await ownedGitFixture(t, '.', payload);
+  const marker = join(f.cache, 'current.json'), source = join(f.source, payload);
   const shared = { timeoutMs: 12000, graceMs: 500 };
   const web = await installPackedProfile(f.directory, 'web', archives[0]!);
   const desktop = await installPackedProfile(f.directory, 'desktop', archives[1]!);
@@ -110,55 +111,53 @@ else await test('independent release packs install, execute, share a cache and u
   for (const field of ['dependencies', 'peerDependencies', 'exports'] as const) assert.deepEqual(packed[field], manifest[field]);
   const initial = fileInfo(source);
   let selected: string | undefined;
-  if (!(initial.attributes & 1)) execFileSync('attrib.exe', ['+R', source]);
-  try {
-    for (const p of [web, desktop]) {
-      const patch = join(p.dir, 'cordis.patch.yml');
-      const settings = [{ id: 'pwsh-sandbox', config: { ...shared, gitBashPath: f.request.gitBashPath } }];
-      writeFileSync(patch, JSON.stringify(settings));
-      for (const file of shipped) {
-        const expected = file === 'package.json' ? packedManifest : readFileSync(join(checkout, file));
-        assert.deepEqual(readFileSync(join(p.root, file)), expected, file);
-      }
-      runProfileHost(import.meta.url, p.dir, f.workspace);
-      const saved = JSON.parse(readFileSync(patch, 'utf8'));
-      assert.deepEqual(saved, settings);
-      delete saved[0]!.config.gitBashPath;
-      writeFileSync(patch, JSON.stringify(saved));
-      const current = readFileSync(marker, 'utf8');
-      assert.equal(JSON.parse(current).sourceRoot, f.source);
-      if (selected) assert.equal(current, selected);
-      selected = current;
-      if (p === web) {
-        await web.remove();
-        assert.equal(readFileSync(marker, 'utf8'), current);
-      }
+  assert.equal(initial.attributes & 1, 1);
+  for (const p of [web, desktop]) {
+    const patch = join(p.dir, 'cordis.patch.yml');
+    const settings = [{ id: 'pwsh-sandbox', config: { ...shared, gitBashPath: f.request.gitBashPath } }];
+    writeFileSync(patch, JSON.stringify(settings));
+    for (const file of shipped) {
+      const expected = file === 'package.json' ? packedManifest : readFileSync(join(checkout, file));
+      assert.deepEqual(readFileSync(join(p.root, file)), expected, file);
     }
-    const { generationId } = JSON.parse(selected!) as { generationId: string };
-    const copy = fileInfo(join(f.cache, 'g', generationId, 'r/usr/bin', basename(source)));
-    assert.equal(copy.attributes & 1, 0);
-    assert.notEqual(initial.fileId, copy.fileId);
+    runProfileHost(import.meta.url, p.dir, f.workspace);
+    const saved = JSON.parse(readFileSync(patch, 'utf8'));
+    assert.deepEqual(saved, settings);
+    delete saved[0]!.config.gitBashPath;
+    writeFileSync(patch, JSON.stringify(saved));
+    const current = readFileSync(marker, 'utf8');
+    assert.equal(JSON.parse(current).sourceRoot, f.source);
+    if (selected) assert.equal(current, selected);
+    selected = current;
+    if (p === web) {
+      await web.remove();
+      assert.equal(readFileSync(marker, 'utf8'), current);
+    }
+  }
+  const { generationId } = JSON.parse(selected!) as { generationId: string };
+  const copy = fileInfo(join(f.cache, 'g', generationId, 'r/usr/bin', basename(source)));
+  assert.equal(copy.attributes & 1, 0);
+  assert.notEqual(initial.fileId, copy.fileId);
 
-    // Standalone purge starts without PluginPackages. All resolved files must belong to this installation.
-    const guard = `import { registerHooks } from 'node:module';
-    import { realpathSync } from 'node:fs';
-    import { fileURLToPath } from 'node:url';
-    import { sep } from 'node:path';
-    const allowed = realpathSync.native(process.cwd()) + sep + 'node_modules' + sep;
-    registerHooks({ resolve(specifier, ctx, next) {
-      const result = next(specifier, ctx);
-      if (result.url.startsWith('file:') && !realpathSync.native(fileURLToPath(result.url)).startsWith(allowed))
-        throw Error('Standalone resolution outside profile: ' + result.url);
-      return result;
-    } });`;
-    execFileSync(process.execPath, ['--import', 'data:text/javascript,' + encodeURIComponent(guard),
-      join(desktop.root, 'lib/purge-runtime-cache.js'), f.cache], {
-      cwd: desktop.dir, env: { ...process.env, NODE_PATH: '', NODE_OPTIONS: '', DSH_HOME: f.directory },
-    });
-    assert.equal(existsSync(f.cache), false);
-    assert.equal(existsSync(f.cache + '.writer-lock'), false);
-    assert.equal(fileInfo(source).attributes & 1, 1);
-  } finally { if (!(initial.attributes & 1)) execFileSync('attrib.exe', ['-R', source]); }
+  // Standalone purge starts without PluginPackages. All resolved files must belong to this installation.
+  const guard = `import { registerHooks } from 'node:module';
+  import { realpathSync } from 'node:fs';
+  import { fileURLToPath } from 'node:url';
+  import { sep } from 'node:path';
+  const allowed = realpathSync.native(process.cwd()) + sep + 'node_modules' + sep;
+  registerHooks({ resolve(specifier, ctx, next) {
+    const result = next(specifier, ctx);
+    if (result.url.startsWith('file:') && !realpathSync.native(fileURLToPath(result.url)).startsWith(allowed))
+      throw Error('Standalone resolution outside profile: ' + result.url);
+    return result;
+  } });`;
+  execFileSync(process.execPath, ['--import', 'data:text/javascript,' + encodeURIComponent(guard),
+    join(desktop.root, 'lib/purge-runtime-cache.js'), f.cache], {
+    cwd: desktop.dir, env: { ...process.env, NODE_PATH: '', NODE_OPTIONS: '', DSH_HOME: f.directory },
+  });
+  assert.equal(existsSync(f.cache), false);
+  assert.equal(existsSync(f.cache + '.writer-lock'), false);
+  assert.equal(fileInfo(source).attributes & 1, 1);
 
   await desktop.remove();
   assert.equal(existsSync(f.cache), false);

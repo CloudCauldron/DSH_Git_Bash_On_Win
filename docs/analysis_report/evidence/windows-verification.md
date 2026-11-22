@@ -242,7 +242,7 @@ All 29 tracked build outputs matched between clean release and development build
 
 ## Phase 4 release qualification
 
-Windows 11 x64 build 26200 ran the release in native Git Bash with Windows Node 26.12.1, pnpm 12.18.0 and DSH 0.2.2-rc.5. The tarball contains 35 files and occupies 57,575 bytes. Its SHA-256 is `538475f1f13dda3324432bc07d78974ab3e1e701b096ca583891c36228a3119f`. The 22,528-byte DLL has SHA-256 `0350d5533d5e887f47045ba1787db9dfaacbb9cffdbe5887feeb0e64a7ff75b7`.
+Windows 11 x64 build 26200 ran the release recorded at `6c84a30` in native Git Bash with Windows Node 26.12.1, pnpm 12.18.0 and DSH 0.2.2-rc.5. The tarball contains 35 files and occupies 57,575 bytes. Its SHA-256 is `538475f1f13dda3324432bc07d78974ab3e1e701b096ca583891c36228a3119f`. The 22,528-byte DLL has SHA-256 `0350d5533d5e887f47045ba1787db9dfaacbb9cffdbe5887feeb0e64a7ff75b7`.
 
 | Check | Observed result |
 | --- | --- |

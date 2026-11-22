@@ -100,7 +100,7 @@ Values are rounded to 0.01 ms.
 
 ### Tencent file-only timing check
 
-The owner added a temporary Tencent exception for the private `r/usr/bin/msys-2.0.dll` in one disposable generation after the baseline finished. Both runs used the final tarball, generation `c0e1d3622a394e50`, NTFS file ID `28991922603153532` and DLL SHA-256 `89fb6b5965c3044bb56a3de61345b77bff6e4618440e0f3c82c3338a70becf77`. The three DSH modes ran in the same sequence. Each workload had two warmups and 12 measured commands per mode. Timing included positive managed-range settlement. Defender reported real-time protection off in both runs.
+The owner added a temporary Tencent exception for the private `r/usr/bin/msys-2.0.dll` in one disposable generation after the baseline finished. Both runs used the tarball verified at `6c84a30`, generation `c0e1d3622a394e50`, NTFS file ID `28991922603153532` and DLL SHA-256 `89fb6b5965c3044bb56a3de61345b77bff6e4618440e0f3c82c3338a70becf77`. The three DSH modes ran in the same sequence. Each workload had two warmups and 12 measured commands per mode. Timing included positive managed-range settlement. Defender reported real-time protection off in both runs.
 
 | Workload | Tencent entry | Commands | Median (ms) | p95 (ms) | Maximum (ms) | Over 1 s |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |

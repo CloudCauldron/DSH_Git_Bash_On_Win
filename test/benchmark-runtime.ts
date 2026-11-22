@@ -10,7 +10,7 @@ import type { SandboxExecutionPolicy } from '@deepseek-ai/dsh-sandbox';
 import { installedDsh } from '../scripts/installed-dsh.ts';
 import { executionFixture, loadPackedExecutor, pnpmExecutable, profileEnvironment, qualifyPackedProfile } from './fixtures.ts';
 import { buildRuntimeEnvironment, buildCopyLayout, discoverGitInstallation } from '../src/runtime/git-installation.ts';
-import { admitDirectory, canonicalWorkspace, createDirectory, overlaps, removeTree } from '../src/runtime/ntfs-filesystem.ts';
+import { admitDirectory, createDirectory, removeTree } from '../src/runtime/ntfs-filesystem.ts';
 import { bundledShimUrl, sharedCacheDirectory } from '../src/runtime/runtime-cache.ts';
 
 function protection() {
@@ -55,6 +55,8 @@ else await test('packed runtime and shipping revision on identical Git workloads
   const { root, Executor } = await loadPackedExecutor(f.ctx, profile);
   const cacheModule = pathToFileURL(join(root, 'lib/runtime/runtime-cache.js')).href;
   const runtime = await import(cacheModule) as typeof import('../src/runtime/runtime-cache.ts');
+  const ntfsModule = new URL('./ntfs-filesystem.js', cacheModule);
+  const { canonicalWorkspace, overlaps } = await import(ntfsModule.href) as typeof import('../src/runtime/ntfs-filesystem.ts');
   const shipping = '33fa0a9039d193452ccab7eefc222144437f8aaa';
   const tree = join(staging, 'shipping'), snapshot = join(staging, 'shipping.tar');
   mkdirSync(tree);

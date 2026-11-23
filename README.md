@@ -14,10 +14,9 @@
 
 ## **2 - Key Features**
 
-- **Full Support for All Three DSH Sandbox Modes**
-  Run Git Bash directly under `read-only`, `workspace-write`, and `danger-full-access` without relaxing the sandbox or switching to WSL, with support for pipelines, subshells, native child processes, and multiple concurrent sessions.
-- Each generation copies the flat Git `usr/bin` payload (about 89 MiB on the measured ucrt64 installation). Other Git resources use directory junctions. Commands and profiles sharing a DSH home reuse one matching generation. Pinned or retired copies can remain until a later build or offline purge.
-- The cache and its sibling writer lock live under the DSH home. The plugin leaves installed Git files, ACLs, global environment, registry and ordinary Git Bash unchanged.
+- **Full Support for All Three DSH Sandbox Modes**: Run Git Bash directly under `read-only`, `workspace-write`, and `danger-full-access` without relaxing the sandbox or switching to WSL, while preserving native workspace grants, approvals, timeouts, standard streams, and background job management.
+- **Lightweight, Shared Runtime Cache**: Each runtime build copies only the regular files in Git's `usr/bin` directory (about 89 MiB on a measured `ucrt64` install) and accesses other Git resources through directory junctions. Commands and profiles sharing a DSH home reuse the same matching cache; superseded copies may remain until a later rebuild or offline cleanup.
+- **Strict Isolation**: The cache and its writer lock live inside the DSH home. Installed Git files and ACLs, global environment variables, the Windows registry, and ordinary Git Bash remain untouched.
 
 ## **3 - Usage Guide**
 
@@ -42,24 +41,21 @@ If you edit the profile's `cordis.patch.yml` manually, be sure to preserve the e
     # Keep existing shared Shell settings here, such as timeoutMs, maxOutputBytes, and graceMs
 ```
 
-### **3.2 - Automatic preparation and Git upgrades**
+### **3.2 - Automatic Preparation and Git Upgrades**
 
-The first command prepares the runtime with the user's ordinary permissions, including in headless mode. Close every DSH instance sharing the home before upgrading Git and keep them closed until the upgrade finishes. The next command checks the installed Git and MSYS binaries and the package list, and rebuilds changed generations automatically. **Save and rebuild** forces a fresh copy after custom edits or damage.
+<span style="margin-left:2em;">&#8203;</span>The first command automatically prepares the runtime cache using your normal user permissions (including in headless mode). Before upgrading Git, close all DSH instances sharing the same DSH home and keep them closed until the upgrade finishes. On the next command, the plugin checks the installed Git and MSYS binaries along with the package list, and automatically rebuilds the cache if anything has changed. If you made custom edits or suspect cache damage, click **Save and rebuild** to force a fresh copy.
 
-If Git was upgraded with DSH open, stop issuing commands and close all instances. Finish the upgrade, repair Git if its updater failed, and reopen DSH. Review interrupted commands before running them again. If problems persist, use **Save and rebuild**, or close all instances and use the offline purge below.
+<span style="margin-left:2em;">&#8203;</span>If Git was upgraded while DSH was still running, stop issuing new commands and close all instances. Let the upgrade finish (and repair Git if the updater reported errors), then reopen DSH. Check the results of any interrupted commands before retrying them. If problems persist, click **Save and rebuild**, or close all instances and follow the offline cleanup steps in Section 6.2.
 
-## **4 - How it compares with native Linux Bash**
+## **4 - Differences from Native Linux Bash**
 
-Bash quoting, pipes, redirection, command substitution and Git commands work much as they do on Linux. For example, `printf '%s\n' main | grep -Fx main` and `git status --short` use the usual syntax. The shell runs Windows builds of the tools shipped with Git for Windows. Scripts that need Linux-only programs, devices or services need a Linux environment.
+<span style="margin-left:2em;">&#8203;</span>Everyday Bash syntax—quoting, pipes, redirection, command substitution, and common Git commands (such as `printf '%s\n' main | grep -Fx main` or `git status --short`)—works just like on Linux. Under the hood, however, commands run the Windows builds shipped with Git for Windows, so scripts that rely on Linux-only tools, devices, or services still require a Linux environment. Keep the following Windows-specific differences in mind:
 
-| When you use | What to expect on Windows |
-| --- | --- |
-| Paths and permissions | Use MSYS paths such as `/c/Work` in Bash. MSYS can translate arguments passed to Windows programs. NTFS and Windows ACLs govern access, including the workspace and temporary-directory grants DSH supplies. |
-| Nested shells | Use `bash` or `sh` from the runtime PATH. An MSYS parent can also launch the installed `usr/bin/bash.exe` entry. The native `bin/bash.exe` wrapper bypasses PATH, starts the installed MSYS runtime and fails in restricted modes. |
-| Native commands | Native PowerShell pipelines into Git tools worked in all three modes. Node piped child processes reported `EPERM` in the restricted modes. A quoted Windows extended-length executable path inside Bash failed in all three. |
-| Packaged tools and process lifetime | PowerShell and WinGet matched stock DSH package identity and native exit status, including WinGet’s restricted-mode error `0x8A150001`. Bash exposes the low byte of a native exit code. GDB ran an owned target in all three modes. Other GUI aliases and debuggers need individual qualification. DSH waits for its managed process range. A native descendant of a packaged application can outlive that wait. |
-
-**Third-party launchers.** In `read-only` and `workspace-write`, a native Windows program that launches Git Bash by its installed absolute path (for example, `C:\Program Files\Git\bin\bash.exe` or `C:\Program Files\Git\usr\bin\bash.exe`) bypasses the plugin runtime and Bash fails to start. Configure the program to run `bash` or `sh` from its inherited PATH.
+- **Paths and permissions**: Use MSYS paths such as `/c/Work` inside Bash; MSYS translates path arguments for Windows programs as needed. Avoid launching executables via Windows extended-length paths (such as `\\?\...`) inside Bash (a limitation of Git Bash itself). File access follows NTFS and Windows ACLs, with workspace and temporary-directory permissions granted by DSH.
+- **Nested shells**: Start nested shells via `bash` or `sh` on `PATH` (from an MSYS parent, running the installed `usr/bin/bash.exe` also works). Avoid Git's native `bin/bash.exe` wrapper—it bypasses `PATH`, launches the installed MSYS directly, and fails in restricted modes.
+- **Third-party launchers**: In `read-only` and `workspace-write`, a native Windows program that launches Git Bash using its installed absolute path (such as `C:\Program Files\Git\bin\bash.exe` or `C:\Program Files\Git\usr\bin\bash.exe`) bypasses this plugin's runtime and fails to start Bash. Configure it to invoke `bash` or `sh` from the inherited `PATH` instead.
+- **Native tools and debuggers**: PowerShell pipelines into Git tools and GDB debugging of a local target executable work across all three sandbox modes. In restricted modes, however, piped child processes spawned by Node.js return `EPERM` (a DSH sandbox limitation that also occurs with the default PowerShell backend). Other GUI app aliases and debuggers have not been broadly qualified and should be tested case by case.
+- **Packaged apps, exit codes, and process lifetime**: Store-packaged CLI tools like PowerShell and WinGet keep the same app package identity and native exit codes as DSH's default backend (including WinGet's `0x8A150001` error in restricted modes), though Bash only surfaces the low 8 bits of a native exit code. In addition, DSH only waits for its managed process range to exit, so child processes spawned by a packaged app may continue running after a command returns.
 
 ## **5 - Requirements**
 
@@ -122,20 +118,20 @@ After cleanup succeeds, restart DSH to rebuild on demand, or click **Save and re
 
 ## **7 - Development and Testing**
 
-<span style="margin-left:2em;">&#8203;</span>Run the following commands in **native Windows Git Bash**. The build compiles `src/` into the tracked `lib/` directory via `@typescript/native` (TypeScript 7), while `typescript` (TypeScript 6) is used only for ESLint; after modifying `src/`, run `pnpm build` and commit the updated build artifacts alongside your changes.
+<span style="margin-left:2em;">&#8203;</span>Run the commands below in **native Windows Git Bash**. Running `pnpm build` compiles both `src/` and the native compatibility library (`native/dsh-msys-compat.c`) into the tracked `lib/` directory; after editing source files, rebuild and commit the updated artifacts alongside your changes.
 
-Full builds also compile `native/dsh-msys-compat.c` with x64 MSVC and the Windows SDK. `native/build.json` records the release tool versions, reviewed imports and approved DLL hash. Discovery uses `vswhere` and prefers the pinned toolset; development overrides are `DSH_MSVC_TOOLS_DIR`, `DSH_WINSDK_DIR` and `DSH_WINSDK_VERSION`. Development builds verify the DLL and report their actual tools/hash; `pnpm build:release` and `pnpm pack` additionally enforce the release pins. Installed packages need no compiler.
+<span style="margin-left:2em;">&#8203;</span>A full build requires x64 MSVC and the Windows SDK (for development only—installed plugin packages need no compiler). The build script locates the toolchain automatically, or you can override it with `DSH_MSVC_TOOLS_DIR`, `DSH_WINSDK_DIR`, and `DSH_WINSDK_VERSION`. Release builds (`pnpm build:release` and `pnpm pack`) also verify the tool versions and DLL hash against `native/build.json`.
 
-`pnpm build:js` and `pnpm test:browser` preserve the DLL from a prior full build. Run `pnpm build` first, and again after any native edit.
+<span style="margin-left:2em;">&#8203;</span>`pnpm build:js` and `pnpm test:browser` rebuild only the JavaScript bundle and reuse the DLL from a prior full build, so run `pnpm build` once first and again after any native changes.
 
 ```bash
 pnpm install --ignore-scripts --frozen-lockfile
-pnpm check          # TypeScript type-checking (src / scripts / test)
+pnpm check          # TypeScript type-checking
 pnpm lint           # ESLint check (zero warnings)
-pnpm build          # Rebuild lib/
-pnpm test:windows   # Run all unit and native integration tests
-pnpm test:release   # Preflight DSH/Git/Chrome, check, lint, release build, core, browser and packed-profile tests
-pnpm test:browser   # Playwright browser configuration and dialog tests
+pnpm build          # Full build of lib/ (including native compatibility DLL)
+pnpm test:windows   # Run unit and native integration tests
+pnpm test:browser   # Run Playwright browser tests
+pnpm test:release   # Full pre-release verification (preflight, checks, release build, and all tests)
 ```
 
-Run `node --test test/benchmark-runtime.ts` for release timings, or set `DSH_BENCH_COLD_ONLY=1` for cold copying alone. `DSH_TEST_WINGET=1 node --test test/qualify-host.ts` checks packaged PowerShell, WinGet and GDB. The opt-in permits WinGet’s normal diagnostic logs. `CHROME_PATH` selects a non-default Chrome executable.
+<span style="margin-left:2em;">&#8203;</span>If Chrome is installed in a non-default location, set `CHROME_PATH` to its executable. For optional checks, you can also run `node --test test/benchmark-runtime.ts` (runtime benchmarks) or `DSH_TEST_WINGET=1 node --test test/qualify-host.ts` (packaged PowerShell, WinGet, and GDB compatibility checks).

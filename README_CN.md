@@ -14,9 +14,9 @@
 
 ## **2 - 核心特性**
 
-- 支持 DSH 的三种沙箱模式，沿用原生的工作区授权、审批、超时、标准流与后台任务管理。
-- 每代运行环境独立复制 Git 的 `usr/bin` 普通文件（实测 ucrt64 约 89 MiB），其他资源通过目录联接访问。同一 DSH 主目录下的命令与配置共享匹配的版本。旧版本可能保留到下次构建或离线清理。
-- 缓存和写锁位于 DSH 主目录内。插件保持 Git 原文件及其权限、注册表、全局环境和日常 Git Bash 环境不变。
+- **完整支持 DSH 三种沙箱模式**：在 `read-only`、`workspace-write` 与 `danger-full-access` 下直接运行 Git Bash，沿用原生的工作区授权、审批、超时、标准流与后台任务管理，无需放宽沙箱或切换到 WSL。
+- **轻量共享的运行时缓存**：每次构建运行环境仅复制 Git `usr/bin` 目录下的普通文件（实测 `ucrt64` 约 89 MiB），其余资源通过目录联接复用。同一 DSH 主目录下的命令与配置会共享匹配的缓存版本，被替换的旧缓存可能保留至下次重建或离线清理。
+- **严格隔离、无全局侵入**：缓存与写锁均存放在 DSH 主目录内，不修改已安装的 Git 原文件及权限、系统注册表、全局环境变量，也不影响日常使用的 Git Bash。
 
 ## **3 - 使用指南**
 
@@ -30,7 +30,7 @@
 3. 常见操作说明：
    - **多标签页冲突**：若其他窗口先行保存过修改，界面会弹出 **「未保存」** 提示并列出最新路径，核对后重试即可。
    - **保存后重建失败**：已保存的路径会继续保留，排除路径或权限问题后再次点击 **「保存并重建」** 即可。
-   - **共享参数**：超时、输出上限、工作目录与退出宽限期仍在 **「Shell」** 设置页管理。
+   - **共享参数**：超时、输出上限、工作目录与退出宽限期仍在 **「终端」** 设置页管理。
 
 若手动编辑配置的 `cordis.patch.yml`，修改 `pwsh-sandbox.config` 时请务必保留原有的共享 Shell 参数（DSH 会整段替换 `config`）：
 
@@ -43,22 +43,19 @@
 
 ### **3.2 - 自动准备与 Git 升级**
 
-首次执行命令时，插件以当前用户权限准备缓存，无头模式也使用相同流程。升级 Git 前先关闭所有共享该主目录的 DSH 实例，升级完成后再启动。下一条命令检查 Git、MSYS 和软件包清单，发现变更时自动重建。自定义修改或缓存损坏后，可点击 **「保存并重建」** 强制重新复制。
+<span style="margin-left:2em;">&#8203;</span>首次执行命令时，插件会以当前用户权限自动准备运行环境缓存（无头模式流程相同）。升级 Git 前，请先关闭所有共用该主目录的 DSH 实例，待升级完成后再重新启动。之后执行下一条命令时，插件会自动检查 Git、MSYS 及软件包清单，发现变化便自动重建缓存。若曾手动改动或怀疑缓存损坏，可随时点击 **「保存并重建」** 强制刷新。
 
-若升级时仍有 DSH 实例运行，请暂停命令并关闭所有实例，完成升级并修复更新程序报告的问题，再启动 DSH。重试前先检查被中断命令的执行结果。若仍有问题，可手动重建，或关闭全部实例后按第 6.2 节离线清理。
+<span style="margin-left:2em;">&#8203;</span>若升级 Git 时仍有 DSH 实例在运行，请先停止执行新命令并关闭所有实例，待升级完成（若更新程序报错则先修复 Git）后再重启 DSH。重新执行此前中断的命令前，请先确认其执行结果；若问题依旧，可点击 **「保存并重建」**，或关闭全部实例后按第 6.2 节执行离线清理。
 
 ## **4 - 与原生 Linux Bash 的使用差异**
 
-Bash 的引号、管道、重定向、命令替换和 Git 命令沿用 Linux 上常见的写法。例如，`printf '%s\n' main | grep -Fx main` 和 `git status --short` 可直接使用。实际运行的是 Git for Windows 随附的 Windows 版工具。依赖 Linux 专用程序、设备或服务的脚本仍需要 Linux 环境。
+<span style="margin-left:2em;">&#8203;</span>日常的 Bash 写法（引号、管道、重定向、命令替换及常见 Git 命令，例如 `printf '%s\n' main | grep -Fx main`、`git status --short`）与 Linux 上基本一致。不过底层运行的仍是 Git for Windows 自带的 Windows 版工具；若脚本依赖 Linux 独有的程序、设备或系统服务，仍需在 Linux 环境中使用。在 Windows 上运行时，主要需留意以下几点：
 
-| 场景 | Windows 上的实际行为 |
-| --- | --- |
-| 路径与权限 | 在 Bash 内可用 `/c/Work` 等 MSYS 路径。MSYS 可能转换传给 Windows 程序的路径参数。文件访问由 NTFS 和 Windows ACL 决定，工作区和临时目录的授权由 DSH 管理。 |
-| 嵌套 Shell | 使用运行环境 PATH 中的 `bash` 或 `sh`。MSYS 父进程也可启动已安装的 `usr/bin/bash.exe`。原生 `bin/bash.exe` 包装程序绕过 PATH，启动已安装的 MSYS，在受限模式下会失败。 |
-| 原生程序 | PowerShell 通过管道调用 Git 工具在三种模式中均成功。受限模式下，Node 通过管道启动子进程返回 `EPERM`。在 Bash 命令中使用带引号的 Windows 扩展长度可执行文件路径，三种模式均失败。 |
-| 打包应用与进程生命周期 | PowerShell 和 WinGet 的包身份、原生退出码与 DSH 默认后端一致，包括 WinGet 在受限模式下的错误 `0x8A150001`。Bash 只返回原生退出码的低八位。GDB 在三种模式下均能调试测试程序。其他 GUI 别名和调试器仍需单独验证。DSH 等待其管理的进程范围结束，打包应用启动的原生后代可能在此之后继续运行。 |
-
-**第三方程序启动 Git Bash。** 在 `read-only` 和 `workspace-write` 模式下，原生 Windows 程序若通过安装目录的绝对路径（例如 `C:\Program Files\Git\bin\bash.exe` 或 `C:\Program Files\Git\usr\bin\bash.exe`）启动 Git Bash，会绕过插件运行环境，导致 Bash 启动失败。请将该程序配置为通过继承的 PATH 调用 `bash` 或 `sh`。
+- **路径与权限**：在 Bash 中可使用类似 `/c/Work` 的 MSYS 路径，调用 Windows 程序时 MSYS 会按需转换路径参数；不要直接在 Bash 中用 Windows 扩展长度路径（如 `\\?\...`）调用可执行文件（Git Bash 自身限制）。文件访问仍由 NTFS 和 Windows ACL 控制，工作区与临时目录权限由 DSH 统一授予。
+- **嵌套 Shell**：在命令内再启动 Shell 时，请直接通过 `PATH` 调用 `bash` 或 `sh`（从 Bash 内直接调用已安装的 `usr/bin/bash.exe` 也可行）。避免调用 Git 自带的 `bin/bash.exe` 包装程序，它会绕过 `PATH` 直接启动原始 MSYS，在受限模式下会失败。
+- **第三方程序启动 Git Bash**：在 `read-only` 和 `workspace-write` 模式下，原生 Windows 程序若写死了 Git 安装路径（例如 `C:\Program Files\Git\bin\bash.exe` 或 `C:\Program Files\Git\usr\bin\bash.exe`），会绕过插件运行环境导致 Bash 无法启动。请改为通过继承的 `PATH` 调用 `bash` 或 `sh`。
+- **原生程序与调试工具**：通过 PowerShell 管道调用 Git 工具，以及使用 GDB 调试本地目标程序，在三种模式下均可正常工作；但在受限模式下，Node.js 通过管道启动子进程会报 `EPERM`（DSH 沙盒限制，默认 PowerShell 后端亦然）。其他 GUI 应用别名和调试器暂未逐一验证，需按实际场景测试。
+- **应用商店打包工具与退出码**：PowerShell、WinGet 等打包应用会保持与 DSH 默认后端一致的应用包身份和原生退出码（例如 WinGet 在受限模式下仍会返回 `0x8A150001`），不过 Bash 仅会返回原生退出码的低 8 位。另外，DSH 只会等待自身托管的进程结束，打包应用额外拉起的子进程可能会在命令返回后继续运行。
 
 ## **5 - 环境要求**
 
@@ -121,20 +118,20 @@ node '<已安装插件目录>/lib/purge-runtime-cache.js' '<DSH 主目录绝对�
 
 ## **7 - 开发与测试**
 
-<span style="margin-left:2em;">&#8203;</span>请在 **Windows 原生 Git Bash** 中执行以下命令。构建通过 `@typescript/native`（TypeScript 7）编译 `src/` 至受跟踪的 `lib/`，`typescript`（TypeScript 6）仅用于 ESLint；修改 `src/` 后请运行 `pnpm build` 并一并提交产物。
+<span style="margin-left:2em;">&#8203;</span>以下命令均需在 **Windows 原生 Git Bash** 中运行。执行 `pnpm build` 会将 `src/` 与原生兼容库 `native/dsh-msys-compat.c` 一并编译到受跟踪的 `lib/` 目录；修改源码后，请重新构建并将更新后的产物一并提交。
 
-完整构建还会使用 x64 MSVC 和 Windows SDK 编译 `native/dsh-msys-compat.c`。`native/build.json` 记录发布工具版本、经审查的导入函数和获准的 DLL 哈希。工具发现使用 `vswhere`，优先选择固定工具集；开发时可通过 `DSH_MSVC_TOOLS_DIR`、`DSH_WINSDK_DIR` 和 `DSH_WINSDK_VERSION` 指定工具。开发构建验证 DLL 并报告实际工具版本及哈希；`pnpm build:release` 和 `pnpm pack` 还会强制校验发布记录。安装后的包不需要编译器。
+<span style="margin-left:2em;">&#8203;</span>完整构建依赖本地的 x64 MSVC 与 Windows SDK（仅开发构建时需要，已安装的插件包无需编译器）。构建脚本会自动查找工具链，也可通过 `DSH_MSVC_TOOLS_DIR`、`DSH_WINSDK_DIR` 和 `DSH_WINSDK_VERSION` 手动指定。发布构建（`pnpm build:release` 与 `pnpm pack`）还会对照 `native/build.json` 校验工具版本及 DLL 哈希。
 
-`pnpm build:js` 和 `pnpm test:browser` 会保留此前完整构建的 DLL。请先运行 `pnpm build`，修改原生代码后也必须重新完整构建。
+<span style="margin-left:2em;">&#8203;</span>`pnpm build:js` 和 `pnpm test:browser` 只会重新编译脚本部分并复用此前构建好的 DLL，因此首次拉取代码或修改原生代码后，请先运行一次 `pnpm build`。
 
 ```bash
 pnpm install --ignore-scripts --frozen-lockfile
-pnpm check          # TypeScript 类型检查（src / scripts / test）
+pnpm check          # TypeScript 类型检查
 pnpm lint           # ESLint 检查（零警告）
-pnpm build          # 重新构建 lib/
-pnpm test:windows   # 运行全部单元与原生集成测试
-pnpm test:release   # 预检 DSH/Git/Chrome，执行检查、发布构建、核心、浏览器及压缩包安装测试
-pnpm test:browser   # Playwright 浏览器配置与弹窗测试
+pnpm build          # 完整构建 lib/（含原生兼容 DLL）
+pnpm test:windows   # 运行单元与原生集成测试
+pnpm test:browser   # 运行 Playwright 浏览器测试
+pnpm test:release   # 发布前完整校验（环境预检、代码检查、发布构建及全部测试）
 ```
 
-运行 `node --test test/benchmark-runtime.ts` 测量发布版本耗时，设置 `DSH_BENCH_COLD_ONLY=1` 可仅测冷复制。`DSH_TEST_WINGET=1 node --test test/qualify-host.ts` 验证打包版 PowerShell、WinGet 和 GDB，该选项允许 WinGet 写入自身的诊断日志。Chrome 安装在其他位置时可设置 `CHROME_PATH`。
+<span style="margin-left:2em;">&#8203;</span>若 Chrome 未安装在默认路径，可通过 `CHROME_PATH` 指定可执行文件位置。此外，还可根据需要运行 `node --test test/benchmark-runtime.ts`（性能基准测试）或 `DSH_TEST_WINGET=1 node --test test/qualify-host.ts`（验证打包版 PowerShell、WinGet 与 GDB 的兼容性）。

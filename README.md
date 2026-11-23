@@ -47,6 +47,10 @@ If you edit the profile's `cordis.patch.yml` manually, be sure to preserve the e
 
 <span style="margin-left:2em;">&#8203;</span>If Git was upgraded while DSH was still running, stop issuing new commands and close all instances. Let the upgrade finish (and repair Git if the updater reported errors), then reopen DSH. Check the results of any interrupted commands before retrying them. If problems persist, click **Save and rebuild**, or close all instances and follow the offline cleanup steps in Section 6.2.
 
+### **3.3 - Starting a New Session After Disabling the Plugin**
+
+<span style="margin-left:2em;">&#8203;</span>In DSH `0.2.2-rc.5`, clicking **New Session** after disabling the plugin may reopen a blank session created while the plugin was enabled. By design, DSH keeps existing sessions on their original agent preset version when plugins are toggled: commands in that session now run in PowerShell, while the AI still sees a tool named `bash` and may try Bash syntax first. Typically, the AI will switch to PowerShell on its own once a Bash command fails, and sessions newly created after disabling the plugin use `pwsh` from the start.
+
 ## **4 - Differences from Native Linux Bash**
 
 <span style="margin-left:2em;">&#8203;</span>Everyday Bash syntax—quoting, pipes, redirection, command substitution, and common Git commands (such as `printf '%s\n' main | grep -Fx main` or `git status --short`)—works just like on Linux. Under the hood, however, commands run the Windows builds shipped with Git for Windows, so scripts that rely on Linux-only tools, devices, or services still require a Linux environment. Keep the following Windows-specific differences in mind:

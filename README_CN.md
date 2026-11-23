@@ -47,6 +47,10 @@
 
 <span style="margin-left:2em;">&#8203;</span>若升级 Git 时仍有 DSH 实例在运行，请先停止执行新命令并关闭所有实例，待升级完成（若更新程序报错则先修复 Git）后再重启 DSH。重新执行此前中断的命令前，请先确认其执行结果；若问题依旧，可点击 **「保存并重建」**，或关闭全部实例后按第 6.2 节执行离线清理。
 
+### **3.3 - 禁用插件后开始新会话**
+
+<span style="margin-left:2em;">&#8203;</span>在 DSH `0.2.2-rc.5` 中，禁用本插件后点击 **「新会话」**，可能会复用插件启用期间创建的空白会话。按 DSH 的设计，启用或禁用插件时，已有会话会继续沿用原先的智能体预设版本；此时命令虽已切回 PowerShell 执行，但 AI 看到的工具名仍是 `bash`，因此可能会先尝试 Bash 语法。通常，AI 在 Bash 命令出错后会主动改用 PowerShell；而禁用插件后真正新建的会话则会从一开始就使用 `pwsh`。
+
 ## **4 - 与原生 Linux Bash 的使用差异**
 
 <span style="margin-left:2em;">&#8203;</span>日常的 Bash 写法（引号、管道、重定向、命令替换及常见 Git 命令，例如 `printf '%s\n' main | grep -Fx main`、`git status --short`）与 Linux 上基本一致。不过底层运行的仍是 Git for Windows 自带的 Windows 版工具；若脚本依赖 Linux 独有的程序、设备或系统服务，仍需在 Linux 环境中使用。在 Windows 上运行时，主要需留意以下几点：

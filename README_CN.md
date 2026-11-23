@@ -57,7 +57,10 @@
 
 - **路径与权限**：在 Bash 中可使用类似 `/c/Work` 的 MSYS 路径，调用 Windows 程序时 MSYS 会按需转换路径参数；不要直接在 Bash 中用 Windows 扩展长度路径（如 `\\?\...`）调用可执行文件（Git Bash 自身限制）。文件访问仍由 NTFS 和 Windows ACL 控制，工作区与临时目录权限由 DSH 统一授予。
 - **嵌套 Shell**：在命令内再启动 Shell 时，请直接通过 `PATH` 调用 `bash` 或 `sh`（从 Bash 内直接调用已安装的 `usr/bin/bash.exe` 也可行）。避免调用 Git 自带的 `bin/bash.exe` 包装程序，它会绕过 `PATH` 直接启动原始 MSYS，在受限模式下会失败。
-- **第三方程序启动 Git Bash**：在 `read-only` 和 `workspace-write` 模式下，原生 Windows 程序若写死了 Git 安装路径（例如 `C:\Program Files\Git\bin\bash.exe` 或 `C:\Program Files\Git\usr\bin\bash.exe`），会绕过插件运行环境导致 Bash 无法启动。请改为通过继承的 `PATH` 调用 `bash` 或 `sh`。
+- **第三方程序启动 Git Bash**：在 `read-only` 和 `workspace-write` 模式下，Windows 原生程序直接调用 Git 安装目录中的 Bash 会绕过插件，导致启动失败。建议将下面的提示词加入项目或全局 `AGENTS.md`。
+
+  > 在 Windows 上使用 DSH 的 Git Bash 插件时，命令和生成的脚本**必须**通过继承的 `PATH` 调用 `bash` 或 `sh`，**禁止**写死 Bash 路径或从 Git 安装目录拼接路径。若接口要求绝对路径，**必须**在本次运行时从 `PATH` 查找 `bash.exe`（如 Python 的 `shutil.which("bash.exe")`）并原样传入。**禁止**展开目录联接或跨次运行复用该路径。
+
 - **原生程序与调试工具**：通过 PowerShell 管道调用 Git 工具，以及使用 GDB 调试本地目标程序，在三种模式下均可正常工作；但在受限模式下，Node.js 通过管道启动子进程会报 `EPERM`（DSH 沙盒限制，默认 PowerShell 后端亦然）。其他 GUI 应用别名和调试器暂未逐一验证，需按实际场景测试。
 - **应用商店打包工具与退出码**：PowerShell、WinGet 等打包应用会保持与 DSH 默认后端一致的应用包身份和原生退出码（例如 WinGet 在受限模式下仍会返回 `0x8A150001`），不过 Bash 仅会返回原生退出码的低 8 位。另外，DSH 只会等待自身托管的进程结束，打包应用额外拉起的子进程可能会在命令返回后继续运行。
 
